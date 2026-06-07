@@ -26,6 +26,21 @@ public class InventoryRepository {
             .list();
     }
 
+    public void insertMovement(Long productId, String movementType, int quantityDelta, int stockAfter, String sourceType, String sourceNo, String remark) {
+        jdbcClient.sql("""
+            INSERT INTO inventory_movements (product_id, movement_type, quantity_delta, stock_after, source_type, source_no, remark)
+            VALUES (:productId, :movementType, :quantityDelta, :stockAfter, :sourceType, :sourceNo, :remark)
+            """)
+            .param("productId", productId)
+            .param("movementType", movementType)
+            .param("quantityDelta", quantityDelta)
+            .param("stockAfter", stockAfter)
+            .param("sourceType", sourceType)
+            .param("sourceNo", sourceNo)
+            .param("remark", remark)
+            .update();
+    }
+
     private InventoryMovement mapMovement(ResultSet rs, int rowNum) throws SQLException {
         return new InventoryMovement(
             rs.getLong("id"),
