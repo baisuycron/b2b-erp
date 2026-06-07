@@ -240,11 +240,6 @@
     });
   };
 
-  const topRefreshBtn = document.getElementById("topRefreshBtn");
-  if (topRefreshBtn) {
-    topRefreshBtn.onclick = window.apiRefreshCurrentPage;
-  }
-
   window.renderDashboard = function () {
     const summary = state.summary || {};
     const todos = summary.todoCards || [];

@@ -904,7 +904,6 @@
       <b id="pageCrumb">首页工作台</b>
     </div>
     <div class="top-actions">
-      <button class="btn" id="topRefreshBtn" onclick="showToast('已刷新页面数据')">刷新</button>
       <span>2026-06-07</span>
       <div class="user-chip">
         <div class="avatar">王</div>
@@ -1033,7 +1032,6 @@
     const moduleCrumb = document.getElementById('moduleCrumb');
     const pageCrumb = document.getElementById('pageCrumb');
     const sep2 = document.getElementById('crumbSep2');
-    const topRefreshBtn = document.getElementById('topRefreshBtn');
 
     const isTopLevel = meta[0] === meta[1];
 
@@ -1046,10 +1044,6 @@
       sep2.style.display = '';
       moduleCrumb.textContent = meta[0];
       pageCrumb.textContent = meta[1];
-    }
-
-    if(topRefreshBtn){
-      topRefreshBtn.style.display = page === 'dashboard' ? 'none' : 'inline-flex';
     }
 
     setActive(page);
@@ -2451,6 +2445,6 @@
   updateCollapseBtn();
   openPage('dashboard');
 </script>
-<script src="admin-api-adapter.js"></script>
+<script src="admin-api-adapter.js?v=20260608-no-api-notices"></script>
 </body>
 </html>
