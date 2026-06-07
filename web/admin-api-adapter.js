@@ -134,7 +134,7 @@
       <div class="card">
         <div class="card-header">
           <div class="card-title">${esc(title)}</div>
-          <div style="color:var(--text-help)">实时接口数据</div>
+          <div></div>
         </div>
         <table>
           <thead><tr>${headers.map(h => `<th ${h === "操作" ? 'style="width:220px"' : ""}>${esc(h)}</th>`).join("")}</tr></thead>
@@ -234,11 +234,9 @@
     originalOpenPage(page);
     const loader = pageLoaders[page];
     if (!loader) return;
-    const content = document.getElementById("content");
-    if (content) content.insertAdjacentHTML("afterbegin", `<div class="notice" id="apiLoading"><span>API</span><div>正在加载真实接口数据...</div></div>`);
     loader().then(() => originalOpenPage(page)).catch(error => {
-      const loading = document.getElementById("apiLoading");
-      if (loading) loading.outerHTML = `<div class="notice"><span>API</span><div>接口加载失败：${esc(error.message)}</div></div>`;
+      const content = document.getElementById("content");
+      if (content) content.insertAdjacentHTML("afterbegin", `<div class="notice"><span>!</span><div>数据加载失败：${esc(error.message)}</div></div>`);
     });
   };
 
@@ -257,7 +255,6 @@
         <div class="summary-card clickable" onclick="openPage('product-list')"><div class="summary-title">在售SKU</div><div class="summary-val">${esc(summary.saleableSkus ?? 0)}</div></div>
         <div class="summary-card clickable" onclick="openPage('aftersale')"><div class="summary-title">待处理售后</div><div class="summary-val">${esc(summary.pendingAfterSale ?? 0)}</div></div>
       </div>
-      <div class="notice"><span>API</span><div>首页统计、待办、库存预警均来自后端实时接口。</div></div>
       ${cardTable("待办事项", ["业务模块", "待办事项", "数量", "操作"], todos.map(item => [
         esc(item.module), esc(item.title), esc(item.count), `<button class="btn-text" onclick="openPage('${targetPage(item.target)}')">去处理</button>`
       ]))}
@@ -269,7 +266,7 @@
   }
 
   window.renderProductList = function () {
-    return `${pageHeader("商品档案", "商品列表由 /api/admin/products 实时返回，支持真实上下架。", '<button class="btn btn-primary" onclick="apiCreateProduct()">新增商品</button>')}
+    return `${pageHeader("商品档案", "商品列表支持商品新增、编辑和上下架。", '<button class="btn btn-primary" onclick="apiCreateProduct()">新增商品</button>')}
       ${filters([{ label: "商品名称", placeholder: "请输入商品名称" }, { label: "商品编码", placeholder: "请输入商品编码" }, { label: "商品状态", type: "select", options: ["全部", "已上架", "已下架"] }])}
       ${cardTable("商品列表", ["商品编码", "商品名称", "SKU", "单位", "销售价", "库存", "起订量", "状态", "操作"], state.products.map(item => [
         esc(item.productCode), esc(item.productName), esc(item.skuCode || item.skuName), esc(item.unit), money(item.salePrice), esc(item.stockQuantity),
@@ -304,7 +301,7 @@
   };
 
   window.renderCategory = function () {
-    return `${pageHeader("商品分类", "商品分类已接入真实新增、编辑和启停用。", '<button class="btn btn-primary" onclick="apiCreateCategory()">新增分类</button>')}
+    return `${pageHeader("商品分类", "商品分类支持新增、编辑和启停用。", '<button class="btn btn-primary" onclick="apiCreateCategory()">新增分类</button>')}
       ${cardTable("分类列表", ["分类名称", "上级分类", "排序", "状态", "操作"], state.categories.map(item => [
         esc(item.categoryName), esc(item.parentName || "-"), esc(item.sortNo), tag(item.status),
         `<button class="btn-text" onclick="apiEditCategory(${item.id})">编辑</button> <button class="btn-text" onclick="apiCategoryStatus(${item.id}, '${item.status === "ENABLED" ? "DISABLED" : "ENABLED"}')">${item.status === "ENABLED" ? "停用" : "启用"}</button>`
@@ -334,7 +331,7 @@
   };
 
   window.renderBrand = function () {
-    return `${pageHeader("商品品牌", "商品品牌已接入真实新增、编辑和启停用。", '<button class="btn btn-primary" onclick="apiCreateBrand()">新增品牌</button>')}
+    return `${pageHeader("商品品牌", "商品品牌支持新增、编辑和启停用。", '<button class="btn btn-primary" onclick="apiCreateBrand()">新增品牌</button>')}
       ${cardTable("品牌列表", ["品牌名称", "首字母", "排序", "状态", "操作"], state.brands.map(item => [
         esc(item.brandName), esc(item.firstLetter || "-"), esc(item.sortNo), tag(item.status),
         `<button class="btn-text" onclick="apiEditBrand(${item.id})">编辑</button> <button class="btn-text" onclick="apiBrandStatus(${item.id}, '${item.status === "ENABLED" ? "DISABLED" : "ENABLED"}')">${item.status === "ENABLED" ? "停用" : "启用"}</button>`
@@ -364,7 +361,7 @@
   };
 
   window.renderSupplier = function () {
-    return `${pageHeader("供应商管理", "供应商列表、启停用和新增都已接入真实 API。", '<button class="btn btn-primary" onclick="apiCreateSupplier()">新增供应商</button>')}
+    return `${pageHeader("供应商管理", "供应商列表支持新增、编辑和启停用。", '<button class="btn btn-primary" onclick="apiCreateSupplier()">新增供应商</button>')}
       ${cardTable("供应商列表", ["供应商编号", "供应商名称", "联系人", "联系电话", "采购单数", "采购金额", "状态", "操作"], state.suppliers.map(item => [
         esc(item.supplierNo), esc(item.supplierName), esc(item.contactName), esc(item.phone), esc(item.purchaseCount), money(item.purchaseAmount), tag(item.status),
         `<button class="btn-text" onclick="apiEditSupplier(${item.id})">编辑</button> <button class="btn-text" onclick="apiSupplierStatus(${item.id}, '${item.status === "ENABLED" ? "DISABLED" : "ENABLED"}')">${item.status === "ENABLED" ? "停用" : "启用"}</button>`
@@ -395,7 +392,7 @@
   };
 
   window.renderPurchaseOrder = function () {
-    return `${pageHeader("采购订单", "采购订单已接入真实创建、取消、入库接口。", '<button class="btn btn-primary" onclick="apiCreatePurchase()">新增采购单</button>')}
+    return `${pageHeader("采购订单", "采购订单支持创建、取消和入库。", '<button class="btn btn-primary" onclick="apiCreatePurchase()">新增采购单</button>')}
       ${cardTable("采购订单列表", ["采购单号", "供应商", "商品", "SKU", "采购数", "已入库", "金额", "预计到货", "状态", "操作"], state.purchaseOrders.map(item => [
         esc(item.purchaseNo), esc(item.supplierName), esc(item.productName), esc(item.skuCode), esc(item.purchaseQty), esc(item.stockedQty), money(item.amount), esc(item.expectedArrivalDate), tag(item.status),
         `${item.status === "WAIT_STOCK_IN" ? `<button class="btn-text" onclick="apiEditPurchase(${item.id})">编辑</button> ` : ""}${item.status !== "COMPLETED" && item.status !== "CANCELLED" ? `<button class="btn-text" onclick="apiStockIn(${item.id})">采购入库</button> <button class="btn-text-danger" onclick="apiCancelPurchase(${item.id})">取消</button>` : ""}`
@@ -438,7 +435,7 @@
   };
 
   window.renderPurchaseInbound = function () {
-    return `${pageHeader("采购入库记录", "每次真实入库会生成入库记录，并同步库存流水。")}
+    return `${pageHeader("采购入库记录", "每次入库会生成入库记录，并同步库存流水。")}
       ${cardTable("采购入库记录", ["入库单号", "采购单号", "供应商", "商品", "SKU", "入库数量", "入库金额", "入库人", "入库时间"], state.purchaseStockIns.map(item => [
         esc(item.stockInNo), esc(item.purchaseNo), esc(item.supplierName), esc(item.productName), esc(item.skuCode), esc(item.stockInQty), money(item.stockInAmount), esc(item.operatorName), date(item.createdAt)
       ]))}`;
@@ -460,7 +457,7 @@
   };
 
   window.renderStockAdjust = function () {
-    return `${pageHeader("库存调整", "提交调整会调用 /api/admin/inventory/adjustments 并写入库存流水。", '<button class="btn btn-primary" onclick="apiInventoryAdjust()">新增调整</button>')}
+    return `${pageHeader("库存调整", "提交调整后会写入库存流水。", '<button class="btn btn-primary" onclick="apiInventoryAdjust()">新增调整</button>')}
       ${window.renderStockOverview()}`;
   };
 
@@ -473,7 +470,7 @@
   };
 
   window.renderOrder = function () {
-    return `${pageHeader("订单管理", "商城订单已接入真实下单、支付和状态数据。")}
+    return `${pageHeader("订单管理", "商城订单展示下单、支付和状态数据。")}
       ${cardTable("订单列表", ["订单编号", "买家", "商品数", "订单金额", "支付状态", "订单状态", "下单时间", "操作"], state.orders.map(item => [
         esc(item.orderNo), esc(item.customerName), esc((item.items || []).length), money(item.totalAmount), tag(item.paymentStatus), tag(item.orderStatus), date(item.createdAt),
         `<button class="btn-text" onclick="apiOrderDetail(${Number(item.id)})">详情</button>`
@@ -525,7 +522,7 @@
   };
 
   window.renderAftersale = function () {
-    return `${pageHeader("售后申请", "售后审核、退款处理已接入真实接口。")}
+    return `${pageHeader("售后申请", "售后申请支持审核和退款处理。")}
       ${cardTable("售后申请列表", ["售后单号", "订单编号", "买家", "类型", "商品", "数量", "退款金额", "状态", "操作"], state.afterSales.map(item => [
         esc(item.afterSaleNo), esc(item.orderNo), esc(item.buyerName), esc(item.type), esc(item.productName), esc(item.quantity), money(item.refundAmount), tag(item.status),
         `${item.status === "WAIT_AUDIT" ? `<button class="btn-text" onclick="apiAuditAfterSale(${item.id}, true)">审核通过</button> <button class="btn-text-danger" onclick="apiAuditAfterSale(${item.id}, false)">驳回</button>` : ""}${item.status === "WAIT_REFUND" ? `<button class="btn-text" onclick="apiRefundAfterSale(${item.id})">退款</button>` : ""}`
@@ -541,7 +538,7 @@
   };
 
   window.renderInvoice = function () {
-    return `${pageHeader("开票申请", "开票确认和驳回已接入真实接口。")}
+    return `${pageHeader("开票申请", "开票申请支持确认和驳回。")}
       ${cardTable("开票申请列表", ["申请单号", "订单编号", "买家", "发票类型", "抬头类型", "发票抬头", "金额", "状态", "操作"], state.invoices.map(item => [
         esc(item.invoiceApplyNo), esc(item.orderNo), esc(item.buyerName), esc(item.invoiceType), esc(item.titleType), esc(item.title), money(item.amount), tag(item.status),
         `${item.status === "WAIT_INVOICE" ? `<button class="btn-text" onclick="apiConfirmInvoice(${item.id})">确认开票</button> <button class="btn-text-danger" onclick="apiRejectInvoice(${item.id})">驳回</button>` : esc(item.invoiceNo || "")}`
@@ -574,14 +571,14 @@
 
   window.renderBuyer = function () {
     const buyers = state.buyers || [];
-    return `${pageHeader("买家列表", "买家数据读取客户接口。")}
+    return `${pageHeader("买家列表", "买家列表展示客户资料。")}
       ${cardTable("买家列表", ["客户ID", "企业名称", "联系人", "联系电话", "创建时间"], buyers.map(item => [
         esc(item.id), esc(item.companyName), esc(item.contactName), esc(item.contactPhone), date(item.createdAt)
       ]))}`;
   };
 
   window.renderSystemUser = function () {
-    return `${pageHeader("后台账号", "后台账号已接入新增和启停用接口。", '<button class="btn btn-primary" onclick="apiCreateAccount()">新增账号</button>')}
+    return `${pageHeader("后台账号", "后台账号支持新增、编辑和启停用。", '<button class="btn btn-primary" onclick="apiCreateAccount()">新增账号</button>')}
       ${cardTable("后台账号", ["账号", "姓名", "手机号", "角色", "状态", "创建时间", "操作"], state.accounts.map(item => [
         esc(item.accountName), esc(item.realName), esc(item.phone), esc(item.roleName), tag(item.status), date(item.createdAt),
         `<button class="btn-text" onclick="apiEditAccount(${item.id})">编辑</button> <button class="btn-text" onclick="apiAccountStatus(${item.id}, '${item.status === "ENABLED" ? "DISABLED" : "ENABLED"}')">${item.status === "ENABLED" ? "停用" : "启用"}</button>`
@@ -615,7 +612,7 @@
   };
 
   window.renderSystemRole = function () {
-    return `${pageHeader("角色权限", "角色数据已接入真实接口。", '<button class="btn btn-primary" onclick="apiCreateRole()">新增角色</button>')}
+    return `${pageHeader("角色权限", "角色权限支持新增和编辑。", '<button class="btn btn-primary" onclick="apiCreateRole()">新增角色</button>')}
       ${cardTable("角色列表", ["角色名称", "说明", "账号数", "状态", "创建时间", "操作"], state.roles.map(item => [
         esc(item.roleName), esc(item.description), esc(item.accountCount), tag(item.status), date(item.createdAt),
         `<button class="btn-text" onclick="apiEditRole(${item.id})">编辑</button>`
