@@ -146,6 +146,17 @@
     `;
   }
 
+  function detailTable(headers, rows) {
+    return `
+      <table>
+        <thead><tr>${headers.map(h => `<th>${esc(h)}</th>`).join("")}</tr></thead>
+        <tbody>
+          ${rows.length ? rows.map(row => `<tr>${row.map(cell => `<td>${cell}</td>`).join("")}</tr>`).join("") : `<tr><td colspan="${headers.length}" style="text-align:center;color:var(--text-help);padding:20px">暂无数据</td></tr>`}
+        </tbody>
+      </table>
+    `;
+  }
+
   function reloadCurrent() {
     const page = state.currentPage || "dashboard";
     return (pageLoaders[page] ? pageLoaders[page]() : Promise.resolve()).then(() => {
@@ -465,8 +476,52 @@
     return `${pageHeader("订单管理", "商城订单已接入真实下单、支付和状态数据。")}
       ${cardTable("订单列表", ["订单编号", "买家", "商品数", "订单金额", "支付状态", "订单状态", "下单时间", "操作"], state.orders.map(item => [
         esc(item.orderNo), esc(item.customerName), esc((item.items || []).length), money(item.totalAmount), tag(item.paymentStatus), tag(item.orderStatus), date(item.createdAt),
-        `<button class="btn-text" onclick="openDetailByPage('订单管理')">详情</button>`
+        `<button class="btn-text" onclick="apiOrderDetail(${Number(item.id)})">详情</button>`
       ]))}`;
+  };
+
+  window.apiOrderDetail = async function (id) {
+    try {
+      const order = await api(`/api/orders/${id}`);
+      const items = order.items || [];
+      const body = `
+        <div class="section-title">订单信息</div>
+        <div class="mini-card">
+          <div class="detail-grid">
+            <div><div class="detail-label">订单编号</div><div class="detail-val">${esc(order.orderNo)}</div></div>
+            <div><div class="detail-label">买家</div><div class="detail-val">${esc(order.customerName)}</div></div>
+            <div><div class="detail-label">订单金额</div><div class="detail-val">${money(order.totalAmount)}</div></div>
+            <div><div class="detail-label">支付方式</div><div class="detail-val">${esc(order.paymentMethod)}</div></div>
+            <div><div class="detail-label">支付状态</div><div class="detail-val">${tag(order.paymentStatus)}</div></div>
+            <div><div class="detail-label">履约状态</div><div class="detail-val">${tag(order.fulfillmentStatus)}</div></div>
+            <div><div class="detail-label">订单状态</div><div class="detail-val">${tag(order.orderStatus)}</div></div>
+            <div><div class="detail-label">下单时间</div><div class="detail-val">${date(order.createdAt)}</div></div>
+          </div>
+        </div>
+        <div class="section-title">收货信息</div>
+        <div class="mini-card">
+          <div class="detail-grid">
+            <div><div class="detail-label">收货人</div><div class="detail-val">${esc(order.receiverName)}</div></div>
+            <div><div class="detail-label">手机号</div><div class="detail-val">${esc(order.receiverPhone)}</div></div>
+            <div><div class="detail-label">收货地址</div><div class="detail-val">${esc(order.receiverAddress)}</div></div>
+            <div><div class="detail-label">备注</div><div class="detail-val">${esc(order.remark || "-")}</div></div>
+          </div>
+        </div>
+        <div class="section-title">商品明细</div>
+        ${detailTable(["商品", "SKU", "单位", "购买数量", "已发货", "单价", "小计"], items.map(item => [
+          esc(item.productName),
+          esc(item.skuCode || item.skuName || "-"),
+          esc(item.unit),
+          esc(item.quantity),
+          esc(item.shippedQuantity ?? 0),
+          money(item.unitPrice),
+          money(item.lineAmount)
+        ]))}
+      `;
+      openApiDrawer(`订单详情 ${order.orderNo || ""}`, body, `<button class="btn btn-primary" onclick="closeDrawer()">关闭</button>`, true);
+    } catch (error) {
+      window.showToast(error.message);
+    }
   };
 
   window.renderAftersale = function () {
