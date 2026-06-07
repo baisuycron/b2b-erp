@@ -1000,7 +1000,6 @@
     }
     const group = document.getElementById('group-' + name);
     const willOpen = !group.classList.contains('open');
-    closeAllGroups();
     if(willOpen){
       group.classList.add('open');
     }
@@ -1012,7 +1011,6 @@
 
   function setActive(page){
     document.querySelectorAll('.menu-group-title,.submenu-item').forEach(i => i.classList.remove('active'));
-    closeAllGroups();
 
     const current = document.querySelector('[data-page="' + page + '"]');
     if(current) current.classList.add('active');
