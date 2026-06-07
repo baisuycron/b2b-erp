@@ -144,6 +144,22 @@
     return (pageLoaders[page] ? pageLoaders[page]() : Promise.resolve()).then(() => window.openPage(page));
   }
 
+  function openApiDrawer(title, body, footer, wide = false) {
+    const mask = document.getElementById("drawerMask");
+    const drawer = document.getElementById("drawer");
+    const titleEl = document.getElementById("drawerTitle");
+    const bodyEl = document.getElementById("drawerBody");
+    const footerEl = document.getElementById("drawerFooter");
+    if (!mask || !drawer || !titleEl || !bodyEl || !footerEl) {
+      throw new Error("后台抽屉容器不存在");
+    }
+    drawer.classList.toggle("wide", wide);
+    titleEl.textContent = title;
+    bodyEl.innerHTML = body;
+    footerEl.innerHTML = footer;
+    mask.style.display = "flex";
+  }
+
   function form(title, fields, onSubmit) {
     const id = "apiForm" + Date.now();
     const body = `
@@ -157,7 +173,7 @@
               : `<input class="input" name="${field.name}" type="${field.type || "text"}" value="${esc(field.value || "")}" placeholder="${esc(field.placeholder || "")}" ${field.required ? "required" : ""}>`}
         `).join("")}
       </form>`;
-    window.openDrawer(title, body, `<button class="btn" onclick="closeDrawer()">取消</button><button class="btn btn-primary" id="${id}Submit">提交</button>`);
+    openApiDrawer(title, body, `<button class="btn" onclick="closeDrawer()">取消</button><button class="btn btn-primary" id="${id}Submit">提交</button>`, fields.length > 4);
     document.getElementById(id + "Submit").onclick = async () => {
       const el = document.getElementById(id);
       if (!el.reportValidity()) return;
