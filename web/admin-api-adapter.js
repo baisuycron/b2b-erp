@@ -1,4 +1,11 @@
 (function () {
+  const pageStorageKey = "b2b-erp-admin-current-page";
+
+  function savedPage() {
+    const page = localStorage.getItem(pageStorageKey);
+    return page && Object.prototype.hasOwnProperty.call(pageLoaders, page) ? page : "dashboard";
+  }
+
   const state = {
     summary: null,
     products: [],
@@ -141,7 +148,10 @@
 
   function reloadCurrent() {
     const page = state.currentPage || "dashboard";
-    return (pageLoaders[page] ? pageLoaders[page]() : Promise.resolve()).then(() => window.openPage(page));
+    return (pageLoaders[page] ? pageLoaders[page]() : Promise.resolve()).then(() => {
+      originalOpenPage(page);
+      window.showToast("当前页面数据已刷新");
+    });
   }
 
   function openApiDrawer(title, body, footer, wide = false) {
@@ -201,8 +211,15 @@
   }
 
   const originalOpenPage = window.openPage;
+  state.currentPage = savedPage();
+
+  window.apiRefreshCurrentPage = function () {
+    reloadCurrent().catch(error => window.showToast(error.message));
+  };
+
   window.openPage = function (page) {
     state.currentPage = page;
+    localStorage.setItem(pageStorageKey, page);
     originalOpenPage(page);
     const loader = pageLoaders[page];
     if (!loader) return;
@@ -213,6 +230,11 @@
       if (loading) loading.outerHTML = `<div class="notice"><span>API</span><div>接口加载失败：${esc(error.message)}</div></div>`;
     });
   };
+
+  const topRefreshBtn = document.getElementById("topRefreshBtn");
+  if (topRefreshBtn) {
+    topRefreshBtn.onclick = window.apiRefreshCurrentPage;
+  }
 
   window.renderDashboard = function () {
     const summary = state.summary || {};
@@ -577,5 +599,5 @@
       </div>`;
   };
 
-  setTimeout(() => window.openPage(state.currentPage || "dashboard"), 0);
+  setTimeout(() => window.openPage(savedPage()), 0);
 })();
