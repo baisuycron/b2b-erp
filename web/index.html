@@ -9,14 +9,14 @@
       body {
         margin: 0;
         min-height: 100vh;
-        background: #f5f7fb;
+        background: #f4f6f9;
         color: #172033;
         font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
       }
       .shell {
         min-height: 100vh;
         display: grid;
-        grid-template-columns: 220px minmax(0, 1fr);
+        grid-template-columns: 232px minmax(0, 1fr);
       }
       .sidebar {
         background: #111827;
@@ -30,7 +30,7 @@
       }
       .brand-sub {
         margin-top: 8px;
-        color: #9ca3af;
+        color: #aab3c1;
         font-size: 13px;
       }
       .nav {
@@ -38,36 +38,46 @@
         display: grid;
         gap: 8px;
       }
-      .nav span {
-        display: block;
-        padding: 11px 12px;
+      .nav button {
+        width: 100%;
+        height: 44px;
+        border: 0;
         border-radius: 6px;
+        background: transparent;
         color: #d1d5db;
-        font-size: 14px;
+        padding: 0 16px;
+        font-size: 15px;
+        text-align: left;
+        cursor: pointer;
       }
-      .nav span.active {
+      .nav button.active {
         background: #2563eb;
         color: #fff;
       }
       main {
-        padding: 26px;
+        padding: 28px;
       }
       .top {
         display: flex;
-        align-items: center;
+        align-items: flex-start;
         justify-content: space-between;
         gap: 16px;
       }
       h1 {
         margin: 0;
-        font-size: 24px;
+        font-size: 25px;
+      }
+      .subtitle {
+        margin: 10px 0 0;
+        color: #64748b;
+        font-size: 14px;
       }
       .status {
-        min-width: 118px;
+        min-width: 124px;
         border: 1px solid #dbe4f0;
         border-radius: 6px;
         background: #fff;
-        padding: 8px 12px;
+        padding: 9px 12px;
         color: #64748b;
         font-size: 13px;
         text-align: center;
@@ -77,32 +87,38 @@
         background: #f0fdf4;
         color: #15803d;
       }
-      .cards {
+      .summary {
         display: grid;
         grid-template-columns: repeat(4, minmax(0, 1fr));
         gap: 14px;
         margin-top: 22px;
       }
-      .card {
-        min-height: 112px;
+      .metric {
+        min-height: 108px;
         border: 1px solid #e2e8f0;
         border-radius: 8px;
         background: #fff;
         padding: 18px;
       }
-      .card span {
+      .metric span {
         display: block;
         color: #64748b;
         font-size: 13px;
       }
-      .card strong {
+      .metric strong {
         display: block;
         margin-top: 14px;
         font-size: 30px;
         line-height: 1;
       }
-      .panel {
+      .layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 340px;
+        gap: 18px;
         margin-top: 18px;
+        align-items: start;
+      }
+      .panel {
         border: 1px solid #e2e8f0;
         border-radius: 8px;
         background: #fff;
@@ -114,30 +130,50 @@
         justify-content: space-between;
         border-bottom: 1px solid #edf2f7;
         padding: 14px 16px;
+        gap: 10px;
       }
       .panel-head h2 {
         margin: 0;
         font-size: 16px;
       }
-      button {
-        height: 34px;
-        border: none;
+      .toolbar {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .btn {
+        min-height: 34px;
+        border: 0;
         border-radius: 6px;
         background: #111827;
         color: #fff;
-        padding: 0 14px;
+        padding: 0 13px;
         cursor: pointer;
+        font-size: 13px;
+      }
+      .btn.secondary {
+        border: 1px solid #dbe4f0;
+        background: #fff;
+        color: #172033;
+      }
+      .btn.danger {
+        background: #b91c1c;
+      }
+      .table-wrap {
+        width: 100%;
+        overflow-x: auto;
       }
       table {
         width: 100%;
         border-collapse: collapse;
       }
       th, td {
-        height: 46px;
+        min-height: 46px;
         border-bottom: 1px solid #edf2f7;
-        padding: 0 16px;
+        padding: 12px 16px;
         font-size: 14px;
         text-align: left;
+        vertical-align: top;
         white-space: nowrap;
       }
       th {
@@ -145,19 +181,95 @@
         color: #64748b;
         font-weight: 400;
       }
-      .error {
+      tr:last-child td {
+        border-bottom: 0;
+      }
+      .empty {
+        padding: 28px 16px;
+        color: #64748b;
+      }
+      .form {
+        display: grid;
+        gap: 12px;
+        padding: 16px;
+      }
+      label {
+        display: grid;
+        gap: 6px;
+        color: #64748b;
+        font-size: 13px;
+      }
+      input, select, textarea {
+        width: 100%;
+        min-height: 36px;
+        border: 1px solid #dbe4f0;
+        border-radius: 6px;
+        background: #fff;
+        color: #172033;
+        padding: 8px 10px;
+        font: inherit;
+        font-size: 14px;
+      }
+      textarea {
+        min-height: 72px;
+        resize: vertical;
+      }
+      .form-row {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+      .alert {
+        display: none;
         margin-top: 18px;
         border: 1px solid #fecaca;
         border-radius: 8px;
         background: #fff1f2;
         padding: 14px 16px;
         color: #b91c1c;
+      }
+      .alert.ok {
+        border-color: #bbf7d0;
+        background: #f0fdf4;
+        color: #15803d;
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        min-height: 24px;
+        border-radius: 999px;
+        background: #eef2ff;
+        color: #3730a3;
+        padding: 0 9px;
+        font-size: 12px;
+      }
+      .muted {
+        color: #64748b;
+      }
+      .section {
         display: none;
       }
-      @media (max-width: 960px) {
+      .section.active {
+        display: block;
+      }
+      .order-items {
+        color: #475569;
+        white-space: normal;
+        line-height: 1.6;
+      }
+      @media (max-width: 1100px) {
+        .layout { grid-template-columns: 1fr; }
+        .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      }
+      @media (max-width: 760px) {
         .shell { grid-template-columns: 1fr; }
-        .sidebar { display: none; }
-        .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .sidebar { padding: 16px; }
+        .nav { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 16px; }
+        .nav button { text-align: center; padding: 0 8px; }
+        main { padding: 18px; }
+        .top { flex-direction: column; }
+        .summary { grid-template-columns: 1fr; }
+        .form-row { grid-template-columns: 1fr; }
       }
     </style>
   </head>
@@ -166,113 +278,629 @@
       <aside class="sidebar">
         <div class="brand">B2B ERP</div>
         <div class="brand-sub">真实数据库演示环境</div>
-        <nav class="nav">
-          <span class="active">首页概览</span>
-          <span>客户管理</span>
-          <span>商品管理</span>
-          <span>销售订单</span>
-          <span>库存流水</span>
-        </nav>
+        <nav class="nav" id="nav"></nav>
       </aside>
       <main>
         <section class="top">
           <div>
-            <h1>B2B ERP 管理系统</h1>
-            <p>当前页面只连接本项目后端 API 和 MySQL 数据库。</p>
+            <h1 id="pageTitle">首页概览</h1>
+            <p class="subtitle" id="pageSubtitle">客户、商品、订单和库存流水都来自后端 API 与 MySQL。</p>
           </div>
           <div id="apiStatus" class="status">检查中</div>
         </section>
 
-        <section class="cards">
-          <article class="card"><span>API 状态</span><strong id="healthValue">-</strong></article>
-          <article class="card"><span>客户数</span><strong id="customerCount">-</strong></article>
-          <article class="card"><span>商品数</span><strong id="productCount">-</strong></article>
-          <article class="card"><span>订单数</span><strong id="orderCount">-</strong></article>
+        <div id="message" class="alert"></div>
+
+        <section id="overview" class="section active">
+          <div class="summary">
+            <article class="metric"><span>API 状态</span><strong id="healthValue">-</strong></article>
+            <article class="metric"><span>客户数</span><strong id="customerCount">-</strong></article>
+            <article class="metric"><span>商品数</span><strong id="productCount">-</strong></article>
+            <article class="metric"><span>订单数</span><strong id="orderCount">-</strong></article>
+          </div>
+          <div class="panel" style="margin-top:18px">
+            <div class="panel-head">
+              <h2>业务闭环</h2>
+              <button class="btn secondary" type="button" data-refresh>刷新</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>客户</th>
+                    <th>商品</th>
+                    <th>库存</th>
+                    <th>最新订单</th>
+                    <th>订单状态</th>
+                    <th>付款状态</th>
+                  </tr>
+                </thead>
+                <tbody id="overviewBody"></tbody>
+              </table>
+            </div>
+          </div>
         </section>
 
-        <div id="errorBox" class="error"></div>
-
-        <section class="panel">
-          <div class="panel-head">
-            <h2>客户与商品数据</h2>
-            <button type="button" id="refreshBtn">刷新</button>
+        <section id="customers" class="section">
+          <div class="layout">
+            <div class="panel">
+              <div class="panel-head">
+                <h2>客户列表</h2>
+                <button class="btn secondary" type="button" data-refresh>刷新</button>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>客户编码</th>
+                      <th>公司名称</th>
+                      <th>联系人</th>
+                      <th>电话</th>
+                      <th>审核状态</th>
+                      <th>业务员</th>
+                    </tr>
+                  </thead>
+                  <tbody id="customerBody"></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="panel">
+              <div class="panel-head"><h2>新增客户</h2></div>
+              <form class="form" id="customerForm">
+                <label>公司名称<input name="companyName" required /></label>
+                <label>联系人<input name="contactName" required /></label>
+                <label>联系电话<input name="contactPhone" required /></label>
+                <label>业务员<input name="salesmanName" /></label>
+                <button class="btn" type="submit">创建客户</button>
+              </form>
+            </div>
           </div>
-          <table>
-            <thead>
-              <tr>
-                <th>客户</th>
-                <th>联系人</th>
-                <th>商品</th>
-                <th>SKU</th>
-                <th>库存</th>
-                <th>最新订单</th>
-              </tr>
-            </thead>
-            <tbody id="dataBody">
-              <tr><td colspan="6">正在加载...</td></tr>
-            </tbody>
-          </table>
+        </section>
+
+        <section id="products" class="section">
+          <div class="layout">
+            <div class="panel">
+              <div class="panel-head">
+                <h2>商品列表</h2>
+                <button class="btn secondary" type="button" data-refresh>刷新</button>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>商品编码</th>
+                      <th>商品</th>
+                      <th>SKU</th>
+                      <th>单位</th>
+                      <th>售价</th>
+                      <th>库存</th>
+                      <th>起订量</th>
+                    </tr>
+                  </thead>
+                  <tbody id="productBody"></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="panel">
+              <div class="panel-head"><h2>新增商品</h2></div>
+              <form class="form" id="productForm">
+                <label>商品名称<input name="productName" required /></label>
+                <label>SKU 名称<input name="skuName" required /></label>
+                <div class="form-row">
+                  <label>单位<input name="unit" value="箱" required /></label>
+                  <label>销售价<input name="salePrice" type="number" min="0.01" step="0.01" required /></label>
+                </div>
+                <div class="form-row">
+                  <label>初始库存<input name="stockQuantity" type="number" min="0" step="1" required /></label>
+                  <label>起订量<input name="minOrderQuantity" type="number" min="1" step="1" value="1" required /></label>
+                </div>
+                <button class="btn" type="submit">创建商品</button>
+              </form>
+            </div>
+          </div>
+        </section>
+
+        <section id="orders" class="section">
+          <div class="layout">
+            <div class="panel">
+              <div class="panel-head">
+                <h2>销售订单</h2>
+                <button class="btn secondary" type="button" data-refresh>刷新</button>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>订单号</th>
+                      <th>客户</th>
+                      <th>金额</th>
+                      <th>状态</th>
+                      <th>付款</th>
+                      <th>履约</th>
+                      <th>明细</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="orderBody"></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="panel">
+              <div class="panel-head"><h2>创建订单</h2></div>
+              <form class="form" id="orderForm">
+                <label>客户<select name="customerId" id="orderCustomer" required></select></label>
+                <label>商品<select name="productId" id="orderProduct" required></select></label>
+                <div class="form-row">
+                  <label>数量<input name="quantity" type="number" min="1" step="1" value="1" required /></label>
+                  <label>付款方式
+                    <select name="paymentMethod">
+                      <option value="ONLINE_PAY">在线支付</option>
+                      <option value="OFFLINE_PAY">线下转账</option>
+                      <option value="SHIP_AFTER_PAY">先货后款</option>
+                    </select>
+                  </label>
+                </div>
+                <label>收货人<input name="receiverName" required /></label>
+                <label>收货电话<input name="receiverPhone" required /></label>
+                <label>收货地址<textarea name="receiverAddress" required></textarea></label>
+                <label>备注<textarea name="remark"></textarea></label>
+                <button class="btn" type="submit">提交订单并扣减库存</button>
+              </form>
+            </div>
+          </div>
+        </section>
+
+        <section id="inventory" class="section">
+          <div class="panel" style="margin-top:18px">
+            <div class="panel-head">
+              <h2>库存流水</h2>
+              <button class="btn secondary" type="button" data-refresh>刷新</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>时间</th>
+                    <th>商品</th>
+                    <th>SKU</th>
+                    <th>类型</th>
+                    <th>变动</th>
+                    <th>变动后库存</th>
+                    <th>来源单号</th>
+                    <th>备注</th>
+                  </tr>
+                </thead>
+                <tbody id="inventoryBody"></tbody>
+              </table>
+            </div>
+          </div>
         </section>
       </main>
     </div>
 
     <script>
-      async function getJson(path) {
-        const response = await fetch(path, { headers: { Accept: "application/json" } });
-        if (!response.ok) throw new Error(path + " HTTP " + response.status);
-        return response.json();
+      const pages = [
+        ["overview", "首页概览", "客户、商品、订单和库存流水都来自后端 API 与 MySQL。"],
+        ["customers", "客户管理", "新增客户会写入数据库，并可被销售订单选择。"],
+        ["products", "商品管理", "新增商品会写入数据库，订单提交会校验起订量和库存。"],
+        ["orders", "销售订单", "创建订单会扣减库存，订单可推进付款、发货、完成。"],
+        ["inventory", "库存流水", "订单扣减库存后，会自动生成库存出库流水。"]
+      ];
+      const state = {
+        page: "overview",
+        health: null,
+        customers: [],
+        products: [],
+        orders: [],
+        movements: []
+      };
+
+      const labels = {
+        APPROVED: "已审核",
+        ON_SALE: "上架",
+        WAIT_PAY: "待付款",
+        WAIT_CONFIRM: "待确认",
+        WAIT_SHIP: "待发货",
+        WAIT_RECEIVE: "待收货",
+        COMPLETED: "已完成",
+        PAID: "已付款",
+        UNPAID: "未付款",
+        NOT_REQUIRED_BEFORE_RECEIPT: "收货后付款",
+        UNSHIPPED: "未发货",
+        SHIPPED: "已发货",
+        RECEIVED: "已收货",
+        ONLINE_PAY: "在线支付",
+        OFFLINE_PAY: "线下转账",
+        SHIP_AFTER_PAY: "先货后款",
+        ORDER_DEDUCT: "订单扣减"
+      };
+
+      function text(value) {
+        return value === null || value === undefined || value === "" ? "-" : String(value);
       }
 
-      function setText(id, value) {
-        document.getElementById(id).textContent = value;
+      function money(value) {
+        return Number(value || 0).toFixed(2);
       }
 
-      async function loadData() {
-        const errorBox = document.getElementById("errorBox");
-        errorBox.style.display = "none";
-        try {
-          const [health, customers, products, orders] = await Promise.all([
-            getJson("/api/health"),
-            getJson("/api/customers"),
-            getJson("/api/products"),
-            getJson("/api/orders")
-          ]);
+      function label(value) {
+        return labels[value] || text(value);
+      }
 
-          setText("healthValue", health.status || "-");
-          setText("customerCount", customers.length);
-          setText("productCount", products.length);
-          setText("orderCount", orders.length);
+      function byId(id) {
+        return document.getElementById(id);
+      }
 
-          const apiStatus = document.getElementById("apiStatus");
-          apiStatus.textContent = health.status === "UP" ? "API 正常" : "API 异常";
-          apiStatus.className = health.status === "UP" ? "status up" : "status";
+      async function api(path, options = {}) {
+        const response = await fetch(path, {
+          headers: { Accept: "application/json", "Content-Type": "application/json" },
+          ...options
+        });
+        const contentType = response.headers.get("content-type") || "";
+        const data = contentType.includes("application/json") ? await response.json() : null;
+        if (!response.ok) {
+          throw new Error(data?.message || `${path} HTTP ${response.status}`);
+        }
+        return data;
+      }
 
-          const maxRows = Math.max(customers.length, products.length, orders.length, 1);
-          const rows = [];
-          for (let index = 0; index < maxRows; index += 1) {
-            const customer = customers[index] || {};
-            const product = products[index] || {};
-            const order = orders[index] || {};
-            rows.push(
-              "<tr>" +
-              "<td>" + (customer.companyName || "-") + "</td>" +
-              "<td>" + (customer.contactName || "-") + "</td>" +
-              "<td>" + (product.productName || "-") + "</td>" +
-              "<td>" + (product.skuCode || "-") + "</td>" +
-              "<td>" + (product.stockQuantity ?? "-") + "</td>" +
-              "<td>" + (order.orderNo || "-") + "</td>" +
-              "</tr>"
-            );
-          }
-          document.getElementById("dataBody").innerHTML = rows.join("");
-        } catch (error) {
-          document.getElementById("apiStatus").textContent = "API 不可用";
-          errorBox.textContent = error.message || "请求失败";
-          errorBox.style.display = "block";
+      function showMessage(message, ok = false) {
+        const box = byId("message");
+        box.textContent = message;
+        box.className = ok ? "alert ok" : "alert";
+        box.style.display = "block";
+        clearTimeout(showMessage.timer);
+        showMessage.timer = setTimeout(() => {
+          box.style.display = "none";
+        }, 3600);
+      }
+
+      function setPage(page) {
+        state.page = page;
+        const meta = pages.find(([id]) => id === page);
+        byId("pageTitle").textContent = meta[1];
+        byId("pageSubtitle").textContent = meta[2];
+        document.querySelectorAll(".section").forEach((section) => {
+          section.classList.toggle("active", section.id === page);
+        });
+        document.querySelectorAll(".nav button").forEach((button) => {
+          button.classList.toggle("active", button.dataset.page === page);
+        });
+      }
+
+      function renderNav() {
+        const nav = byId("nav");
+        pages.forEach(([id, title]) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.dataset.page = id;
+          button.textContent = title;
+          button.addEventListener("click", () => setPage(id));
+          nav.append(button);
+        });
+      }
+
+      function cell(row, value, className) {
+        const td = document.createElement("td");
+        if (className) td.className = className;
+        td.textContent = text(value);
+        row.append(td);
+        return td;
+      }
+
+      function badge(value) {
+        const span = document.createElement("span");
+        span.className = "badge";
+        span.textContent = label(value);
+        return span;
+      }
+
+      function emptyRow(tbody, colspan, message) {
+        tbody.replaceChildren();
+        const tr = document.createElement("tr");
+        const td = document.createElement("td");
+        td.colSpan = colspan;
+        td.className = "empty";
+        td.textContent = message;
+        tr.append(td);
+        tbody.append(tr);
+      }
+
+      function renderOverview() {
+        byId("healthValue").textContent = state.health?.status || "-";
+        byId("customerCount").textContent = state.customers.length;
+        byId("productCount").textContent = state.products.length;
+        byId("orderCount").textContent = state.orders.length;
+
+        const tbody = byId("overviewBody");
+        tbody.replaceChildren();
+        const rows = Math.max(state.customers.length, state.products.length, state.orders.length);
+        if (!rows) {
+          emptyRow(tbody, 6, "暂无业务数据");
+          return;
+        }
+        for (let index = 0; index < rows; index += 1) {
+          const tr = document.createElement("tr");
+          const customer = state.customers[index];
+          const product = state.products[index];
+          const order = state.orders[index];
+          cell(tr, customer?.companyName);
+          cell(tr, product ? `${product.productName} / ${product.skuName}` : "-");
+          cell(tr, product?.stockQuantity);
+          cell(tr, order?.orderNo);
+          const status = document.createElement("td");
+          if (order) status.append(badge(order.orderStatus));
+          else status.textContent = "-";
+          tr.append(status);
+          cell(tr, order ? label(order.paymentStatus) : "-");
+          tbody.append(tr);
         }
       }
 
-      document.getElementById("refreshBtn").addEventListener("click", loadData);
+      function renderCustomers() {
+        const tbody = byId("customerBody");
+        tbody.replaceChildren();
+        if (!state.customers.length) {
+          emptyRow(tbody, 6, "暂无客户");
+          return;
+        }
+        state.customers.forEach((customer) => {
+          const tr = document.createElement("tr");
+          cell(tr, customer.customerCode);
+          cell(tr, customer.companyName);
+          cell(tr, customer.contactName);
+          cell(tr, customer.contactPhone);
+          const status = document.createElement("td");
+          status.append(badge(customer.auditStatus));
+          tr.append(status);
+          cell(tr, customer.salesmanName);
+          tbody.append(tr);
+        });
+      }
+
+      function renderProducts() {
+        const tbody = byId("productBody");
+        tbody.replaceChildren();
+        if (!state.products.length) {
+          emptyRow(tbody, 7, "暂无商品");
+          return;
+        }
+        state.products.forEach((product) => {
+          const tr = document.createElement("tr");
+          cell(tr, product.productCode);
+          cell(tr, product.productName);
+          cell(tr, product.skuName);
+          cell(tr, product.unit);
+          cell(tr, money(product.salePrice));
+          cell(tr, product.stockQuantity);
+          cell(tr, product.minOrderQuantity);
+          tbody.append(tr);
+        });
+      }
+
+      function orderActions(order) {
+        const wrap = document.createElement("div");
+        wrap.className = "toolbar";
+        if (["WAIT_PAY", "WAIT_CONFIRM"].includes(order.orderStatus)) {
+          const pay = document.createElement("button");
+          pay.className = "btn";
+          pay.type = "button";
+          pay.textContent = "标记付款";
+          pay.addEventListener("click", () => advanceOrder(order.id, "pay"));
+          wrap.append(pay);
+        }
+        if (order.orderStatus === "WAIT_SHIP") {
+          const ship = document.createElement("button");
+          ship.className = "btn";
+          ship.type = "button";
+          ship.textContent = "发货";
+          ship.addEventListener("click", () => advanceOrder(order.id, "ship"));
+          wrap.append(ship);
+        }
+        if (order.orderStatus === "WAIT_RECEIVE") {
+          const complete = document.createElement("button");
+          complete.className = "btn";
+          complete.type = "button";
+          complete.textContent = "完成";
+          complete.addEventListener("click", () => advanceOrder(order.id, "complete"));
+          wrap.append(complete);
+        }
+        if (!wrap.children.length) {
+          const span = document.createElement("span");
+          span.className = "muted";
+          span.textContent = "无可用操作";
+          wrap.append(span);
+        }
+        return wrap;
+      }
+
+      function renderOrders() {
+        const tbody = byId("orderBody");
+        tbody.replaceChildren();
+        if (!state.orders.length) {
+          emptyRow(tbody, 8, "暂无订单");
+          return;
+        }
+        state.orders.forEach((order) => {
+          const tr = document.createElement("tr");
+          cell(tr, order.orderNo);
+          cell(tr, order.customerName);
+          cell(tr, money(order.totalAmount));
+          const orderStatus = document.createElement("td");
+          orderStatus.append(badge(order.orderStatus));
+          tr.append(orderStatus);
+          cell(tr, label(order.paymentStatus));
+          cell(tr, label(order.fulfillmentStatus));
+          const detail = document.createElement("td");
+          detail.className = "order-items";
+          detail.textContent = (order.items || [])
+            .map((item) => `${item.productName} x ${item.quantity}`)
+            .join("；") || "-";
+          tr.append(detail);
+          const actions = document.createElement("td");
+          actions.append(orderActions(order));
+          tr.append(actions);
+          tbody.append(tr);
+        });
+      }
+
+      function renderInventory() {
+        const tbody = byId("inventoryBody");
+        tbody.replaceChildren();
+        if (!state.movements.length) {
+          emptyRow(tbody, 8, "暂无库存流水，创建订单后会自动生成扣减记录");
+          return;
+        }
+        state.movements.forEach((movement) => {
+          const tr = document.createElement("tr");
+          cell(tr, movement.createdAt ? movement.createdAt.replace("T", " ").slice(0, 19) : "-");
+          cell(tr, movement.productName);
+          cell(tr, movement.skuCode);
+          cell(tr, label(movement.movementType));
+          cell(tr, movement.quantityDelta);
+          cell(tr, movement.stockAfter);
+          cell(tr, movement.sourceNo);
+          cell(tr, movement.remark);
+          tbody.append(tr);
+        });
+      }
+
+      function renderOrderSelects() {
+        const customerSelect = byId("orderCustomer");
+        const productSelect = byId("orderProduct");
+        customerSelect.replaceChildren();
+        productSelect.replaceChildren();
+        state.customers.forEach((customer) => {
+          const option = document.createElement("option");
+          option.value = customer.id;
+          option.textContent = customer.companyName;
+          customerSelect.append(option);
+        });
+        state.products.forEach((product) => {
+          const option = document.createElement("option");
+          option.value = product.id;
+          option.textContent = `${product.productName} / ${product.skuName} / 库存 ${product.stockQuantity}`;
+          productSelect.append(option);
+        });
+      }
+
+      function renderAll() {
+        renderOverview();
+        renderCustomers();
+        renderProducts();
+        renderOrders();
+        renderInventory();
+        renderOrderSelects();
+      }
+
+      async function loadData() {
+        try {
+          const [health, customers, products, orders, movements] = await Promise.all([
+            api("/api/health"),
+            api("/api/customers"),
+            api("/api/products"),
+            api("/api/orders"),
+            api("/api/inventory-movements")
+          ]);
+          state.health = health;
+          state.customers = customers;
+          state.products = products;
+          state.orders = orders;
+          state.movements = movements;
+          byId("apiStatus").textContent = health.status === "UP" ? "API 正常" : "API 异常";
+          byId("apiStatus").className = health.status === "UP" ? "status up" : "status";
+          renderAll();
+        } catch (error) {
+          byId("apiStatus").textContent = "API 不可用";
+          byId("apiStatus").className = "status";
+          showMessage(error.message || "请求失败");
+        }
+      }
+
+      function payloadFromForm(form) {
+        return Object.fromEntries(new FormData(form).entries());
+      }
+
+      async function submitJson(path, payload) {
+        return api(path, { method: "POST", body: JSON.stringify(payload) });
+      }
+
+      byId("customerForm").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        try {
+          await submitJson("/api/customers", payloadFromForm(form));
+          form.reset();
+          showMessage("客户已创建", true);
+          await loadData();
+        } catch (error) {
+          showMessage(error.message);
+        }
+      });
+
+      byId("productForm").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        const payload = payloadFromForm(form);
+        payload.salePrice = Number(payload.salePrice);
+        payload.stockQuantity = Number(payload.stockQuantity);
+        payload.minOrderQuantity = Number(payload.minOrderQuantity);
+        try {
+          await submitJson("/api/products", payload);
+          form.reset();
+          form.elements.minOrderQuantity.value = 1;
+          form.elements.unit.value = "箱";
+          showMessage("商品已创建", true);
+          await loadData();
+        } catch (error) {
+          showMessage(error.message);
+        }
+      });
+
+      byId("orderForm").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        const payload = payloadFromForm(form);
+        const request = {
+          customerId: Number(payload.customerId),
+          paymentMethod: payload.paymentMethod,
+          receiverName: payload.receiverName,
+          receiverPhone: payload.receiverPhone,
+          receiverAddress: payload.receiverAddress,
+          remark: payload.remark,
+          items: [{ productId: Number(payload.productId), quantity: Number(payload.quantity) }]
+        };
+        try {
+          await submitJson("/api/orders", request);
+          form.reset();
+          form.elements.quantity.value = 1;
+          showMessage("订单已创建，库存已扣减", true);
+          await loadData();
+        } catch (error) {
+          showMessage(error.message);
+        }
+      });
+
+      async function advanceOrder(orderId, action) {
+        const path = `/api/orders/${orderId}/${action}`;
+        const body = action === "ship"
+          ? { logisticsCompany: "默认物流", logisticsNo: `AUTO${Date.now()}` }
+          : undefined;
+        try {
+          await api(path, { method: "POST", body: body ? JSON.stringify(body) : undefined });
+          showMessage("订单状态已更新", true);
+          await loadData();
+        } catch (error) {
+          showMessage(error.message);
+        }
+      }
+
+      document.querySelectorAll("[data-refresh]").forEach((button) => {
+        button.addEventListener("click", loadData);
+      });
+
+      renderNav();
+      setPage("overview");
       loadData();
     </script>
   </body>
