@@ -70,6 +70,29 @@ public class ProductRepository {
             .update();
     }
 
+    public int addStock(Long productId, int quantity) {
+        return jdbcClient.sql("""
+            UPDATE products
+            SET stock_quantity = stock_quantity + :quantity
+            WHERE id = :productId
+              AND :quantity > 0
+            """)
+            .param("productId", productId)
+            .param("quantity", quantity)
+            .update();
+    }
+
+    public int setSaleStatus(Long productId, String saleStatus) {
+        return jdbcClient.sql("""
+            UPDATE products
+            SET sale_status = :saleStatus
+            WHERE id = :productId
+            """)
+            .param("productId", productId)
+            .param("saleStatus", saleStatus)
+            .update();
+    }
+
     private Product mapProduct(ResultSet rs, int rowNum) throws SQLException {
         return new Product(
             rs.getLong("id"),
