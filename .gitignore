@@ -1,0 +1,14 @@
+.tools/
+outputs/
+
+backend/target/
+backend/.runtime/
+
+node_modules/
+dist/
+build/
+.next/
+coverage/
+
+.DS_Store
+*.log

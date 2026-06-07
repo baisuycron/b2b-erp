@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>B2B ERP 管理系统</title>
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: #f5f7fb;
+        color: #172033;
+        font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+      }
+      .shell {
+        min-height: 100vh;
+        display: grid;
+        grid-template-columns: 220px minmax(0, 1fr);
+      }
+      .sidebar {
+        background: #111827;
+        color: #fff;
+        padding: 22px 18px;
+      }
+      .brand {
+        font-size: 20px;
+        font-weight: 700;
+        line-height: 1.3;
+      }
+      .brand-sub {
+        margin-top: 8px;
+        color: #9ca3af;
+        font-size: 13px;
+      }
+      .nav {
+        margin-top: 34px;
+        display: grid;
+        gap: 8px;
+      }
+      .nav span {
+        display: block;
+        padding: 11px 12px;
+        border-radius: 6px;
+        color: #d1d5db;
+        font-size: 14px;
+      }
+      .nav span.active {
+        background: #2563eb;
+        color: #fff;
+      }
+      main {
+        padding: 26px;
+      }
+      .top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+      }
+      h1 {
+        margin: 0;
+        font-size: 24px;
+      }
+      .status {
+        min-width: 118px;
+        border: 1px solid #dbe4f0;
+        border-radius: 6px;
+        background: #fff;
+        padding: 8px 12px;
+        color: #64748b;
+        font-size: 13px;
+        text-align: center;
+      }
+      .status.up {
+        border-color: #bbf7d0;
+        background: #f0fdf4;
+        color: #15803d;
+      }
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+        margin-top: 22px;
+      }
+      .card {
+        min-height: 112px;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        background: #fff;
+        padding: 18px;
+      }
+      .card span {
+        display: block;
+        color: #64748b;
+        font-size: 13px;
+      }
+      .card strong {
+        display: block;
+        margin-top: 14px;
+        font-size: 30px;
+        line-height: 1;
+      }
+      .panel {
+        margin-top: 18px;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        background: #fff;
+        overflow: hidden;
+      }
+      .panel-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 1px solid #edf2f7;
+        padding: 14px 16px;
+      }
+      .panel-head h2 {
+        margin: 0;
+        font-size: 16px;
+      }
+      button {
+        height: 34px;
+        border: none;
+        border-radius: 6px;
+        background: #111827;
+        color: #fff;
+        padding: 0 14px;
+        cursor: pointer;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      th, td {
+        height: 46px;
+        border-bottom: 1px solid #edf2f7;
+        padding: 0 16px;
+        font-size: 14px;
+        text-align: left;
+        white-space: nowrap;
+      }
+      th {
+        background: #f8fafc;
+        color: #64748b;
+        font-weight: 400;
+      }
+      .error {
+        margin-top: 18px;
+        border: 1px solid #fecaca;
+        border-radius: 8px;
+        background: #fff1f2;
+        padding: 14px 16px;
+        color: #b91c1c;
+        display: none;
+      }
+      @media (max-width: 960px) {
+        .shell { grid-template-columns: 1fr; }
+        .sidebar { display: none; }
+        .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand">B2B ERP</div>
+        <div class="brand-sub">真实数据库演示环境</div>
+        <nav class="nav">
+          <span class="active">首页概览</span>
+          <span>客户管理</span>
+          <span>商品管理</span>
+          <span>销售订单</span>
+          <span>库存流水</span>
+        </nav>
+      </aside>
+      <main>
+        <section class="top">
+          <div>
+            <h1>B2B ERP 管理系统</h1>
+            <p>当前页面只连接本项目后端 API 和 MySQL 数据库。</p>
+          </div>
+          <div id="apiStatus" class="status">检查中</div>
+        </section>
+
+        <section class="cards">
+          <article class="card"><span>API 状态</span><strong id="healthValue">-</strong></article>
+          <article class="card"><span>客户数</span><strong id="customerCount">-</strong></article>
+          <article class="card"><span>商品数</span><strong id="productCount">-</strong></article>
+          <article class="card"><span>订单数</span><strong id="orderCount">-</strong></article>
+        </section>
+
+        <div id="errorBox" class="error"></div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>客户与商品数据</h2>
+            <button type="button" id="refreshBtn">刷新</button>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>客户</th>
+                <th>联系人</th>
+                <th>商品</th>
+                <th>SKU</th>
+                <th>库存</th>
+                <th>最新订单</th>
+              </tr>
+            </thead>
+            <tbody id="dataBody">
+              <tr><td colspan="6">正在加载...</td></tr>
+            </tbody>
+          </table>
+        </section>
+      </main>
+    </div>
+
+    <script>
+      async function getJson(path) {
+        const response = await fetch(path, { headers: { Accept: "application/json" } });
+        if (!response.ok) throw new Error(path + " HTTP " + response.status);
+        return response.json();
+      }
+
+      function setText(id, value) {
+        document.getElementById(id).textContent = value;
+      }
+
+      async function loadData() {
+        const errorBox = document.getElementById("errorBox");
+        errorBox.style.display = "none";
+        try {
+          const [health, customers, products, orders] = await Promise.all([
+            getJson("/api/health"),
+            getJson("/api/customers"),
+            getJson("/api/products"),
+            getJson("/api/orders")
+          ]);
+
+          setText("healthValue", health.status || "-");
+          setText("customerCount", customers.length);
+          setText("productCount", products.length);
+          setText("orderCount", orders.length);
+
+          const apiStatus = document.getElementById("apiStatus");
+          apiStatus.textContent = health.status === "UP" ? "API 正常" : "API 异常";
+          apiStatus.className = health.status === "UP" ? "status up" : "status";
+
+          const maxRows = Math.max(customers.length, products.length, orders.length, 1);
+          const rows = [];
+          for (let index = 0; index < maxRows; index += 1) {
+            const customer = customers[index] || {};
+            const product = products[index] || {};
+            const order = orders[index] || {};
+            rows.push(
+              "<tr>" +
+              "<td>" + (customer.companyName || "-") + "</td>" +
+              "<td>" + (customer.contactName || "-") + "</td>" +
+              "<td>" + (product.productName || "-") + "</td>" +
+              "<td>" + (product.skuCode || "-") + "</td>" +
+              "<td>" + (product.stockQuantity ?? "-") + "</td>" +
+              "<td>" + (order.orderNo || "-") + "</td>" +
+              "</tr>"
+            );
+          }
+          document.getElementById("dataBody").innerHTML = rows.join("");
+        } catch (error) {
+          document.getElementById("apiStatus").textContent = "API 不可用";
+          errorBox.textContent = error.message || "请求失败";
+          errorBox.style.display = "block";
+        }
+      }
+
+      document.getElementById("refreshBtn").addEventListener("click", loadData);
+      loadData();
+    </script>
+  </body>
+</html>
