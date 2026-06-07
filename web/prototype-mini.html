@@ -1,0 +1,2309 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>B2B ERP 小程序商城原型</title>
+  <style>
+    :root{
+      --primary:#4e7cff;
+      --primary-light:#eef3ff;
+      --danger:#f04b2f;
+      --success:#52c41a;
+      --warning:#faad14;
+      --purple:#722ed1;
+      --text-main:#1f1f1f;
+      --text-sub:#666;
+      --text-help:#999;
+      --border:#e8eaf0;
+      --bg:#f5f7fb;
+      --card:#fff;
+      --radius:14px;
+      --shadow:0 8px 24px rgba(24,39,75,.08);
+    }
+
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      background:#eef1f7;
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",Arial,sans-serif;
+      color:var(--text-main);
+      font-size:14px;
+    }
+
+    .stage{
+      min-height:100vh;
+      display:flex;
+      justify-content:center;
+      align-items:flex-start;
+      padding:24px 0;
+    }
+
+    .phone{
+      width:390px;
+      height:844px;
+      background:var(--bg);
+      border-radius:34px;
+      overflow:hidden;
+      box-shadow:0 20px 60px rgba(0,0,0,.22);
+      border:8px solid #111827;
+      position:relative;
+    }
+
+    .status-bar{
+      height:28px;
+      background:#fff;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      padding:0 18px;
+      font-size:12px;
+      color:#111;
+      flex-shrink:0;
+    }
+
+    .mini-nav{
+      height:48px;
+      background:#fff;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      position:relative;
+      border-bottom:1px solid var(--border);
+      flex-shrink:0;
+    }
+
+    .mini-title{
+      font-weight:700;
+      font-size:16px;
+    }
+
+    .nav-back{
+      position:absolute;
+      left:14px;
+      top:0;
+      height:48px;
+      display:flex;
+      align-items:center;
+      color:var(--text-main);
+      font-size:22px;
+      cursor:pointer;
+    }
+
+    .nav-more{
+      position:absolute;
+      right:14px;
+      width:54px;
+      height:28px;
+      border:1px solid #ddd;
+      border-radius:999px;
+      display:flex;
+      align-items:center;
+      justify-content:space-around;
+      color:#333;
+      font-size:16px;
+    }
+
+    .app{
+      height:calc(100% - 76px);
+      position:relative;
+      display:flex;
+      flex-direction:column;
+    }
+
+    .content{
+      flex:1;
+      overflow-y:auto;
+      padding:12px 12px 82px;
+      scroll-behavior:smooth;
+    }
+
+    .content.no-tab{
+      padding-bottom:22px;
+    }
+
+    .bottom-tab{
+      height:64px;
+      background:#fff;
+      border-top:1px solid var(--border);
+      display:grid;
+      grid-template-columns:repeat(5,1fr);
+      position:absolute;
+      bottom:0;
+      left:0;
+      right:0;
+      z-index:10;
+    }
+
+    .tab-item{
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      justify-content:center;
+      gap:4px;
+      color:#777;
+      font-size:11px;
+      cursor:pointer;
+      position:relative;
+    }
+
+    .tab-item .icon{
+      font-size:20px;
+      line-height:1;
+    }
+
+    .tab-item.active{
+      color:var(--primary);
+      font-weight:600;
+    }
+
+    .badge{
+      position:absolute;
+      top:7px;
+      right:18px;
+      min-width:18px;
+      height:18px;
+      padding:0 5px;
+      border-radius:999px;
+      background:#ff5b5f;
+      color:#fff;
+      font-size:11px;
+      line-height:18px;
+      text-align:center;
+      font-weight:700;
+    }
+
+    .search-box{
+      height:38px;
+      background:#fff;
+      border-radius:999px;
+      display:flex;
+      align-items:center;
+      padding:0 12px;
+      gap:8px;
+      color:var(--text-help);
+      margin-bottom:12px;
+      border:1px solid var(--border);
+    }
+
+    .search-box input{
+      border:0;
+      outline:0;
+      flex:1;
+      font-size:13px;
+      background:transparent;
+    }
+
+    .banner{
+      height:146px;
+      border-radius:18px;
+      background:linear-gradient(135deg,#21306b,#4e7cff 58%,#9fbeff);
+      color:#fff;
+      padding:20px;
+      overflow:hidden;
+      position:relative;
+      margin-bottom:12px;
+    }
+
+    .banner::after{
+      content:"";
+      position:absolute;
+      width:190px;
+      height:190px;
+      border-radius:50%;
+      right:-50px;
+      bottom:-72px;
+      background:rgba(255,255,255,.16);
+    }
+
+    .banner h1{
+      margin:0 0 8px;
+      font-size:24px;
+      position:relative;
+      z-index:1;
+    }
+
+    .banner p{
+      margin:0;
+      line-height:1.6;
+      font-size:13px;
+      color:rgba(255,255,255,.9);
+      position:relative;
+      z-index:1;
+    }
+
+    .quick-row{
+      display:grid;
+      grid-template-columns:repeat(4,1fr);
+      gap:8px;
+      margin-bottom:12px;
+    }
+
+    .quick{
+      background:#fff;
+      border-radius:14px;
+      min-height:70px;
+      padding:10px 4px;
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      justify-content:center;
+      gap:6px;
+      box-shadow:0 1px 2px rgba(0,0,0,.03);
+      cursor:pointer;
+    }
+
+    .quick-icon{
+      width:30px;
+      height:30px;
+      border-radius:50%;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      background:var(--primary-light);
+      color:var(--primary);
+      font-size:17px;
+    }
+
+    .quick-text{
+      font-size:12px;
+      color:var(--text-sub);
+    }
+
+    .section-title{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      margin:16px 2px 10px;
+    }
+
+    .section-title b{
+      font-size:17px;
+    }
+
+    .section-title span{
+      color:var(--primary);
+      font-size:12px;
+    }
+
+    .product-list{
+      display:flex;
+      flex-direction:column;
+      gap:10px;
+    }
+
+    .product-card{
+      background:#fff;
+      border-radius:16px;
+      padding:10px;
+      display:flex;
+      gap:9px;
+      box-shadow:0 1px 2px rgba(0,0,0,.03);
+      cursor:pointer;
+    }
+
+    .product-img{
+      width:76px;
+      height:76px;
+      border-radius:12px;
+      background:linear-gradient(135deg,#eef3ff,#fff7e6);
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      color:var(--primary);
+      font-weight:800;
+      flex-shrink:0;
+      font-size:13px;
+    }
+
+    .product-info{
+      flex:1;
+      min-width:0;
+      display:flex;
+      flex-direction:column;
+      justify-content:space-between;
+    }
+
+    .product-name{
+      font-weight:700;
+      line-height:1.45;
+      font-size:14px;
+      overflow:hidden;
+      display:-webkit-box;
+      -webkit-line-clamp:2;
+      -webkit-box-orient:vertical;
+    }
+
+    .product-desc{
+      color:var(--text-help);
+      font-size:12px;
+      margin-top:3px;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+    }
+
+    .price{
+      color:var(--danger);
+      font-weight:800;
+      font-size:20px;
+      line-height:1;
+    }
+
+    .price small{
+      color:var(--text-help);
+      font-weight:400;
+      font-size:12px;
+      margin-left:2px;
+    }
+
+    .list-buy-row{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:8px;
+      margin-top:8px;
+    }
+
+    .list-buy-row .price{
+      font-size:18px;
+      min-width:0;
+    }
+
+    .list-add-cart{
+      width:30px;
+      height:30px;
+      padding:0;
+      border:0;
+      border-radius:50%;
+      background:var(--primary);
+      color:#fff;
+      cursor:pointer;
+      flex-shrink:0;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      box-shadow:0 4px 10px rgba(90,114,255,.22);
+    }
+
+    .list-add-cart svg{
+      width:15px;
+      height:15px;
+      stroke:currentColor;
+      stroke-width:2;
+      fill:none;
+      stroke-linecap:round;
+      stroke-linejoin:round;
+    }
+
+    .list-add-cart:active{
+      transform:scale(.94);
+    }
+
+    .list-add-cart:disabled{
+      background:#d9d9d9;
+      color:#fff;
+      cursor:not-allowed;
+      box-shadow:none;
+    }
+
+    .tag{
+      display:inline-flex;
+      align-items:center;
+      height:22px;
+      padding:0 7px;
+      border-radius:5px;
+      font-size:11px;
+      border:1px solid transparent;
+      white-space:nowrap;
+    }
+
+    .tag-blue{color:var(--primary);background:#eef3ff;border-color:#b8c8ff}
+    .tag-green{color:var(--success);background:#f6ffed;border-color:#b7eb8f}
+    .tag-orange{color:#d48806;background:#fff7e6;border-color:#ffd591}
+    .tag-red{color:var(--danger);background:#fff1f0;border-color:#ffa39e}
+    .tag-purple{color:var(--purple);background:#f9f0ff;border-color:#d3adf7}
+    .tag-gray{color:#666;background:#f5f5f5;border-color:#d9d9d9}
+
+    .category-layout{
+      display:grid;
+      grid-template-columns:92px 1fr;
+      gap:10px;
+      height:100%;
+    }
+
+    .category-left{
+      background:#fff;
+      border-radius:14px;
+      overflow:hidden;
+      height:max-content;
+    }
+
+    .category-tab{
+      height:46px;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      font-size:13px;
+      color:var(--text-sub);
+      cursor:pointer;
+      border-left:3px solid transparent;
+    }
+
+    .category-tab.active{
+      background:var(--primary-light);
+      border-left-color:var(--primary);
+      color:var(--primary);
+      font-weight:700;
+    }
+
+    .filter-chips{
+      display:flex;
+      gap:8px;
+      overflow:auto;
+      padding-bottom:8px;
+      margin-bottom:4px;
+    }
+
+    .chip{
+      height:30px;
+      padding:0 12px;
+      border-radius:999px;
+      border:1px solid var(--border);
+      background:#fff;
+      display:flex;
+      align-items:center;
+      color:var(--text-sub);
+      white-space:nowrap;
+      font-size:12px;
+    }
+
+    .chip.active{
+      border-color:var(--primary);
+      color:var(--primary);
+      background:var(--primary-light);
+      font-weight:600;
+    }
+
+    .detail-hero{
+      background:#fff;
+      border-radius:0 0 18px 18px;
+      margin:-12px -12px 12px;
+      padding:12px 12px 16px;
+    }
+
+    .detail-img{
+      height:260px;
+      border-radius:16px;
+      background:linear-gradient(135deg,#eef3ff,#fff7e6);
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      color:var(--primary);
+      font-weight:800;
+      font-size:30px;
+      margin-bottom:14px;
+    }
+
+    .detail-title{
+      font-size:18px;
+      font-weight:800;
+      line-height:1.45;
+      margin-bottom:6px;
+    }
+
+    .detail-sub{
+      color:var(--text-sub);
+      font-size:13px;
+      line-height:1.6;
+      margin-bottom:10px;
+    }
+
+    .price-tier-row{
+      display:flex;
+      gap:14px;
+      flex-wrap:wrap;
+      margin:10px 0;
+    }
+
+    .tier-price{
+      min-width:86px;
+    }
+
+    .tier-price b{
+      font-size:24px;
+      color:var(--danger);
+    }
+
+    .tier-price div{
+      color:var(--text-sub);
+      font-size:12px;
+      margin-top:3px;
+    }
+
+    .service-row{
+      display:flex;
+      gap:12px;
+      flex-wrap:wrap;
+      color:var(--text-sub);
+      font-size:12px;
+      padding:10px 0 0;
+      border-top:1px solid var(--border);
+    }
+
+    .panel{
+      background:#fff;
+      border-radius:16px;
+      margin-bottom:10px;
+      overflow:hidden;
+    }
+
+    .panel-header{
+      min-height:46px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      padding:0 14px;
+      border-bottom:1px solid var(--border);
+      font-weight:700;
+    }
+
+    .spec-row{
+      display:grid;
+      grid-template-columns:1fr 72px 102px;
+      gap:8px;
+      padding:12px 14px;
+      border-bottom:1px solid var(--border);
+      align-items:center;
+    }
+
+    .spec-row:last-child{
+      border-bottom:0;
+    }
+
+    .spec-name{
+      font-weight:700;
+      margin-bottom:4px;
+    }
+
+    .spec-meta{
+      color:var(--text-help);
+      font-size:11px;
+      line-height:1.5;
+    }
+
+    .spec-price{
+      color:var(--danger);
+      font-weight:800;
+      text-align:right;
+    }
+
+    .mini-qty{
+      height:32px;
+      border:1px solid var(--border);
+      border-radius:8px;
+      display:inline-flex;
+      overflow:hidden;
+      background:#fff;
+    }
+
+    .mini-qty button{
+      width:31px;
+      height:32px;
+      border:0;
+      background:#f8f9fc;
+      font-size:16px;
+      cursor:pointer;
+    }
+
+    .mini-qty button:disabled{
+      color:#ccc;
+      cursor:not-allowed;
+    }
+
+    .mini-qty input{
+      width:38px;
+      height:32px;
+      border:0;
+      border-left:1px solid var(--border);
+      border-right:1px solid var(--border);
+      text-align:center;
+      font-weight:700;
+      outline:0;
+      background:#fff;
+    }
+
+    .detail-bottom{
+      position:absolute;
+      left:0;
+      right:0;
+      bottom:0;
+      height:64px;
+      background:#fff;
+      border-top:1px solid var(--border);
+      padding:8px 12px;
+      display:flex;
+      gap:10px;
+      z-index:12;
+    }
+
+    .detail-bottom .btn{
+      flex:1;
+      height:46px;
+    }
+
+    .btn{
+      border:1px solid var(--border);
+      background:#fff;
+      border-radius:12px;
+      height:40px;
+      padding:0 14px;
+      font-size:14px;
+      cursor:pointer;
+      font-family:inherit;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      gap:6px;
+      white-space:nowrap;
+    }
+
+    .btn-primary{
+      background:var(--primary);
+      color:#fff;
+      border-color:var(--primary);
+      font-weight:700;
+    }
+
+    .btn-danger{
+      color:#fff;
+      background:var(--danger);
+      border-color:var(--danger);
+      font-weight:700;
+    }
+
+    .btn-text{
+      border:0;
+      background:transparent;
+      color:var(--primary);
+      padding:0 4px;
+      height:auto;
+    }
+
+    .btn-text-danger{
+      border:0;
+      background:transparent;
+      color:var(--danger);
+      padding:0 4px;
+      height:auto;
+    }
+
+    .cart-card{
+      background:#fff;
+      border-radius:16px;
+      margin-bottom:10px;
+      overflow:hidden;
+    }
+
+    .cart-item{
+      display:grid;
+      grid-template-columns:24px 74px 1fr;
+      gap:10px;
+      padding:12px;
+      border-bottom:1px solid var(--border);
+      align-items:center;
+    }
+
+    .cart-item:last-child{
+      border-bottom:0;
+    }
+
+    .cart-img{
+      width:74px;
+      height:74px;
+      border-radius:12px;
+      background:linear-gradient(135deg,#eef3ff,#fff7e6);
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      color:var(--primary);
+      font-weight:800;
+    }
+
+    .cart-name{
+      font-weight:700;
+      line-height:1.35;
+      margin-bottom:4px;
+    }
+
+    .cart-spec{
+      color:var(--text-help);
+      font-size:11px;
+      margin-bottom:8px;
+    }
+
+    .sticky-submit{
+      position:absolute;
+      left:0;
+      right:0;
+      bottom:64px;
+      min-height:58px;
+      background:#fff;
+      border-top:1px solid var(--border);
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      padding:8px 12px;
+      z-index:11;
+    }
+
+    .sticky-submit.no-tab{
+      bottom:0;
+    }
+
+    .total{
+      color:var(--danger);
+      font-size:20px;
+      font-weight:800;
+    }
+
+    .address-card,.info-card{
+      background:#fff;
+      border-radius:16px;
+      padding:14px;
+      margin-bottom:10px;
+    }
+
+    .address-title{
+      font-weight:700;
+      margin-bottom:6px;
+    }
+
+    .address-text{
+      color:var(--text-sub);
+      line-height:1.6;
+      font-size:13px;
+    }
+
+    .cell{
+      min-height:50px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:12px;
+      padding:0 14px;
+      border-bottom:1px solid var(--border);
+      background:#fff;
+    }
+
+    .cell:last-child{
+      border-bottom:0;
+    }
+
+    .cell-left{
+      display:flex;
+      align-items:center;
+      gap:10px;
+      min-width:0;
+    }
+
+    .cell-icon{
+      width:32px;
+      height:32px;
+      border-radius:10px;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      background:var(--primary-light);
+      color:var(--primary);
+    }
+
+    .cell-title{
+      font-weight:600;
+    }
+
+    .cell-sub{
+      color:var(--text-help);
+      font-size:12px;
+      margin-top:2px;
+    }
+
+    .order-tabs{
+      display:flex;
+      gap:8px;
+      overflow:auto;
+      padding:2px 0 10px;
+      margin-bottom:6px;
+    }
+
+    .order-tab{
+      height:32px;
+      padding:0 12px;
+      border-radius:999px;
+      border:1px solid var(--border);
+      background:#fff;
+      color:var(--text-sub);
+      display:flex;
+      align-items:center;
+      gap:5px;
+      white-space:nowrap;
+      cursor:pointer;
+      font-size:12px;
+    }
+
+    .order-tab.active{
+      background:var(--primary-light);
+      border-color:var(--primary);
+      color:var(--primary);
+      font-weight:700;
+    }
+
+    .order-card{
+      background:#fff;
+      border-radius:16px;
+      margin-bottom:10px;
+      overflow:hidden;
+    }
+
+    .order-head{
+      min-height:42px;
+      padding:0 12px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      border-bottom:1px solid var(--border);
+      font-size:12px;
+    }
+
+    .order-body{
+      padding:12px;
+    }
+
+    .order-goods{
+      display:flex;
+      gap:10px;
+      margin-bottom:10px;
+    }
+
+    .order-img{
+      width:58px;
+      height:58px;
+      border-radius:10px;
+      background:linear-gradient(135deg,#eef3ff,#fff7e6);
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      color:var(--primary);
+      font-weight:800;
+      flex-shrink:0;
+    }
+
+    .order-actions{
+      display:flex;
+      justify-content:flex-end;
+      gap:8px;
+      padding:0 12px 12px;
+    }
+
+    .form-row{
+      background:#fff;
+      min-height:52px;
+      border-bottom:1px solid var(--border);
+      display:grid;
+      grid-template-columns:94px 1fr;
+      align-items:center;
+      gap:10px;
+      padding:8px 14px;
+    }
+
+    .form-row label{
+      color:var(--text-sub);
+    }
+
+    .form-row input,.form-row select,.form-row textarea{
+      border:0;
+      outline:0;
+      font-size:14px;
+      font-family:inherit;
+      background:transparent;
+      width:100%;
+      color:var(--text-main);
+    }
+
+    .form-row textarea{
+      resize:none;
+      min-height:54px;
+      line-height:1.6;
+      padding:8px 0;
+    }
+
+    .notice{
+      padding:10px 12px;
+      background:#fffbe6;
+      border:1px solid #ffe58f;
+      color:#874d00;
+      border-radius:12px;
+      line-height:1.6;
+      font-size:12px;
+      margin-bottom:10px;
+    }
+
+    .auth-mini-card{
+      background:#fff;
+      border-radius:18px;
+      padding:18px 14px;
+      margin-top:18px;
+    }
+
+    .auth-mini-title{
+      font-size:22px;
+      font-weight:800;
+      margin-bottom:6px;
+    }
+
+    .auth-mini-sub{
+      color:var(--text-help);
+      font-size:13px;
+      line-height:1.6;
+      margin-bottom:16px;
+    }
+
+    .auth-mini-switch{
+      text-align:center;
+      color:var(--text-sub);
+      margin-top:14px;
+      font-size:13px;
+    }
+
+    .empty{
+      padding:60px 0;
+      text-align:center;
+      color:var(--text-help);
+      background:#fff;
+      border-radius:16px;
+    }
+
+    .modal-mask{
+      position:absolute;
+      inset:0;
+      background:rgba(0,0,0,.42);
+      z-index:30;
+      display:none;
+      align-items:flex-end;
+    }
+
+    .modal{
+      background:#fff;
+      width:100%;
+      border-radius:20px 20px 0 0;
+      max-height:76%;
+      overflow:hidden;
+      display:flex;
+      flex-direction:column;
+    }
+
+    .modal-header{
+      height:52px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      padding:0 16px;
+      border-bottom:1px solid var(--border);
+      font-weight:700;
+    }
+
+    .modal-body{
+      padding:12px;
+      overflow:auto;
+    }
+
+    .modal-footer{
+      min-height:58px;
+      display:flex;
+      gap:10px;
+      padding:8px 12px;
+      border-top:1px solid var(--border);
+    }
+
+    .modal-footer .btn{
+      flex:1;
+    }
+
+    .toast{
+      position:absolute;
+      top:92px;
+      left:50%;
+      transform:translateX(-50%);
+      background:rgba(0,0,0,.78);
+      color:#fff;
+      padding:8px 12px;
+      border-radius:8px;
+      font-size:12px;
+      z-index:40;
+      display:none;
+      max-width:280px;
+      text-align:center;
+    }
+
+    @media(max-width:430px){
+      .stage{padding:0}
+      .phone{
+        width:100vw;
+        height:100vh;
+        border:0;
+        border-radius:0;
+      }
+    }
+  </style>
+</head>
+<body>
+<div class="stage">
+  <div class="phone">
+    <div class="status-bar">
+      <span>9:41</span>
+      <span>5G  🔋</span>
+    </div>
+
+    <div class="mini-nav">
+      <div class="nav-back" id="backBtn" onclick="back()" style="display:none">‹</div>
+      <div class="mini-title" id="pageTitle">B2B商城</div>
+      <div class="nav-more">··· ○</div>
+    </div>
+
+    <div class="app">
+      <main class="content" id="content"></main>
+
+      <nav class="bottom-tab" id="bottomTab">
+        <div class="tab-item active" data-tab="home" onclick="go('home')">
+          <div class="icon">🏠</div>
+          <div>首页</div>
+        </div>
+        <div class="tab-item" data-tab="category" onclick="go('category')">
+          <div class="icon">🧱</div>
+          <div>分类</div>
+        </div>
+        <div class="tab-item" data-tab="cart" onclick="go('cart')">
+          <span class="badge" id="cartBadge">0</span>
+          <div class="icon">🛒</div>
+          <div>购物车</div>
+        </div>
+        <div class="tab-item" data-tab="orders" onclick="go('orders')">
+          <div class="icon">📋</div>
+          <div>订单</div>
+        </div>
+        <div class="tab-item" data-tab="mine" onclick="go('mine')">
+          <div class="icon">👤</div>
+          <div>我的</div>
+        </div>
+      </nav>
+
+      <div class="modal-mask" id="modalMask">
+        <div class="modal">
+          <div class="modal-header">
+            <span id="modalTitle">弹窗</span>
+            <span onclick="closeModal()" style="font-size:22px;color:#999;cursor:pointer">×</span>
+          </div>
+          <div class="modal-body" id="modalBody"></div>
+          <div class="modal-footer" id="modalFooter"></div>
+        </div>
+      </div>
+
+      <div class="toast" id="toast"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const products = [
+    {
+      id:'p1',
+      name:'农夫山泉饮用天然水',
+      brand:'农夫山泉',
+      category:'包装饮用水',
+      unit:'箱',
+      quoteType:'阶梯报价',
+      priceText:'¥32.00起',
+      stock:128,
+      desc:'适用于商超、便利店、团购采购，支持阶梯报价，采购数量越多单价越低。',
+      specs:[
+        {name:'550ml / 24瓶', sku:'SKU-NS-550-24', stock:68},
+        {name:'1.5L / 12瓶', sku:'SKU-NS-1500-12', stock:60}
+      ],
+      tiers:[
+        {min:1,max:9,price:35},
+        {min:10,max:49,price:33},
+        {min:50,max:null,price:32}
+      ]
+    },
+    {
+      id:'p2',
+      name:'娃哈哈饮用纯净水',
+      brand:'娃哈哈',
+      category:'包装饮用水',
+      unit:'箱',
+      quoteType:'规格独立报价',
+      priceText:'¥20.00-¥42.00',
+      stock:56,
+      desc:'规格独立报价，每个SKU单独维护价格。',
+      specs:[
+        {name:'596ml / 24瓶', sku:'SKU-WH-596-24', stock:8, price:42},
+        {name:'350ml / 24瓶', sku:'SKU-WH-350-24', stock:30, price:30},
+        {name:'4.5L / 4桶', sku:'SKU-WH-4500-4', stock:18, price:20}
+      ],
+      tiers:[]
+    },
+    {
+      id:'p3',
+      name:'康师傅冰红茶',
+      brand:'康师傅',
+      category:'茶饮料',
+      unit:'箱',
+      quoteType:'规格独立报价',
+      priceText:'¥36.00-¥48.00',
+      stock:0,
+      desc:'经典茶饮，当前库存不足，可联系卖家补货。',
+      specs:[
+        {name:'500ml / 15瓶', sku:'SKU-KSF-BHT-15', stock:0, price:36},
+        {name:'1L / 12瓶', sku:'SKU-KSF-BHT-12', stock:0, price:48}
+      ],
+      tiers:[]
+    },
+    {
+      id:'p4',
+      name:'每日坚果礼盒装',
+      brand:'洽洽',
+      category:'休闲零食',
+      unit:'箱',
+      quoteType:'阶梯报价',
+      priceText:'¥68.00起',
+      stock:86,
+      desc:'适合企业团购、节日采购，支持按箱采购。',
+      specs:[
+        {name:'30袋 / 箱', sku:'SKU-NUT-30', stock:86}
+      ],
+      tiers:[
+        {min:1,max:4,price:78},
+        {min:5,max:19,price:72},
+        {min:20,max:null,price:68}
+      ]
+    }
+  ];
+
+  let pageStack = [];
+  let currentPage = 'home';
+  let currentTab = 'home';
+  let currentCategory = '全部';
+  let currentProduct = products[0];
+  let specQtyMap = {};
+  let orderTab = 'all';
+  let invoiceTitleTab = 'all';
+
+  let cart = [
+    {productId:'p1', specIndex:0, qty:10, checked:true},
+    {productId:'p2', specIndex:0, qty:2, checked:true}
+  ];
+
+  let invoiceTitles = [
+    {
+      id:'it1',
+      type:'company',
+      title:'杭州某某商贸有限公司',
+      taxNo:'91330100MA2XXXXXX1',
+      address:'浙江省杭州市西湖区文三路188号',
+      phone:'0571-88888888',
+      bank:'招商银行杭州分行',
+      account:'6222********8888',
+      email:'finance@example.com',
+      isDefault:true
+    },
+    {
+      id:'it2',
+      type:'personal',
+      title:'李先生',
+      taxNo:'',
+      address:'',
+      phone:'',
+      bank:'',
+      account:'',
+      email:'personal@example.com',
+      isDefault:false
+    }
+  ];
+
+  const orders = [
+    {id:'SO202606070001', goods:'农夫山泉饮用天然水等6件', amount:'¥2,860.00', status:'待发货', key:'pendingShipment', pay:'已支付', ship:'待发货', time:'2026-06-07 09:42'},
+    {id:'SO202606070009', goods:'娃哈哈饮用纯净水等3件', amount:'¥980.00', status:'待支付', key:'pendingPayment', pay:'未支付', ship:'未发货', time:'2026-06-07 11:20'},
+    {id:'SO202606060018', goods:'每日坚果礼盒装等5件', amount:'¥1,860.00', status:'待收货', key:'pendingReceipt', pay:'已支付', ship:'已发货', time:'2026-06-06 18:30'},
+    {id:'SO202606060005', goods:'康师傅冰红茶等4件', amount:'¥1,230.00', status:'已完成', key:'completed', pay:'已支付', ship:'已发货', time:'2026-06-06 16:42'},
+    {id:'SO202606050012', goods:'娃哈哈饮用纯净水等2件', amount:'¥560.00', status:'售后中', key:'aftersale', pay:'已支付', ship:'部分发货', time:'2026-06-05 10:28'}
+  ];
+
+  const titles = {
+    home:'B2B商城',
+    category:'全部商品',
+    detail:'商品详情',
+    cart:'购物车',
+    confirm:'确认订单',
+    pay:'支付结果',
+    orders:'我的订单',
+    orderDetail:'订单详情',
+    mine:'我的',
+    address:'收货地址',
+    invoiceTitles:'发票抬头',
+    invoiceApply:'申请开票',
+    aftersaleApply:'申请售后',
+    profile:'账户信息',
+    login:'买家登录',
+    register:'买家注册'
+  };
+
+  const tabPages = ['home','category','cart','orders','mine'];
+
+  function showToast(text){
+    const toast = document.getElementById('toast');
+    toast.textContent = text;
+    toast.style.display = 'block';
+    setTimeout(() => toast.style.display = 'none', 1500);
+  }
+
+  function setTitle(page){
+    document.getElementById('pageTitle').textContent = titles[page] || 'B2B商城';
+    document.getElementById('backBtn').style.display = tabPages.includes(page) ? 'none' : 'flex';
+  }
+
+  function setTab(page){
+    document.querySelectorAll('.tab-item').forEach(item => {
+      item.classList.toggle('active', item.dataset.tab === page);
+    });
+  }
+
+  function setBottomVisible(page){
+    const bottomTab = document.getElementById('bottomTab');
+    const content = document.getElementById('content');
+    const show = tabPages.includes(page);
+    bottomTab.style.display = show ? 'grid' : 'none';
+    content.classList.toggle('no-tab', !show);
+  }
+
+  function go(page, params={}, push=true){
+    if(push && currentPage !== page && !tabPages.includes(page)){
+      pageStack.push(currentPage);
+    }
+    if(tabPages.includes(page)){
+      pageStack = [];
+      currentTab = page;
+    }
+
+    currentPage = page;
+    setTitle(page);
+    setTab(tabPages.includes(page) ? page : currentTab);
+    setBottomVisible(page);
+
+    if(page === 'detail'){
+      currentProduct = products.find(p => p.id === params.id) || products[0];
+      initSpecQty(currentProduct);
+    }
+
+    render();
+    document.getElementById('content').scrollTop = 0;
+  }
+
+  function back(){
+    const prev = pageStack.pop();
+    if(prev){
+      go(prev, {}, false);
+    }else{
+      go(currentTab || 'home', {}, false);
+    }
+  }
+
+  function render(){
+    const map = {
+      home:renderHome,
+      category:renderCategory,
+      detail:renderDetail,
+      cart:renderCart,
+      confirm:renderConfirm,
+      pay:renderPay,
+      orders:renderOrders,
+      orderDetail:renderOrderDetail,
+      mine:renderMine,
+      address:renderAddress,
+      invoiceTitles:renderInvoiceTitles,
+      invoiceApply:renderInvoiceApply,
+      aftersaleApply:renderAftersaleApply,
+      profile:renderProfile,
+      login:renderMiniLogin,
+      register:renderMiniRegister
+    };
+    document.getElementById('content').innerHTML = (map[currentPage] || renderHome)();
+    updateCartBadge();
+  }
+
+  function updateCartBadge(){
+    const count = cart.reduce((sum,item) => sum + item.qty, 0);
+    const badge = document.getElementById('cartBadge');
+    badge.textContent = count;
+    badge.style.display = count ? 'block' : 'none';
+  }
+
+  function productPrice(product, qty, specIndex){
+    if(product.quoteType === '规格独立报价'){
+      return product.specs[specIndex].price || 0;
+    }
+
+    let match = product.tiers[0];
+    for(const tier of product.tiers){
+      if(qty >= tier.min && (tier.max === null || qty <= tier.max)){
+        match = tier;
+      }
+    }
+    return match.price;
+  }
+
+  function cartItemPrice(item){
+    const p = products.find(product => product.id === item.productId);
+    return productPrice(p, item.qty, item.specIndex);
+  }
+
+  function cartTotal(){
+    return cart.filter(item => item.checked).reduce((sum,item) => sum + cartItemPrice(item) * item.qty, 0);
+  }
+
+  function initSpecQty(product){
+    specQtyMap = {};
+    product.specs.forEach((spec, idx) => {
+      specQtyMap[idx] = 0;
+    });
+    if(product.specs[0] && product.specs[0].stock > 0){
+      specQtyMap[0] = product.quoteType === '阶梯报价' ? Math.min(10, product.specs[0].stock) : 1;
+    }
+  }
+
+  function detailTotalQty(){
+    return Object.values(specQtyMap).reduce((sum,qty) => sum + Number(qty || 0), 0);
+  }
+
+  function detailUnitPrice(product, idx){
+    const total = Math.max(1, detailTotalQty());
+    return product.quoteType === '阶梯报价'
+      ? productPrice(product, total, idx)
+      : product.specs[idx].price || 0;
+  }
+
+  function detailTotalAmount(product){
+    return product.specs.reduce((sum,s,idx) => sum + detailUnitPrice(product, idx) * Number(specQtyMap[idx] || 0), 0);
+  }
+
+  function productCard(p){
+    const canBuy = p.specs && p.specs.some(spec => spec.stock > 0);
+    return `
+      <div class="product-card" onclick="go('detail',{id:'${p.id}'})">
+        <div class="product-img">${p.brand.slice(0,2)}</div>
+        <div class="product-info">
+          <div>
+            <div class="product-name">${p.name}</div>
+            <div class="product-desc">${p.category}｜${p.stock > 0 ? '库存 ' + p.stock + p.unit : '暂时缺货'}</div>
+          </div>
+          <div class="list-buy-row">
+            <div class="price">${p.priceText}<small>/${p.unit}</small></div>
+            <button class="list-add-cart" title="${canBuy ? '加入购物车' : '暂时缺货'}" aria-label="${canBuy ? '加入购物车' : '暂时缺货'}" ${canBuy ? '' : 'disabled'} onclick="event.stopPropagation();addProductToCartFromList('${p.id}')">
+              ${canBuy ? `
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="9" cy="20" r="1.5"></circle>
+                <circle cx="18" cy="20" r="1.5"></circle>
+                <path d="M3 4h2l2.2 9.2a1 1 0 0 0 1 .8h8.9a1 1 0 0 0 1-.76L20 8H7"></path>
+                <path d="M12 10v5"></path>
+                <path d="M9.5 12.5h5"></path>
+              </svg>` : `
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="9" cy="20" r="1.5"></circle>
+                <circle cx="18" cy="20" r="1.5"></circle>
+                <path d="M3 4h2l2.2 9.2a1 1 0 0 0 1 .8h8.9a1 1 0 0 0 1-.76L20 8H7"></path>
+                <path d="M9.5 12.5h5"></path>
+              </svg>`}
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function addProductToCartFromList(productId){
+    const product = products.find(p => p.id === productId);
+    if(!product){
+      return;
+    }
+
+    const specIndex = product.specs.findIndex(spec => spec.stock > 0);
+    if(specIndex < 0){
+      showToast('当前商品库存不足');
+      return;
+    }
+
+    const found = cart.find(item => item.productId === product.id && item.specIndex === specIndex);
+    if(found){
+      found.qty += 1;
+      found.checked = true;
+    }else{
+      cart.push({
+        productId: product.id,
+        specIndex,
+        qty: 1,
+        checked: true
+      });
+    }
+
+    updateCartBadge();
+    showToast('已加入购物车');
+  }
+
+  function renderHome(){
+    return `
+      <div class="search-box" onclick="go('category')">
+        🔍 <input placeholder="搜索商品名称、品牌、SKU编码" readonly>
+      </div>
+
+      <div class="banner">
+        <h1>企业采购商城</h1>
+        <p>支持多规格、阶梯报价、规格独立报价，移动端完成选品、加购、下单和支付。</p>
+      </div>
+
+      <div class="quick-row">
+        <div class="quick" onclick="go('orders')"><div class="quick-icon">📦</div><div class="quick-text">我的订单</div></div>
+        <div class="quick" onclick="go('cart')"><div class="quick-icon">🛒</div><div class="quick-text">购物车</div></div>
+        <div class="quick" onclick="go('address')"><div class="quick-icon">📍</div><div class="quick-text">地址</div></div>
+        <div class="quick" onclick="go('invoiceTitles')"><div class="quick-icon">🧾</div><div class="quick-text">发票抬头</div></div>
+      </div>
+
+      <div class="section-title">
+        <b>推荐商品</b>
+        <span onclick="go('category')">查看全部 ›</span>
+      </div>
+
+      <div class="product-list">
+        ${products.map(productCard).join('')}
+      </div>
+    `;
+  }
+
+  function setCategory(category){
+    currentCategory = category;
+    render();
+  }
+
+  function renderCategory(){
+    const categories = ['全部','包装饮用水','茶饮料','休闲零食'];
+    const list = currentCategory === '全部'
+      ? products
+      : products.filter(p => p.category === currentCategory);
+
+    return `
+      <div class="search-box">
+        🔍 <input placeholder="搜索商品名称、品牌、SKU编码">
+      </div>
+      <div class="category-layout">
+        <div class="category-left">
+          ${categories.map(c => `<div class="category-tab ${currentCategory === c ? 'active' : ''}" onclick="setCategory('${c}')">${c}</div>`).join('')}
+        </div>
+        <div>
+          <div class="filter-chips">
+            <div class="chip active">综合</div>
+            <div class="chip">销量</div>
+            <div class="chip">价格</div>
+            <div class="chip">库存充足</div>
+          </div>
+          <div class="product-list">
+            ${list.map(productCard).join('') || '<div class="empty">暂无商品</div>'}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderDetail(){
+    const p = currentProduct;
+    const totalQty = detailTotalQty();
+    const totalAmount = detailTotalAmount(p);
+    const minPrice = p.quoteType === '规格独立报价' ? Math.min(...p.specs.map(s => s.price || 0)) : null;
+    const maxPrice = p.quoteType === '规格独立报价' ? Math.max(...p.specs.map(s => s.price || 0)) : null;
+
+    return `
+      <div class="detail-hero">
+        <div class="detail-img">${p.brand}</div>
+        <div class="detail-title">${p.name}</div>
+        <div class="detail-sub">${p.desc}</div>
+
+        <div class="price-tier-row">
+          ${p.quoteType === '阶梯报价' ? p.tiers.map(t => `
+            <div class="tier-price">
+              <b>¥${t.price.toFixed(2)}</b>
+              <div>${t.min}${t.max ? '-' + t.max : '件以上'}</div>
+            </div>
+          `).join('') : `
+            <div class="tier-price" style="min-width:180px">
+              <b>¥${minPrice.toFixed(2)}${maxPrice !== minPrice ? '-¥' + maxPrice.toFixed(2) : ''}</b>
+              <div>按规格独立报价</div>
+            </div>
+          `}
+        </div>
+
+        <div style="display:flex;gap:10px;margin-bottom:10px">
+          <span class="tag tag-blue">${p.quoteType}</span>
+          ${p.stock > 0 ? '<span class="tag tag-green">现货</span>' : '<span class="tag tag-red">缺货</span>'}
+        </div>
+
+        <div class="service-row">
+          <span>📍 杭州发全国</span>
+          <span>🚚 预计2-3天到达</span>
+          <span>🧾 支持开票</span>
+          <span>🛡️ 售后期7天</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <span>产品规格</span>
+          <span style="font-size:12px;color:var(--text-help)">已选 ${totalQty}${p.unit}</span>
+        </div>
+        ${p.specs.map((s,idx) => `
+          <div class="spec-row">
+            <div>
+              <div class="spec-name">${s.name}</div>
+              <div class="spec-meta">SKU：${s.sku}<br>库存：${s.stock}${p.unit}</div>
+            </div>
+            <div class="spec-price">¥${detailUnitPrice(p, idx).toFixed(2)}</div>
+            <div style="text-align:right">
+              <div class="mini-qty">
+                <button ${s.stock <= 0 ? 'disabled' : ''} onclick="changeSpecQty(${idx},-1)">-</button>
+                <input value="${specQtyMap[idx] || 0}" onchange="setSpecQty(${idx},this.value)" ${s.stock <= 0 ? 'readonly' : ''}>
+                <button ${s.stock <= 0 ? 'disabled' : ''} onclick="changeSpecQty(${idx},1)">+</button>
+              </div>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">采购合计</div>
+        <div style="padding:14px;display:flex;align-items:center;justify-content:space-between">
+          <div>
+            <div style="font-weight:700">已选 ${totalQty}${p.unit}</div>
+            <div style="font-size:12px;color:var(--text-help);margin-top:4px">${p.quoteType === '阶梯报价' ? '阶梯价格按本次总采购数量匹配' : '不同规格按各自单价计算'}</div>
+          </div>
+          <div class="total">¥${totalAmount.toFixed(2)}</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">商品详情</div>
+        <div style="padding:14px;line-height:1.8;color:var(--text-sub)">
+          商品分类：${p.category}<br>
+          商品品牌：${p.brand}<br>
+          商品单位：${p.unit}<br>
+          报价方式：${p.quoteType}
+        </div>
+      </div>
+
+      <div class="detail-bottom">
+        <button class="btn" onclick="addToCart(false)">加入购物车</button>
+        <button class="btn btn-primary" onclick="buyNow()">立即购买</button>
+      </div>
+    `;
+  }
+
+  function changeSpecQty(idx,delta){
+    const content = document.getElementById('content');
+    const scrollTop = content.scrollTop;
+    const spec = currentProduct.specs[idx];
+    specQtyMap[idx] = Math.max(0, Math.min(spec.stock, Number(specQtyMap[idx] || 0) + delta));
+    render();
+    content.scrollTop = scrollTop;
+  }
+
+  function setSpecQty(idx,value){
+    const content = document.getElementById('content');
+    const scrollTop = content.scrollTop;
+    const spec = currentProduct.specs[idx];
+    specQtyMap[idx] = Math.max(0, Math.min(spec.stock, Number(value || 0)));
+    render();
+    content.scrollTop = scrollTop;
+  }
+
+  function addToCart(jump){
+    const selected = Object.entries(specQtyMap).map(([idx,qty]) => ({idx:Number(idx), qty:Number(qty || 0)})).filter(i => i.qty > 0);
+    if(!selected.length){
+      showToast('请先选择采购数量');
+      return;
+    }
+
+    selected.forEach(item => {
+      const found = cart.find(c => c.productId === currentProduct.id && c.specIndex === item.idx);
+      if(found){
+        found.qty += item.qty;
+        found.checked = true;
+      }else{
+        cart.push({productId:currentProduct.id, specIndex:item.idx, qty:item.qty, checked:true});
+      }
+    });
+    updateCartBadge();
+    showToast('已加入购物车');
+    if(jump) go('cart');
+  }
+
+  function buyNow(){
+    addToCart(false);
+    go('cart');
+  }
+
+  function renderCart(){
+    return `
+      ${cart.length ? `
+        <div class="cart-card">
+          ${cart.map((item,idx) => cartItem(item,idx)).join('')}
+        </div>
+      ` : '<div class="empty">购物车暂无商品</div>'}
+
+      <div class="sticky-submit">
+        <label style="display:flex;align-items:center;gap:6px">
+          <input type="checkbox" ${cart.every(i => i.checked) ? 'checked' : ''} onchange="toggleAllCart(this.checked)"> 全选
+        </label>
+        <div style="display:flex;align-items:center;gap:10px">
+          <div>合计：<span class="total">¥${cartTotal().toFixed(2)}</span></div>
+          <button class="btn btn-primary" onclick="go('confirm')">结算</button>
+        </div>
+      </div>
+    `;
+  }
+
+  function cartItem(item,idx){
+    const p = products.find(product => product.id === item.productId);
+    const s = p.specs[item.specIndex];
+    const price = cartItemPrice(item);
+    return `
+      <div class="cart-item">
+        <input type="checkbox" ${item.checked ? 'checked' : ''} onchange="toggleCart(${idx},this.checked)">
+        <div class="cart-img">${p.brand.slice(0,1)}</div>
+        <div>
+          <div class="cart-name">${p.name}</div>
+          <div class="cart-spec">${s.name}｜${s.sku}</div>
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <div class="price" style="font-size:17px">¥${price.toFixed(2)}</div>
+            <div class="mini-qty">
+              <button onclick="changeCartQty(${idx},-1)">-</button>
+              <input value="${item.qty}" onchange="setCartQty(${idx},this.value)">
+              <button onclick="changeCartQty(${idx},1)">+</button>
+            </div>
+          </div>
+          <div style="margin-top:6px;text-align:right">
+            <button class="btn-text-danger" onclick="removeCart(${idx})">删除</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function toggleAllCart(checked){
+    cart.forEach(item => item.checked = checked);
+    render();
+  }
+
+  function toggleCart(idx,checked){
+    cart[idx].checked = checked;
+    render();
+  }
+
+  function changeCartQty(idx,delta){
+    const content = document.getElementById('content');
+    const scrollTop = content.scrollTop;
+    cart[idx].qty = Math.max(1, cart[idx].qty + delta);
+    render();
+    content.scrollTop = scrollTop;
+  }
+
+  function setCartQty(idx,value){
+    const content = document.getElementById('content');
+    const scrollTop = content.scrollTop;
+    cart[idx].qty = Math.max(1, Number(value || 1));
+    render();
+    content.scrollTop = scrollTop;
+  }
+
+  function removeCart(idx){
+    cart.splice(idx,1);
+    updateCartBadge();
+    render();
+  }
+
+  function renderConfirm(){
+    const checked = cart.filter(i => i.checked);
+    if(!checked.length) return '<div class="empty">请先选择结算商品</div>';
+
+    return `
+      <div class="address-card" onclick="go('address')">
+        <div class="address-title">李经理 138****8888 <span class="tag tag-green">默认</span></div>
+        <div class="address-text">浙江省杭州市西湖区文三路188号 3号楼1201室</div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">商品清单</div>
+        ${checked.map(item => {
+          const p = products.find(product => product.id === item.productId);
+          const s = p.specs[item.specIndex];
+          const price = cartItemPrice(item);
+          return `
+            <div class="cell">
+              <div style="min-width:0">
+                <div class="cell-title">${p.name}</div>
+                <div class="cell-sub">${s.name} × ${item.qty}</div>
+              </div>
+              <div style="font-weight:700">¥${(price*item.qty).toFixed(2)}</div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">订单备注</div>
+        <div class="form-row" style="grid-template-columns:1fr">
+          <textarea placeholder="如有特殊配送要求，可在这里填写"></textarea>
+        </div>
+      </div>
+
+      <div class="sticky-submit no-tab">
+        <div>应付：<span class="total">¥${cartTotal().toFixed(2)}</span></div>
+        <button class="btn btn-primary" onclick="submitOrder()">提交订单</button>
+      </div>
+    `;
+  }
+
+  function submitOrder(){
+    go('pay');
+  }
+
+  function renderPay(){
+    return `
+      <div class="info-card" style="text-align:center;padding:32px 14px">
+        <div style="font-size:54px;color:var(--success);line-height:1">✓</div>
+        <div style="font-size:20px;font-weight:800;margin-top:10px">支付成功</div>
+        <div style="color:var(--text-help);margin-top:8px">订单已支付，等待卖家发货</div>
+        <div class="total" style="margin-top:18px">¥${cartTotal().toFixed(2)}</div>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:12px">
+        <button class="btn" style="flex:1" onclick="go('home')">返回首页</button>
+        <button class="btn btn-primary" style="flex:1" onclick="cart=[];go('orders')">查看订单</button>
+      </div>
+    `;
+  }
+
+  function getOrderTabs(){
+    const tabs = [
+      {key:'all',label:'全部'},
+      {key:'pendingPayment',label:'待支付'},
+      {key:'pendingShipment',label:'待发货'},
+      {key:'pendingReceipt',label:'待收货'},
+      {key:'completed',label:'已完成'},
+      {key:'aftersale',label:'售后中'}
+    ];
+    return tabs.map(t => ({
+      ...t,
+      count:t.key === 'all' ? orders.length : orders.filter(o => o.key === t.key).length
+    }));
+  }
+
+  function setOrderTab(key){
+    orderTab = key;
+    render();
+  }
+
+  function statusTag(status){
+    if(['已完成','已支付','已发货'].includes(status)) return 'green';
+    if(['待发货','待收货'].includes(status)) return 'blue';
+    if(['待支付','未支付'].includes(status)) return 'orange';
+    if(['售后中','部分发货'].includes(status)) return 'purple';
+    return 'gray';
+  }
+
+  function renderOrders(){
+    const rows = orderTab === 'all' ? orders : orders.filter(o => o.key === orderTab);
+    return `
+      <div class="order-tabs">
+        ${getOrderTabs().map(t => `
+          <div class="order-tab ${orderTab === t.key ? 'active' : ''}" onclick="setOrderTab('${t.key}')">
+            ${t.label}<span>${t.count}</span>
+          </div>
+        `).join('')}
+      </div>
+
+      ${rows.length ? rows.map(o => `
+        <div class="order-card">
+          <div class="order-head">
+            <span>${o.id}</span>
+            <span class="tag tag-${statusTag(o.status)}">${o.status}</span>
+          </div>
+          <div class="order-body">
+            <div class="order-goods">
+              <div class="order-img">商</div>
+              <div style="flex:1;min-width:0">
+                <div style="font-weight:700;line-height:1.5">${o.goods}</div>
+                <div style="color:var(--text-help);font-size:12px;margin-top:4px">${o.time}</div>
+                <div style="display:flex;gap:8px;margin-top:7px">
+                  <span class="tag tag-${statusTag(o.pay)}">${o.pay}</span>
+                  <span class="tag tag-${statusTag(o.ship)}">${o.ship}</span>
+                </div>
+              </div>
+            </div>
+            <div style="text-align:right">实付 <b>${o.amount}</b></div>
+          </div>
+          <div class="order-actions">
+            <button class="btn" onclick="go('orderDetail')">详情</button>
+            ${o.key === 'pendingPayment' ? '<button class="btn btn-primary" onclick="go(&quot;confirm&quot;)">去支付</button>' : ''}
+            ${o.key === 'pendingReceipt' ? '<button class="btn btn-primary" onclick="showToast(&quot;已确认收货&quot;)">确认收货</button>' : ''}
+            ${o.key === 'completed' ? '<button class="btn" onclick="go(&quot;invoiceApply&quot;)">申请开票</button>' : ''}
+          </div>
+        </div>
+      `).join('') : '<div class="empty">当前状态下暂无订单</div>'}
+    `;
+  }
+
+  function renderOrderDetail(){
+    return `
+      <div class="panel">
+        <div class="panel-header">
+          <span>订单信息</span>
+          <span class="tag tag-blue">待发货</span>
+        </div>
+        <div class="cell"><span>订单编号</span><span>SO202606070001</span></div>
+        <div class="cell"><span>订单金额</span><b>¥2,860.00</b></div>
+        <div class="cell"><span>支付方式</span><span>微信支付</span></div>
+        <div class="cell"><span>下单时间</span><span>2026-06-07 09:42</span></div>
+      </div>
+
+      <div class="address-card">
+        <div class="address-title">李经理 138****8888</div>
+        <div class="address-text">浙江省杭州市西湖区文三路188号 3号楼1201室</div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">商品明细</div>
+        <div class="cell">
+          <div>
+            <div class="cell-title">农夫山泉饮用天然水</div>
+            <div class="cell-sub">550ml / 24瓶 × 10</div>
+          </div>
+          <b>¥330.00</b>
+        </div>
+        <div class="cell">
+          <div>
+            <div class="cell-title">娃哈哈饮用纯净水</div>
+            <div class="cell-sub">596ml / 24瓶 × 2</div>
+          </div>
+          <b>¥84.00</b>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:10px">
+        <button class="btn" style="flex:1" onclick="go('aftersaleApply')">申请售后</button>
+        <button class="btn btn-primary" style="flex:1" onclick="go('invoiceApply')">申请开票</button>
+      </div>
+    `;
+  }
+
+  function renderMine(){
+    return `
+      <div class="info-card">
+        <div style="display:flex;align-items:center;gap:12px">
+          <div style="width:52px;height:52px;border-radius:50%;background:var(--primary-light);display:flex;align-items:center;justify-content:center;color:var(--primary);font-weight:800;font-size:20px">采</div>
+          <div style="flex:1">
+            <div style="font-weight:800;font-size:17px">杭州某某商贸</div>
+            <div style="color:var(--text-help);font-size:12px;margin-top:4px">企业采购账号</div>
+          </div>
+          <button class="btn" style="height:32px;padding:0 10px" onclick="go('login')">登录/注册</button>
+        </div>
+      </div>
+
+      <div class="quick-row">
+        <div class="quick" onclick="go('orders')"><b>1</b><div class="quick-text">待支付</div></div>
+        <div class="quick" onclick="go('orders')"><b>1</b><div class="quick-text">待发货</div></div>
+        <div class="quick" onclick="go('orders')"><b>1</b><div class="quick-text">待收货</div></div>
+        <div class="quick" onclick="go('orders')"><b>1</b><div class="quick-text">售后中</div></div>
+      </div>
+
+      <div class="panel">
+        <div class="cell" onclick="go('address')">
+          <div class="cell-left"><div class="cell-icon">📍</div><div class="cell-title">收货地址</div></div><span>›</span>
+        </div>
+        <div class="cell" onclick="go('invoiceTitles')">
+          <div class="cell-left"><div class="cell-icon">🧾</div><div class="cell-title">发票抬头</div></div><span>›</span>
+        </div>
+        <div class="cell" onclick="go('profile')">
+          <div class="cell-left"><div class="cell-icon">👤</div><div class="cell-title">账户信息</div></div><span>›</span>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderAddress(){
+    return `
+      <div class="address-card">
+        <div class="address-title">李经理 138****8888 <span class="tag tag-green">默认</span></div>
+        <div class="address-text">浙江省杭州市西湖区文三路188号 3号楼1201室</div>
+      </div>
+      <div class="address-card">
+        <div class="address-title">王采购 136****6666</div>
+        <div class="address-text">浙江省杭州市余杭区未来科技城88号</div>
+      </div>
+      <div class="sticky-submit no-tab">
+        <button class="btn btn-primary" style="width:100%" onclick="openAddressModal()">新增收货地址</button>
+      </div>
+    `;
+  }
+
+  function invoiceTitleRows(){
+    const rows = invoiceTitleTab === 'all' ? invoiceTitles : invoiceTitles.filter(i => i.type === invoiceTitleTab);
+    return rows.map(item => `
+      <div class="address-card">
+        <div class="address-title">
+          ${item.title}
+          <span class="tag ${item.type === 'company' ? 'tag-blue' : 'tag-gray'}">${item.type === 'company' ? '企业' : '个人'}</span>
+          ${item.isDefault ? '<span class="tag tag-green">默认</span>' : ''}
+        </div>
+        <div class="address-text">
+          ${item.type === 'company' ? `税号：${item.taxNo}<br>地址电话：${item.address} / ${item.phone}<br>开户行账号：${item.bank} / ${item.account}<br>` : ''}
+          邮箱：${item.email}
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px">
+          <button class="btn-text" onclick="openInvoiceTitleModal('${item.id}')">编辑</button>
+          ${item.isDefault ? '' : `<button class="btn-text" onclick="setDefaultInvoiceTitle('${item.id}')">设为默认</button>`}
+          ${item.isDefault ? '' : `<button class="btn-text-danger" onclick="deleteInvoiceTitle('${item.id}')">删除</button>`}
+        </div>
+      </div>
+    `).join('') || '<div class="empty">暂无发票抬头</div>';
+  }
+
+  function renderInvoiceTitles(){
+    const tabs = [
+      {key:'all',label:'全部'},
+      {key:'company',label:'企业'},
+      {key:'personal',label:'个人'}
+    ];
+
+    return `
+      <div class="order-tabs">
+        ${tabs.map(t => `
+          <div class="order-tab ${invoiceTitleTab === t.key ? 'active' : ''}" onclick="invoiceTitleTab='${t.key}';render()">
+            ${t.label}
+          </div>
+        `).join('')}
+      </div>
+      ${invoiceTitleRows()}
+      <div class="notice">
+        企业抬头申请电子专票时，需要维护税号、注册地址、注册电话、开户行和银行账号。个人抬头仅支持电子普通发票。
+      </div>
+      <div class="sticky-submit no-tab">
+        <button class="btn btn-primary" style="width:100%" onclick="openInvoiceTitleModal()">新增发票抬头</button>
+      </div>
+    `;
+  }
+
+  function renderInvoiceApply(){
+    const def = invoiceTitles.find(i => i.isDefault) || invoiceTitles[0];
+    return `
+      <div class="notice">确认收货后的订单支持申请开票。个人抬头仅支持电子普通发票。</div>
+      <div class="panel">
+        <div class="form-row">
+          <label>选择抬头</label>
+          <select id="applyInvoiceTitle" onchange="syncInvoiceApply()">
+            ${invoiceTitles.map(i => `<option value="${i.id}" ${def && i.id === def.id ? 'selected' : ''}>${i.title}${i.isDefault ? '（默认）' : ''}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-row"><label>发票类型</label><select id="applyInvoiceType"></select></div>
+        <div class="form-row"><label>抬头类型</label><input id="applyTitleType" readonly></div>
+        <div class="form-row"><label>发票抬头</label><input id="applyTitleName" readonly></div>
+        <div class="form-row"><label>税号</label><input id="applyTaxNo" readonly></div>
+        <div class="form-row"><label>开票金额</label><input value="2860.00" readonly></div>
+        <div class="form-row"><label>接收邮箱</label><input id="applyEmail"></div>
+      </div>
+      <div class="sticky-submit no-tab">
+        <button class="btn" onclick="go('invoiceTitles')">管理抬头</button>
+        <button class="btn btn-primary" onclick="showToast('开票申请已提交');go('orders')">提交申请</button>
+      </div>
+    `;
+  }
+
+  function syncInvoiceApply(){
+    const id = document.getElementById('applyInvoiceTitle').value;
+    const item = invoiceTitles.find(i => i.id === id) || invoiceTitles[0];
+    document.getElementById('applyTitleType').value = item.type === 'company' ? '企业' : '个人';
+    document.getElementById('applyTitleName').value = item.title;
+    document.getElementById('applyTaxNo').value = item.taxNo || '-';
+    document.getElementById('applyEmail').value = item.email;
+    document.getElementById('applyInvoiceType').innerHTML = item.type === 'company'
+      ? '<option>电子普通发票</option><option>电子增值税专用发票</option>'
+      : '<option>电子普通发票</option>';
+  }
+
+  function renderAftersaleApply(){
+    return `
+      <div class="notice">发货前支持仅退款；发货后支持仅退款或退货退款；确认收货后在售后期内可申请售后。</div>
+      <div class="panel">
+        <div class="form-row"><label>售后类型</label><select><option>仅退款</option><option>退货退款</option></select></div>
+        <div class="form-row"><label>申请商品</label><select><option>农夫山泉饮用天然水｜550ml/24瓶</option><option>娃哈哈饮用纯净水｜596ml/24瓶</option></select></div>
+        <div class="form-row"><label>申请数量</label><input value="1"></div>
+        <div class="form-row"><label>退款金额</label><input value="33.00"></div>
+        <div class="form-row"><label>申请原因</label><select><option>不想要了</option><option>商品质量问题</option><option>数量拍错</option></select></div>
+        <div class="form-row"><label>问题描述</label><textarea placeholder="请输入问题描述"></textarea></div>
+      </div>
+      <div class="sticky-submit no-tab">
+        <button class="btn btn-primary" style="width:100%" onclick="showToast('售后申请已提交');go('orders')">提交申请</button>
+      </div>
+    `;
+  }
+
+  function renderMiniLogin(){
+    return `
+      <div class="auth-mini-card">
+        <div class="auth-mini-title">买家登录</div>
+        <div class="auth-mini-sub">使用手机号和密码登录商城账号，不需要验证码。</div>
+
+        <div class="panel">
+          <div class="form-row"><label>手机号</label><input id="miniLoginPhone" placeholder="请输入手机号"></div>
+          <div class="form-row"><label>密码</label><input id="miniLoginPassword" type="password" placeholder="请输入6-20位密码"></div>
+        </div>
+
+        <button class="btn btn-primary" style="width:100%;height:44px" onclick="mockMiniLogin()">登录</button>
+        <div class="auth-mini-switch">
+          还没有账号？<span style="color:var(--primary)" onclick="go('register')">立即注册</span>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderMiniRegister(){
+    return `
+      <div class="auth-mini-card">
+        <div class="auth-mini-title">买家账号注册</div>
+        <div class="auth-mini-sub">注册后无需审核，可直接登录商城采购。</div>
+
+        <div class="panel">
+          <div class="form-row"><label>手机号</label><input id="miniRegPhone" placeholder="请输入手机号"></div>
+          <div class="form-row"><label>密码</label><input id="miniRegPassword" type="password" placeholder="6-20位，可为纯数字"></div>
+          <div class="form-row"><label>确认密码</label><input id="miniRegConfirmPassword" type="password" placeholder="请再次输入密码"></div>
+          <div class="form-row"><label>买家名称</label><input id="miniRegBuyerName" placeholder="请输入买家名称"></div>
+          <div class="form-row"><label>企业名称</label><input id="miniRegCompanyName" placeholder="请输入企业名称"></div>
+        </div>
+
+        <button class="btn btn-primary" style="width:100%;height:44px" onclick="mockMiniRegister()">注册</button>
+        <div class="auth-mini-switch">
+          已有账号？<span style="color:var(--primary)" onclick="go('login')">去登录</span>
+        </div>
+      </div>
+    `;
+  }
+
+  function validateMiniPassword(password){
+    return password && password.length >= 6 && password.length <= 20;
+  }
+
+  function mockMiniLogin(){
+    const phone = document.getElementById('miniLoginPhone').value.trim();
+    const password = document.getElementById('miniLoginPassword').value;
+    if(!phone){
+      showToast('请输入手机号');
+      return;
+    }
+    if(!password){
+      showToast('请输入密码');
+      return;
+    }
+    if(!validateMiniPassword(password)){
+      showToast('密码长度需为6-20位');
+      return;
+    }
+    showToast('登录成功');
+    go('mine');
+  }
+
+  function mockMiniRegister(){
+    const phone = document.getElementById('miniRegPhone').value.trim();
+    const password = document.getElementById('miniRegPassword').value;
+    const confirmPassword = document.getElementById('miniRegConfirmPassword').value;
+    const buyerName = document.getElementById('miniRegBuyerName').value.trim();
+    const companyName = document.getElementById('miniRegCompanyName').value.trim();
+
+    if(!phone){
+      showToast('请输入手机号');
+      return;
+    }
+    if(!password){
+      showToast('请输入密码');
+      return;
+    }
+    if(!validateMiniPassword(password)){
+      showToast('密码长度需为6-20位');
+      return;
+    }
+    if(password !== confirmPassword){
+      showToast('两次输入的密码不一致');
+      return;
+    }
+    if(!buyerName){
+      showToast('请输入买家名称');
+      return;
+    }
+    if(!companyName){
+      showToast('请输入企业名称');
+      return;
+    }
+
+    showToast('注册成功');
+    go('mine');
+  }
+
+  function renderProfile(){
+    return `
+      <div class="panel">
+        <div class="cell"><span>登录手机号</span><span>138****8888</span></div>
+        <div class="cell"><span>买家名称</span><span>杭州采购王</span></div>
+        <div class="cell"><span>企业名称</span><span>杭州某某商贸</span></div>
+        <div class="cell"><span>账号状态</span><span class="tag tag-green">启用</span></div>
+        <div class="cell"><span>注册来源</span><span>小程序商城</span></div>
+      </div>
+      <button class="btn" style="width:100%" onclick="openPasswordModal()">修改密码</button>
+    `;
+  }
+
+  function openModal(title, body, footer){
+    document.getElementById('modalTitle').textContent = title;
+    document.getElementById('modalBody').innerHTML = body;
+    document.getElementById('modalFooter').innerHTML = footer;
+    document.getElementById('modalMask').style.display = 'flex';
+  }
+
+  function closeModal(){
+    document.getElementById('modalMask').style.display = 'none';
+  }
+
+  function openAddressModal(){
+    openModal('收货地址', `
+      <div class="form-row"><label>收货人</label><input value="李经理"></div>
+      <div class="form-row"><label>手机号</label><input value="13888888888"></div>
+      <div class="form-row"><label>所在地区</label><input value="浙江省 / 杭州市 / 西湖区"></div>
+      <div class="form-row"><label>详细地址</label><textarea>文三路188号 3号楼1201室</textarea></div>
+      <div class="form-row"><label>默认地址</label><select><option>是</option><option>否</option></select></div>
+    `, `
+      <button class="btn" onclick="closeModal()">取消</button>
+      <button class="btn btn-primary" onclick="closeModal();showToast('地址已保存')">保存</button>
+    `);
+  }
+
+  function openInvoiceTitleModal(id=''){
+    const item = invoiceTitles.find(i => i.id === id) || null;
+    const type = item ? item.type : 'company';
+    openModal(item ? '编辑发票抬头' : '新增发票抬头', `
+      <div class="notice">个人抬头仅支持电子普通发票；企业抬头申请电子专票时需完整填写企业信息。</div>
+      <div class="form-row"><label>抬头类型</label><select id="titleType" onchange="switchTitleType(this.value)"><option value="company" ${type==='company'?'selected':''}>企业</option><option value="personal" ${type==='personal'?'selected':''}>个人</option></select></div>
+      <div class="form-row"><label>发票抬头</label><input id="titleName" value="${item ? item.title : ''}" placeholder="请输入发票抬头"></div>
+      <div class="form-row company-field"><label>税号</label><input id="titleTaxNo" value="${item ? item.taxNo : ''}" placeholder="请输入纳税人识别号"></div>
+      <div class="form-row company-field"><label>注册地址</label><input id="titleAddress" value="${item ? item.address : ''}" placeholder="申请电子专票时填写"></div>
+      <div class="form-row company-field"><label>注册电话</label><input id="titlePhone" value="${item ? item.phone : ''}" placeholder="申请电子专票时填写"></div>
+      <div class="form-row company-field"><label>开户行</label><input id="titleBank" value="${item ? item.bank : ''}" placeholder="申请电子专票时填写"></div>
+      <div class="form-row company-field"><label>银行账号</label><input id="titleAccount" value="${item ? item.account : ''}" placeholder="申请电子专票时填写"></div>
+      <div class="form-row"><label>接收邮箱</label><input id="titleEmail" value="${item ? item.email : ''}" placeholder="请输入接收邮箱"></div>
+      <div class="form-row"><label>设为默认</label><select id="titleDefault"><option value="yes" ${item && item.isDefault ? 'selected' : ''}>是</option><option value="no" ${!item || !item.isDefault ? 'selected' : ''}>否</option></select></div>
+    `, `
+      <button class="btn" onclick="closeModal()">取消</button>
+      <button class="btn btn-primary" onclick="saveInvoiceTitle('${id}')">保存</button>
+    `);
+    switchTitleType(type);
+  }
+
+  function switchTitleType(type){
+    document.querySelectorAll('.company-field').forEach(el => {
+      el.style.display = type === 'personal' ? 'none' : 'grid';
+    });
+  }
+
+  function saveInvoiceTitle(id=''){
+    const type = document.getElementById('titleType').value;
+    const title = document.getElementById('titleName').value.trim();
+    const email = document.getElementById('titleEmail').value.trim();
+    if(!title){
+      showToast('请填写发票抬头');
+      return;
+    }
+    if(!email){
+      showToast('请填写接收邮箱');
+      return;
+    }
+
+    const isDefault = document.getElementById('titleDefault').value === 'yes';
+    if(isDefault){
+      invoiceTitles = invoiceTitles.map(i => ({...i,isDefault:false}));
+    }
+
+    const payload = {
+      id:id || ('it' + Date.now()),
+      type,
+      title,
+      taxNo:type === 'company' ? document.getElementById('titleTaxNo').value.trim() : '',
+      address:type === 'company' ? document.getElementById('titleAddress').value.trim() : '',
+      phone:type === 'company' ? document.getElementById('titlePhone').value.trim() : '',
+      bank:type === 'company' ? document.getElementById('titleBank').value.trim() : '',
+      account:type === 'company' ? document.getElementById('titleAccount').value.trim() : '',
+      email,
+      isDefault
+    };
+
+    if(id){
+      invoiceTitles = invoiceTitles.map(i => i.id === id ? payload : i);
+    }else{
+      invoiceTitles.push(payload);
+    }
+
+    if(!invoiceTitles.some(i => i.isDefault) && invoiceTitles[0]){
+      invoiceTitles[0].isDefault = true;
+    }
+
+    closeModal();
+    render();
+    showToast('发票抬头已保存');
+  }
+
+  function setDefaultInvoiceTitle(id){
+    invoiceTitles = invoiceTitles.map(i => ({...i,isDefault:i.id === id}));
+    render();
+    showToast('已设为默认抬头');
+  }
+
+  function deleteInvoiceTitle(id){
+    const item = invoiceTitles.find(i => i.id === id);
+    if(item && item.isDefault){
+      showToast('默认抬头不支持删除');
+      return;
+    }
+    invoiceTitles = invoiceTitles.filter(i => i.id !== id);
+    render();
+    showToast('发票抬头已删除');
+  }
+
+  function openPasswordModal(){
+    openModal('修改密码', `
+      <div class="notice">密码长度6-20位，可以纯数字。</div>
+      <div class="form-row"><label>原密码</label><input type="password" placeholder="请输入原密码"></div>
+      <div class="form-row"><label>新密码</label><input type="password" placeholder="请输入新密码"></div>
+      <div class="form-row"><label>确认密码</label><input type="password" placeholder="请再次输入新密码"></div>
+    `, `
+      <button class="btn" onclick="closeModal()">取消</button>
+      <button class="btn btn-primary" onclick="closeModal();showToast('密码已修改')">保存</button>
+    `);
+  }
+
+  document.getElementById('modalMask').addEventListener('click', e => {
+    if(e.target.id === 'modalMask') closeModal();
+  });
+
+  go('home', {}, false);
+</script>
+</body>
+</html>

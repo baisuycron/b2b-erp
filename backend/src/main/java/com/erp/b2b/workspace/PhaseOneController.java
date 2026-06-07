@@ -7,15 +7,16 @@ import com.erp.b2b.product.CreateProductRequest;
 import com.erp.b2b.product.Product;
 import com.erp.b2b.product.ProductRepository;
 import java.math.BigDecimal;
+import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
+import java.sql.SQLException;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.http.HttpStatus;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -28,59 +29,115 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/api")
 public class PhaseOneController {
+    private final JdbcClient jdbcClient;
     private final ProductRepository productRepository;
     private final InventoryRepository inventoryRepository;
     private final OrderService orderService;
-    private final Map<Long, Map<String, Object>> afterSales = new ConcurrentHashMap<>();
-    private final Map<Long, Map<String, Object>> invoices = new ConcurrentHashMap<>();
 
-    public PhaseOneController(ProductRepository productRepository, InventoryRepository inventoryRepository, OrderService orderService) {
+    public PhaseOneController(JdbcClient jdbcClient, ProductRepository productRepository, InventoryRepository inventoryRepository, OrderService orderService) {
+        this.jdbcClient = jdbcClient;
         this.productRepository = productRepository;
         this.inventoryRepository = inventoryRepository;
         this.orderService = orderService;
-        seedWorkflowData();
     }
 
     @GetMapping("/admin/summary")
     public Map<String, Object> adminSummary() {
-        List<Product> products = productRepository.findAll();
+        var products = productRepository.findAll();
         var orders = orderService.listOrders();
+        long pendingAfterSale = count("SELECT COUNT(*) FROM after_sale_orders WHERE after_sale_status NOT IN ('COMPLETED','REJECTED')");
+        long pendingInvoice = count("SELECT COUNT(*) FROM invoice_applies WHERE invoice_status = 'WAIT_INVOICE'");
         return row(
             "todayOrders", orders.size(),
+            "todayPaymentAmount", payments().stream().map(item -> new BigDecimal(String.valueOf(item.get("amount")))).reduce(BigDecimal.ZERO, BigDecimal::add),
             "saleableSkus", products.stream().filter(product -> "ON_SALE".equals(product.saleStatus())).count(),
-            "stockWarning", products.stream().filter(product -> product.stockQuantity() <= 50).count(),
-            "pendingAfterSale", afterSales.values().stream().filter(item -> !"COMPLETED".equals(item.get("status"))).count(),
-            "pendingInvoice", invoices.values().stream().filter(item -> "WAIT_INVOICE".equals(item.get("status"))).count(),
+            "stockWarning", products.stream().filter(product -> product.stockQuantity() <= stockWarningThreshold()).count(),
+            "pendingAfterSale", pendingAfterSale,
+            "pendingInvoice", pendingInvoice,
             "todoCards", List.of(
-                row("module", "采购管理", "title", "待入库采购单", "count", 2, "target", "purchase"),
+                row("module", "采购管理", "title", "待入库采购单", "count", count("SELECT COUNT(*) FROM purchase_orders WHERE purchase_status IN ('WAIT_STOCK_IN','PART_STOCK_IN')"), "target", "purchase"),
                 row("module", "订单管理", "title", "待发货订单", "count", orders.stream().filter(order -> "WAIT_SHIP".equals(order.orderStatus())).count(), "target", "orders"),
-                row("module", "售后管理", "title", "待审核售后", "count", 1, "target", "afterSales"),
-                row("module", "开票管理", "title", "待开票申请", "count", adminInvoices().stream().filter(item -> "WAIT_INVOICE".equals(item.get("status"))).count(), "target", "invoices")
+                row("module", "售后管理", "title", "待审核售后", "count", count("SELECT COUNT(*) FROM after_sale_orders WHERE after_sale_status = 'WAIT_AUDIT'"), "target", "afterSales"),
+                row("module", "开票管理", "title", "待开票申请", "count", pendingInvoice, "target", "invoices")
             )
         );
     }
 
     @PostMapping("/admin/login")
     public Map<String, Object> adminLogin(@RequestBody Map<String, Object> request) {
-        return row("token", "demo-admin-token", "accountName", request.getOrDefault("username", "admin"), "role", "超级管理员");
+        String accountName = string(request.getOrDefault("username", "admin"));
+        Map<String, Object> account = jdbcClient.sql("""
+            SELECT account_name, real_name, role_name, account_status
+            FROM admin_accounts
+            WHERE account_name = :accountName
+            """)
+            .param("accountName", accountName)
+            .query(this::mapRow)
+            .optional()
+            .orElseThrow(() -> new ApiException(HttpStatus.UNAUTHORIZED, "Admin account not found"));
+        if (!"ENABLED".equals(account.get("accountStatus"))) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "Admin account is disabled");
+        }
+        return row("token", "admin-token-" + accountName, "accountName", account.get("accountName"), "realName", account.get("realName"), "role", account.get("roleName"));
     }
 
     @GetMapping("/admin/accounts")
     public List<Map<String, Object>> adminAccounts() {
-        return List.of(
-            row("id", 1, "accountName", "admin", "realName", "超级管理员", "phone", "13800000000", "role", "超级管理员", "status", "启用"),
-            row("id", 2, "accountName", "warehouse01", "realName", "仓库张", "phone", "13700000001", "role", "仓库人员", "status", "启用"),
-            row("id", 3, "accountName", "finance01", "realName", "财务李", "phone", "13900000002", "role", "财务人员", "status", "禁用")
-        );
+        return rows("""
+            SELECT id, account_name, real_name, phone, role_name, account_status AS status, created_at, updated_at
+            FROM admin_accounts
+            ORDER BY id
+            """);
+    }
+
+    @PostMapping("/admin/accounts")
+    public Map<String, Object> createAdminAccount(@RequestBody Map<String, Object> request) {
+        String accountName = string(request.getOrDefault("accountName", "user" + System.currentTimeMillis() % 100000));
+        jdbcClient.sql("""
+            INSERT INTO admin_accounts (account_name, real_name, phone, role_name, account_status)
+            VALUES (:accountName, :realName, :phone, :roleName, 'ENABLED')
+            """)
+            .param("accountName", accountName)
+            .param("realName", string(request.getOrDefault("realName", accountName)))
+            .param("phone", string(request.getOrDefault("phone", "13800000000")))
+            .param("roleName", string(request.getOrDefault("roleName", "客服人员")))
+            .update();
+        log("系统管理", "新增后台账号", accountName, "新增账号 " + accountName);
+        return one("SELECT * FROM admin_accounts WHERE account_name = :accountName", "accountName", accountName);
+    }
+
+    @PutMapping("/admin/accounts/{accountId}/status")
+    public Map<String, Object> updateAdminAccountStatus(@PathVariable Long accountId, @RequestBody Map<String, Object> request) {
+        String status = normalizeStatus(request.getOrDefault("status", "ENABLED"));
+        jdbcClient.sql("UPDATE admin_accounts SET account_status = :status WHERE id = :id")
+            .param("status", status)
+            .param("id", accountId)
+            .update();
+        log("系统管理", "启用/禁用账号", String.valueOf(accountId), "账号状态更新为 " + status);
+        return one("SELECT * FROM admin_accounts WHERE id = :id", "id", accountId);
     }
 
     @GetMapping("/admin/roles")
     public List<Map<String, Object>> adminRoles() {
-        return List.of(
-            row("id", 1, "roleName", "超级管理员", "description", "拥有全部菜单和按钮权限", "accountCount", 1, "status", "启用"),
-            row("id", 2, "roleName", "仓库人员", "description", "负责采购入库、库存调整和订单发货", "accountCount", 3, "status", "启用"),
-            row("id", 3, "roleName", "财务人员", "description", "负责支付记录、退款记录和开票处理", "accountCount", 2, "status", "启用")
-        );
+        return rows("""
+            SELECT id, role_name, role_desc AS description, account_count, role_status AS status, created_at, updated_at
+            FROM admin_roles
+            ORDER BY id
+            """);
+    }
+
+    @PostMapping("/admin/roles")
+    public Map<String, Object> createRole(@RequestBody Map<String, Object> request) {
+        String roleName = string(request.getOrDefault("roleName", "新角色" + System.currentTimeMillis() % 100000));
+        jdbcClient.sql("""
+            INSERT INTO admin_roles (role_name, role_desc, account_count, role_status)
+            VALUES (:roleName, :roleDesc, 0, 'ENABLED')
+            """)
+            .param("roleName", roleName)
+            .param("roleDesc", string(request.getOrDefault("roleDesc", "自定义角色")))
+            .update();
+        log("系统管理", "新增角色", roleName, "新增角色 " + roleName);
+        return one("SELECT * FROM admin_roles WHERE role_name = :roleName", "roleName", roleName);
     }
 
     @GetMapping("/admin/permissions/tree")
@@ -88,9 +145,30 @@ public class PhaseOneController {
         return List.of(
             row("module", "商品管理", "actions", List.of("查看", "新增", "编辑", "上架", "下架")),
             row("module", "采购管理", "actions", List.of("供应商维护", "采购单维护", "采购入库")),
+            row("module", "库存管理", "actions", List.of("库存总览", "库存流水", "库存调整", "预警设置")),
             row("module", "订单管理", "actions", List.of("查看", "发货", "取消", "确认收货")),
             row("module", "售后管理", "actions", List.of("审核", "确认退货收货", "退款")),
-            row("module", "开票管理", "actions", List.of("上传发票", "确认开票", "驳回"))
+            row("module", "开票管理", "actions", List.of("上传发票", "确认开票", "驳回")),
+            row("module", "财务管理", "actions", List.of("支付记录", "退款记录", "异常查看")),
+            row("module", "系统管理", "actions", List.of("账号", "角色", "日志", "基础配置"))
+        );
+    }
+
+    @GetMapping("/admin/product-categories")
+    public List<Map<String, Object>> productCategories() {
+        return List.of(
+            row("id", 1, "categoryName", "包装饮用水", "parentName", "-", "sortNo", 10, "status", "ENABLED"),
+            row("id", 2, "categoryName", "办公物资", "parentName", "-", "sortNo", 20, "status", "ENABLED"),
+            row("id", 3, "categoryName", "餐饮耗材", "parentName", "-", "sortNo", 30, "status", "ENABLED")
+        );
+    }
+
+    @GetMapping("/admin/product-brands")
+    public List<Map<String, Object>> productBrands() {
+        return List.of(
+            row("id", 1, "brandName", "自营优选", "sortNo", 10, "status", "ENABLED"),
+            row("id", 2, "brandName", "企业集采", "sortNo", 20, "status", "ENABLED"),
+            row("id", 3, "brandName", "办公严选", "sortNo", 30, "status", "ENABLED")
         );
     }
 
@@ -102,19 +180,25 @@ public class PhaseOneController {
     @PostMapping("/admin/products")
     public Product createAdminProduct(@RequestBody CreateProductRequest request) {
         long suffix = System.currentTimeMillis();
-        return productRepository.create(request, "P-" + suffix, "SKU-" + suffix);
+        Product product = productRepository.create(request, "P-" + suffix, "SKU-" + suffix);
+        log("商品管理", "新增商品", product.productCode(), "新增商品 " + product.productName());
+        return product;
     }
 
     @PutMapping("/admin/products/{productId}/on-sale")
     public Product onSale(@PathVariable Long productId) {
         productRepository.setSaleStatus(productId, "ON_SALE");
-        return productRepository.findById(productId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
+        Product product = productRepository.findById(productId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
+        log("商品管理", "商品上架", product.productCode(), "商品上架 " + product.productName());
+        return product;
     }
 
     @PutMapping("/admin/products/{productId}/off-sale")
     public Product offSale(@PathVariable Long productId) {
         productRepository.setSaleStatus(productId, "OFF_SALE");
-        return productRepository.findById(productId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
+        Product product = productRepository.findById(productId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
+        log("商品管理", "商品下架", product.productCode(), "商品下架 " + product.productName());
+        return product;
     }
 
     @GetMapping({"/mall/home/products", "/mall/products"})
@@ -132,22 +216,27 @@ public class PhaseOneController {
 
     @PostMapping("/buyer/register")
     public Map<String, Object> buyerRegister(@RequestBody Map<String, Object> request) {
-        return row("buyerNo", "B" + System.currentTimeMillis() % 1000000, "phone", request.get("phone"), "status", "启用", "auditRequired", false);
+        return row("buyerNo", "B" + System.currentTimeMillis() % 1000000, "phone", request.get("phone"), "status", "ENABLED", "auditRequired", false);
     }
 
     @PostMapping("/buyer/login")
     public Map<String, Object> buyerLogin(@RequestBody Map<String, Object> request) {
-        return row("token", "demo-buyer-token", "phone", request.getOrDefault("phone", "13800010001"), "buyerName", "杭州采购王");
+        return row("token", "buyer-token", "phone", request.getOrDefault("phone", "13800010001"), "buyerName", "杭州采购王");
+    }
+
+    @PostMapping("/buyer/password/update")
+    public Map<String, Object> updateBuyerPassword() {
+        return row("updated", true);
     }
 
     @GetMapping("/buyer/profile")
     public Map<String, Object> buyerProfile() {
-        return row("buyerNo", "B000001", "buyerName", "杭州采购王", "companyName", "杭州某某商贸有限公司", "phone", "13800010001", "accountStatus", "启用");
+        return row("buyerNo", "B000001", "buyerName", "杭州采购王", "companyName", "杭州某某商贸有限公司", "phone", "13800010001", "accountStatus", "ENABLED");
     }
 
     @GetMapping("/mall/cart")
     public Map<String, Object> mallCart() {
-        return row("checkedAmount", 245, "items", productRepository.findAll().stream().limit(2).map(product -> row(
+        List<Map<String, Object>> items = productRepository.findAll().stream().limit(2).map(product -> row(
             "cartItemId", product.id(),
             "productId", product.id(),
             "productName", product.productName(),
@@ -155,7 +244,16 @@ public class PhaseOneController {
             "quantity", product.minOrderQuantity(),
             "salePrice", product.salePrice(),
             "checked", true
-        )).toList());
+        )).toList();
+        BigDecimal checkedAmount = items.stream()
+            .map(item -> new BigDecimal(String.valueOf(item.get("salePrice"))).multiply(BigDecimal.valueOf(Long.parseLong(String.valueOf(item.get("quantity"))))))
+            .reduce(BigDecimal.ZERO, BigDecimal::add);
+        return row("checkedAmount", checkedAmount, "items", items);
+    }
+
+    @PostMapping("/mall/cart/items")
+    public Map<String, Object> addCartItem(@RequestBody Map<String, Object> request) {
+        return row("cartItemId", System.currentTimeMillis() % 100000, "productId", request.get("productId"), "quantity", request.getOrDefault("quantity", 1), "checked", true);
     }
 
     @GetMapping("/mall/cart/count")
@@ -165,48 +263,153 @@ public class PhaseOneController {
 
     @GetMapping("/admin/suppliers")
     public List<Map<String, Object>> suppliers() {
-        return List.of(
-            row("id", 1, "supplierNo", "SUP202606070001", "supplierName", "杭州水饮供应链", "contactName", "周经理", "phone", "13600000001", "purchaseCount", 12, "status", "启用"),
-            row("id", 2, "supplierNo", "SUP202606070002", "supplierName", "宁波食品供应链", "contactName", "赵经理", "phone", "13600000002", "purchaseCount", 5, "status", "启用"),
-            row("id", 3, "supplierNo", "SUP202606070003", "supplierName", "苏州办公物资", "contactName", "钱经理", "phone", "13600000003", "purchaseCount", 0, "status", "停用")
-        );
+        return rows("""
+            SELECT id, supplier_no, supplier_name, contact_name, contact_phone AS phone, address, supplier_status AS status, purchase_count, purchase_amount, created_at, updated_at
+            FROM suppliers
+            ORDER BY id
+            """);
+    }
+
+    @PostMapping("/admin/suppliers")
+    public Map<String, Object> createSupplier(@RequestBody Map<String, Object> request) {
+        String supplierNo = "SUP" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + System.currentTimeMillis() % 100000;
+        jdbcClient.sql("""
+            INSERT INTO suppliers (supplier_no, supplier_name, contact_name, contact_phone, address, supplier_status)
+            VALUES (:supplierNo, :supplierName, :contactName, :contactPhone, :address, 'ENABLED')
+            """)
+            .param("supplierNo", supplierNo)
+            .param("supplierName", string(request.getOrDefault("supplierName", "新供应商")))
+            .param("contactName", string(request.getOrDefault("contactName", "联系人")))
+            .param("contactPhone", string(request.getOrDefault("contactPhone", "13600000000")))
+            .param("address", string(request.getOrDefault("address", "")))
+            .update();
+        log("采购管理", "新增供应商", supplierNo, "新增供应商 " + request.getOrDefault("supplierName", "新供应商"));
+        return one("SELECT * FROM suppliers WHERE supplier_no = :supplierNo", "supplierNo", supplierNo);
+    }
+
+    @PutMapping("/admin/suppliers/{supplierId}/status")
+    public Map<String, Object> updateSupplierStatus(@PathVariable Long supplierId, @RequestBody Map<String, Object> request) {
+        String status = normalizeStatus(request.getOrDefault("status", "ENABLED"));
+        jdbcClient.sql("UPDATE suppliers SET supplier_status = :status WHERE id = :id")
+            .param("status", status)
+            .param("id", supplierId)
+            .update();
+        log("采购管理", "启用/停用供应商", String.valueOf(supplierId), "供应商状态更新为 " + status);
+        return one("SELECT * FROM suppliers WHERE id = :id", "id", supplierId);
     }
 
     @GetMapping("/admin/purchase-orders")
     public List<Map<String, Object>> purchaseOrders() {
-        List<Product> products = productRepository.findAll();
-        Long firstProductId = products.isEmpty() ? 1L : products.get(0).id();
-        return List.of(
-            row("id", 1, "purchaseNo", "PO202606070001", "supplierName", "杭州水饮供应链", "skuCount", 3, "purchaseQty", 300, "stockedQty", 0, "amount", 8600, "expectedArrivalDate", "2026-06-10", "status", "WAIT_STOCK_IN", "targetProductId", firstProductId),
-            row("id", 2, "purchaseNo", "PO202606070002", "supplierName", "宁波食品供应链", "skuCount", 2, "purchaseQty", 160, "stockedQty", 80, "amount", 4180, "expectedArrivalDate", "2026-06-11", "status", "PART_STOCK_IN", "targetProductId", firstProductId),
-            row("id", 3, "purchaseNo", "PO202606060003", "supplierName", "苏州办公物资", "skuCount", 1, "purchaseQty", 60, "stockedQty", 60, "amount", 5340, "expectedArrivalDate", "2026-06-08", "status", "COMPLETED", "targetProductId", firstProductId)
-        );
+        return rows("""
+            SELECT id, purchase_no, supplier_name, product_id AS target_product_id, product_name, sku_code,
+                   1 AS sku_count, purchase_qty, stocked_qty, purchase_amount AS amount,
+                   expected_arrival_date, purchase_status AS status, remark, created_at, updated_at
+            FROM purchase_orders
+            ORDER BY id DESC
+            """);
+    }
+
+    @PostMapping("/admin/purchase-orders")
+    public Map<String, Object> createPurchaseOrder(@RequestBody Map<String, Object> request) {
+        Long supplierId = number(request.getOrDefault("supplierId", 1)).longValue();
+        Long productId = number(request.getOrDefault("productId", firstProductId())).longValue();
+        int quantity = number(request.getOrDefault("quantity", 100)).intValue();
+        BigDecimal price = new BigDecimal(String.valueOf(request.getOrDefault("purchasePrice", "20.00")));
+        Map<String, Object> supplier = one("SELECT * FROM suppliers WHERE id = :id", "id", supplierId);
+        Product product = productRepository.findById(productId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
+        String purchaseNo = "PO" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + System.currentTimeMillis() % 100000;
+        jdbcClient.sql("""
+            INSERT INTO purchase_orders (purchase_no, supplier_id, supplier_name, product_id, product_name, sku_code,
+              purchase_qty, stocked_qty, purchase_price, purchase_amount, expected_arrival_date, purchase_status, remark)
+            VALUES (:purchaseNo, :supplierId, :supplierName, :productId, :productName, :skuCode,
+              :quantity, 0, :price, :amount, :expectedArrivalDate, 'WAIT_STOCK_IN', :remark)
+            """)
+            .param("purchaseNo", purchaseNo)
+            .param("supplierId", supplierId)
+            .param("supplierName", supplier.get("supplierName"))
+            .param("productId", productId)
+            .param("productName", product.productName())
+            .param("skuCode", product.skuCode())
+            .param("quantity", quantity)
+            .param("price", price)
+            .param("amount", price.multiply(BigDecimal.valueOf(quantity)))
+            .param("expectedArrivalDate", string(request.getOrDefault("expectedArrivalDate", LocalDate.now().plusDays(3).toString())))
+            .param("remark", string(request.getOrDefault("remark", "")))
+            .update();
+        jdbcClient.sql("UPDATE suppliers SET purchase_count = purchase_count + 1, purchase_amount = purchase_amount + :amount WHERE id = :id")
+            .param("amount", price.multiply(BigDecimal.valueOf(quantity)))
+            .param("id", supplierId)
+            .update();
+        log("采购管理", "新增采购订单", purchaseNo, "新增采购订单 " + purchaseNo);
+        return one("SELECT * FROM purchase_orders WHERE purchase_no = :purchaseNo", "purchaseNo", purchaseNo);
+    }
+
+    @PostMapping("/admin/purchase-orders/{purchaseOrderId}/cancel")
+    public Map<String, Object> cancelPurchaseOrder(@PathVariable Long purchaseOrderId) {
+        jdbcClient.sql("UPDATE purchase_orders SET purchase_status = 'CANCELLED' WHERE id = :id AND purchase_status <> 'COMPLETED'")
+            .param("id", purchaseOrderId)
+            .update();
+        log("采购管理", "取消采购订单", String.valueOf(purchaseOrderId), "取消采购订单");
+        return one("SELECT * FROM purchase_orders WHERE id = :id", "id", purchaseOrderId);
     }
 
     @PostMapping("/admin/purchase-orders/{purchaseOrderId}/stock-in")
     @Transactional
     public Map<String, Object> stockIn(@PathVariable Long purchaseOrderId, @RequestBody Map<String, Object> request) {
-        Long productId = number(request.getOrDefault("productId", firstProductId())).longValue();
-        int quantity = number(request.getOrDefault("quantity", 100)).intValue();
-        Product product = productRepository.findById(productId)
-            .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
+        Map<String, Object> order = one("SELECT * FROM purchase_orders WHERE id = :id", "id", purchaseOrderId);
+        if ("COMPLETED".equals(order.get("purchaseStatus")) || "CANCELLED".equals(order.get("purchaseStatus"))) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Purchase order cannot be stocked in");
+        }
+        Long productId = Long.parseLong(String.valueOf(order.get("productId")));
+        int waitQty = Integer.parseInt(String.valueOf(order.get("purchaseQty"))) - Integer.parseInt(String.valueOf(order.get("stockedQty")));
+        int quantity = Math.min(number(request.getOrDefault("quantity", waitQty)).intValue(), waitQty);
+        if (quantity <= 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "No quantity can be stocked in");
+        }
+        Product product = productRepository.findById(productId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
         productRepository.addStock(productId, quantity);
         Product latest = productRepository.findById(productId).orElseThrow();
+        BigDecimal price = new BigDecimal(String.valueOf(order.get("purchasePrice")));
         String stockInNo = "IN" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + System.currentTimeMillis() % 100000;
+        jdbcClient.sql("""
+            INSERT INTO purchase_stock_ins (stock_in_no, purchase_order_id, purchase_no, supplier_name, product_id, product_name, sku_code, stock_in_qty, stock_in_amount, operator_name)
+            VALUES (:stockInNo, :purchaseOrderId, :purchaseNo, :supplierName, :productId, :productName, :skuCode, :quantity, :amount, :operatorName)
+            """)
+            .param("stockInNo", stockInNo)
+            .param("purchaseOrderId", purchaseOrderId)
+            .param("purchaseNo", order.get("purchaseNo"))
+            .param("supplierName", order.get("supplierName"))
+            .param("productId", productId)
+            .param("productName", product.productName())
+            .param("skuCode", product.skuCode())
+            .param("quantity", quantity)
+            .param("amount", price.multiply(BigDecimal.valueOf(quantity)))
+            .param("operatorName", string(request.getOrDefault("operatorName", "仓库王")))
+            .update();
+        int stockedQty = Integer.parseInt(String.valueOf(order.get("stockedQty"))) + quantity;
+        String nextStatus = stockedQty >= Integer.parseInt(String.valueOf(order.get("purchaseQty"))) ? "COMPLETED" : "PART_STOCK_IN";
+        jdbcClient.sql("UPDATE purchase_orders SET stocked_qty = :stockedQty, purchase_status = :status WHERE id = :id")
+            .param("stockedQty", stockedQty)
+            .param("status", nextStatus)
+            .param("id", purchaseOrderId)
+            .update();
         inventoryRepository.insertMovement(productId, "PURCHASE_STOCK_IN", quantity, latest.stockQuantity(), "PURCHASE_ORDER", stockInNo, "采购入库：" + product.productName());
-        return row("stockInNo", stockInNo, "purchaseOrderId", purchaseOrderId, "productId", productId, "quantity", quantity, "stockAfter", latest.stockQuantity(), "status", "STOCKED");
+        log("采购管理", "采购入库", stockInNo, "采购入库 " + quantity + " 件");
+        return row("stockInNo", stockInNo, "purchaseOrderId", purchaseOrderId, "productId", productId, "quantity", quantity, "stockAfter", latest.stockQuantity(), "status", nextStatus);
     }
 
     @GetMapping("/admin/purchase-stock-ins")
     public List<Map<String, Object>> purchaseStockIns() {
-        return inventoryRepository.findAll().stream()
-            .filter(item -> "PURCHASE_STOCK_IN".equals(item.movementType()))
-            .map(item -> row("stockInNo", item.sourceNo(), "productName", item.productName(), "skuCode", item.skuCode(), "quantity", item.quantityDelta(), "stockAfter", item.stockAfter(), "createdAt", item.createdAt()))
-            .toList();
+        return rows("""
+            SELECT id, stock_in_no, purchase_no, supplier_name, product_name, sku_code, stock_in_qty, stock_in_amount, operator_name, created_at
+            FROM purchase_stock_ins
+            ORDER BY id DESC
+            """);
     }
 
     @GetMapping("/admin/inventory")
     public List<Map<String, Object>> inventoryOverview() {
+        int warning = stockWarningThreshold();
         return productRepository.findAll().stream()
             .map(product -> row(
                 "productId", product.id(),
@@ -215,9 +418,9 @@ public class PhaseOneController {
                 "actualStock", product.stockQuantity(),
                 "occupiedStock", 0,
                 "saleableStock", product.stockQuantity(),
-                "soldQty", 0,
-                "warningThreshold", 50,
-                "inventoryStatus", product.stockQuantity() <= 50 ? "库存预警" : "正常"
+                "soldQty", soldQty(product.id()),
+                "warningThreshold", warning,
+                "inventoryStatus", product.stockQuantity() <= warning ? "WARNING" : "NORMAL"
             ))
             .toList();
     }
@@ -232,10 +435,19 @@ public class PhaseOneController {
     public Map<String, Object> inventoryAdjustment(@RequestBody Map<String, Object> request) {
         Long productId = number(request.getOrDefault("productId", firstProductId())).longValue();
         int quantity = number(request.getOrDefault("quantity", 10)).intValue();
-        productRepository.addStock(productId, quantity);
+        if (quantity == 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Quantity cannot be zero");
+        }
+        Product product = productRepository.findById(productId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
+        if (quantity > 0) {
+            productRepository.addStock(productId, quantity);
+        } else {
+            productRepository.deductStock(productId, Math.abs(quantity));
+        }
         Product latest = productRepository.findById(productId).orElseThrow();
         String adjustmentNo = "ADJ" + System.currentTimeMillis() % 100000;
-        inventoryRepository.insertMovement(productId, "MANUAL_ADJUST", quantity, latest.stockQuantity(), "INVENTORY_ADJUSTMENT", adjustmentNo, "库存调整");
+        inventoryRepository.insertMovement(productId, "MANUAL_ADJUST", quantity, latest.stockQuantity(), "INVENTORY_ADJUSTMENT", adjustmentNo, "库存调整：" + product.productName());
+        log("库存管理", "库存调整", adjustmentNo, "库存调整 " + quantity);
         return row("adjustmentNo", adjustmentNo, "productId", productId, "quantity", quantity, "stockAfter", latest.stockQuantity());
     }
 
@@ -249,9 +461,39 @@ public class PhaseOneController {
         return orderService.listOrders();
     }
 
+    @PostMapping("/mall/orders/confirm")
+    public Map<String, Object> confirmOrder(@RequestBody Map<String, Object> request) {
+        return row("confirmed", true, "items", request.getOrDefault("items", List.of()), "receiverAddress", request.getOrDefault("receiverAddress", "默认收货地址"));
+    }
+
+    @PostMapping("/mall/orders/{orderId}/cancel")
+    public Object cancelOrder(@PathVariable Long orderId) {
+        jdbcClient.sql("UPDATE sales_orders SET order_status = 'CANCELLED' WHERE id = :id AND order_status = 'WAIT_PAY'")
+            .param("id", orderId)
+            .update();
+        log("订单管理", "取消订单", String.valueOf(orderId), "买家取消待支付订单");
+        return orderService.getOrder(orderId);
+    }
+
     @PostMapping("/mall/orders/{orderId}/confirm-receipt")
     public Object confirmReceipt(@PathVariable Long orderId) {
-        return orderService.complete(orderId);
+        Object order = orderService.complete(orderId);
+        log("订单管理", "确认收货", String.valueOf(orderId), "买家确认收货");
+        return order;
+    }
+
+    @PostMapping("/mall/payments")
+    public Map<String, Object> createPayment(@RequestBody Map<String, Object> request) {
+        Long orderId = number(request.get("orderId")).longValue();
+        var order = orderService.markPaid(orderId);
+        String paymentNo = "PAY" + order.orderNo().replace("SO", "");
+        log("财务管理", "支付成功", paymentNo, "订单支付成功");
+        return row("paymentId", paymentNo, "orderId", orderId, "paymentStatus", order.paymentStatus(), "orderStatus", order.orderStatus(), "amount", order.totalAmount());
+    }
+
+    @GetMapping("/mall/payments/{paymentId}/status")
+    public Map<String, Object> paymentStatus(@PathVariable String paymentId) {
+        return row("paymentId", paymentId, "paymentStatus", "PAID");
     }
 
     @GetMapping("/admin/finance/payments")
@@ -269,44 +511,101 @@ public class PhaseOneController {
 
     @GetMapping("/admin/finance/refunds")
     public List<Map<String, Object>> refunds() {
-        return List.of(
-            row("refundNo", "RF202606070001", "afterSaleNo", "AS202606070001", "orderNo", "SO202606040010", "buyerName", "上海宏达采购", "refundMethod", "原路退款", "amount", 72, "refundStatus", "退款成功", "refundedAt", "2026-06-07 11:30")
-        );
+        return rows("""
+            SELECT CONCAT('RF', id) AS refund_no, after_sale_no, order_no, buyer_name, 'ORIGINAL' AS refund_method,
+                   refund_amount AS amount, COALESCE(refund_status, 'WAIT_REFUND') AS refund_status, updated_at AS refunded_at
+            FROM after_sale_orders
+            WHERE refund_status IS NOT NULL OR after_sale_status IN ('WAIT_REFUND','COMPLETED')
+            ORDER BY id DESC
+            """);
+    }
+
+    @GetMapping("/admin/finance/payment-exceptions")
+    public List<Map<String, Object>> paymentExceptions() {
+        return List.of();
     }
 
     @GetMapping("/admin/after-sales")
     public List<Map<String, Object>> afterSales() {
-        return new ArrayList<>(afterSales.values());
+        return rows("""
+            SELECT id, after_sale_no, order_no, buyer_name, after_sale_type AS type, product_name, quantity, refund_amount, after_sale_status AS status, reason, audit_remark, refund_status, created_at, updated_at
+            FROM after_sale_orders
+            ORDER BY id DESC
+            """);
+    }
+
+    @GetMapping("/mall/after-sales")
+    public List<Map<String, Object>> mallAfterSales() {
+        return afterSales();
     }
 
     @PostMapping({"/mall/after-sales", "/admin/after-sales"})
     public Map<String, Object> createAfterSale(@RequestBody Map<String, Object> request) {
-        long id = System.currentTimeMillis() % 100000;
-        Map<String, Object> item = row("id", id, "afterSaleNo", "AS" + id, "orderNo", request.getOrDefault("orderNo", "-"), "buyerName", request.getOrDefault("buyerName", "杭州采购王"), "type", request.getOrDefault("type", "ONLY_REFUND"), "refundAmount", request.getOrDefault("refundAmount", 72), "status", "WAIT_AUDIT", "createdAt", LocalDateTime.now());
-        afterSales.put(id, item);
-        return item;
+        String afterSaleNo = "AS" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + System.currentTimeMillis() % 100000;
+        jdbcClient.sql("""
+            INSERT INTO after_sale_orders (after_sale_no, order_no, buyer_name, after_sale_type, product_name, quantity, refund_amount, after_sale_status, reason)
+            VALUES (:afterSaleNo, :orderNo, :buyerName, :type, :productName, :quantity, :refundAmount, 'WAIT_AUDIT', :reason)
+            """)
+            .param("afterSaleNo", afterSaleNo)
+            .param("orderNo", string(request.getOrDefault("orderNo", "-")))
+            .param("buyerName", string(request.getOrDefault("buyerName", "杭州采购王")))
+            .param("type", string(request.getOrDefault("type", "ONLY_REFUND")))
+            .param("productName", string(request.getOrDefault("productName", "")))
+            .param("quantity", number(request.getOrDefault("quantity", 1)).intValue())
+            .param("refundAmount", new BigDecimal(String.valueOf(request.getOrDefault("refundAmount", "0.00"))))
+            .param("reason", string(request.getOrDefault("reason", "买家申请售后")))
+            .update();
+        log("售后管理", "提交售后", afterSaleNo, "提交售后申请");
+        return one("SELECT * FROM after_sale_orders WHERE after_sale_no = :afterSaleNo", "afterSaleNo", afterSaleNo);
+    }
+
+    @PostMapping("/mall/after-sales/{afterSaleId}/cancel")
+    public Map<String, Object> cancelAfterSale(@PathVariable Long afterSaleId) {
+        jdbcClient.sql("UPDATE after_sale_orders SET after_sale_status = 'CANCELLED' WHERE id = :id AND after_sale_status = 'WAIT_AUDIT'")
+            .param("id", afterSaleId)
+            .update();
+        return one("SELECT * FROM after_sale_orders WHERE id = :id", "id", afterSaleId);
     }
 
     @PostMapping("/admin/after-sales/{afterSaleId}/audit")
     public Map<String, Object> auditAfterSale(@PathVariable Long afterSaleId, @RequestBody Map<String, Object> request) {
-        Map<String, Object> item = afterSales.computeIfAbsent(afterSaleId, id -> row("id", id, "afterSaleNo", "AS" + id, "status", "WAIT_AUDIT"));
         boolean approved = Boolean.parseBoolean(String.valueOf(request.getOrDefault("approved", true)));
-        item.put("status", approved ? "WAIT_REFUND" : "REJECTED");
-        item.put("auditRemark", request.getOrDefault("remark", approved ? "同意售后" : "拒绝售后"));
-        return item;
+        String status = approved ? "WAIT_REFUND" : "REJECTED";
+        jdbcClient.sql("UPDATE after_sale_orders SET after_sale_status = :status, audit_remark = :remark WHERE id = :id")
+            .param("status", status)
+            .param("remark", string(request.getOrDefault("remark", approved ? "同意售后" : "拒绝售后")))
+            .param("id", afterSaleId)
+            .update();
+        log("售后管理", "售后审核", String.valueOf(afterSaleId), "售后审核 " + status);
+        return one("SELECT * FROM after_sale_orders WHERE id = :id", "id", afterSaleId);
+    }
+
+    @PostMapping("/admin/after-sales/{afterSaleId}/confirm-return-received")
+    public Map<String, Object> confirmReturnReceived(@PathVariable Long afterSaleId) {
+        jdbcClient.sql("UPDATE after_sale_orders SET after_sale_status = 'WAIT_REFUND' WHERE id = :id")
+            .param("id", afterSaleId)
+            .update();
+        log("售后管理", "确认退货收货", String.valueOf(afterSaleId), "确认退货收货");
+        return one("SELECT * FROM after_sale_orders WHERE id = :id", "id", afterSaleId);
     }
 
     @PostMapping("/admin/after-sales/{afterSaleId}/refund")
     public Map<String, Object> refundAfterSale(@PathVariable Long afterSaleId) {
-        Map<String, Object> item = afterSales.computeIfAbsent(afterSaleId, id -> row("id", id, "afterSaleNo", "AS" + id));
-        item.put("status", "COMPLETED");
-        item.put("refundStatus", "退款成功");
-        return item;
+        jdbcClient.sql("UPDATE after_sale_orders SET after_sale_status = 'COMPLETED', refund_status = 'SUCCESS' WHERE id = :id")
+            .param("id", afterSaleId)
+            .update();
+        log("售后管理", "退款处理", String.valueOf(afterSaleId), "售后退款成功");
+        return one("SELECT * FROM after_sale_orders WHERE id = :id", "id", afterSaleId);
     }
 
     @GetMapping("/admin/invoices")
     public List<Map<String, Object>> adminInvoices() {
-        return new ArrayList<>(invoices.values());
+        return rows("""
+            SELECT id, invoice_apply_no, order_no, buyer_name, invoice_type, title_type, invoice_title AS title,
+                   apply_amount AS amount, receive_email, invoice_status AS status, invoice_no, reject_reason, created_at, updated_at
+            FROM invoice_applies
+            ORDER BY id DESC
+            """);
     }
 
     @GetMapping("/mall/invoices")
@@ -316,43 +615,102 @@ public class PhaseOneController {
 
     @PostMapping("/mall/invoices")
     public Map<String, Object> createInvoice(@RequestBody Map<String, Object> request) {
-        long id = System.currentTimeMillis() % 100000;
-        Map<String, Object> item = row("id", id, "invoiceApplyNo", "INV" + id, "orderNo", request.getOrDefault("orderNo", "-"), "buyerName", request.getOrDefault("buyerName", "杭州采购王"), "invoiceType", request.getOrDefault("invoiceType", "电子普票"), "title", request.getOrDefault("title", "杭州某某商贸有限公司"), "amount", request.getOrDefault("amount", 560), "status", "WAIT_INVOICE");
-        invoices.put(id, item);
-        return item;
+        String invoiceApplyNo = "INV" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + System.currentTimeMillis() % 100000;
+        jdbcClient.sql("""
+            INSERT INTO invoice_applies (invoice_apply_no, order_no, buyer_name, invoice_type, title_type, invoice_title, apply_amount, receive_email, invoice_status)
+            VALUES (:invoiceApplyNo, :orderNo, :buyerName, :invoiceType, :titleType, :invoiceTitle, :amount, :email, 'WAIT_INVOICE')
+            """)
+            .param("invoiceApplyNo", invoiceApplyNo)
+            .param("orderNo", string(request.getOrDefault("orderNo", "-")))
+            .param("buyerName", string(request.getOrDefault("buyerName", "杭州采购王")))
+            .param("invoiceType", string(request.getOrDefault("invoiceType", "E_NORMAL")))
+            .param("titleType", string(request.getOrDefault("titleType", "COMPANY")))
+            .param("invoiceTitle", string(request.getOrDefault("title", request.getOrDefault("invoiceTitle", "杭州某某商贸有限公司"))))
+            .param("amount", new BigDecimal(String.valueOf(request.getOrDefault("amount", "0.00"))))
+            .param("email", string(request.getOrDefault("email", request.getOrDefault("receiveEmail", "invoice@example.com"))))
+            .update();
+        log("开票管理", "提交开票申请", invoiceApplyNo, "提交开票申请");
+        return one("SELECT * FROM invoice_applies WHERE invoice_apply_no = :invoiceApplyNo", "invoiceApplyNo", invoiceApplyNo);
     }
 
     @PostMapping("/admin/invoices/{invoiceApplyId}/confirm")
     public Map<String, Object> confirmInvoice(@PathVariable Long invoiceApplyId) {
-        Map<String, Object> item = invoices.computeIfAbsent(invoiceApplyId, id -> row("id", id, "invoiceApplyNo", "INV" + id));
-        item.put("status", "INVOICED");
-        item.put("invoiceNo", "FP" + System.currentTimeMillis() % 100000);
-        return item;
+        String invoiceNo = "FP" + System.currentTimeMillis() % 100000;
+        jdbcClient.sql("UPDATE invoice_applies SET invoice_status = 'INVOICED', invoice_no = :invoiceNo WHERE id = :id")
+            .param("invoiceNo", invoiceNo)
+            .param("id", invoiceApplyId)
+            .update();
+        log("开票管理", "确认开票", String.valueOf(invoiceApplyId), "确认开票 " + invoiceNo);
+        return one("SELECT * FROM invoice_applies WHERE id = :id", "id", invoiceApplyId);
     }
 
     @PostMapping("/admin/invoices/{invoiceApplyId}/reject")
     public Map<String, Object> rejectInvoice(@PathVariable Long invoiceApplyId, @RequestBody Map<String, Object> request) {
-        Map<String, Object> item = invoices.computeIfAbsent(invoiceApplyId, id -> row("id", id, "invoiceApplyNo", "INV" + id));
-        item.put("status", "REJECTED");
-        item.put("rejectReason", request.getOrDefault("reason", "开票资料不完整"));
-        return item;
+        jdbcClient.sql("UPDATE invoice_applies SET invoice_status = 'REJECTED', reject_reason = :reason WHERE id = :id")
+            .param("reason", string(request.getOrDefault("reason", "开票资料不完整")))
+            .param("id", invoiceApplyId)
+            .update();
+        log("开票管理", "驳回开票", String.valueOf(invoiceApplyId), "驳回开票申请");
+        return one("SELECT * FROM invoice_applies WHERE id = :id", "id", invoiceApplyId);
     }
 
     @GetMapping("/mall/invoice-titles")
     public List<Map<String, Object>> invoiceTitles() {
-        return List.of(
-            row("id", 1, "titleType", "企业", "title", "杭州某某商贸有限公司", "taxNo", "91330100MA2B2B001X", "isDefault", true),
-            row("id", 2, "titleType", "个人", "title", "李先生", "taxNo", "-", "isDefault", false)
-        );
+        return rows("""
+            SELECT id, buyer_name, title_type, invoice_title AS title, tax_no, receive_email, is_default, created_at, updated_at
+            FROM invoice_titles
+            ORDER BY is_default DESC, id
+            """);
+    }
+
+    @PostMapping("/mall/invoice-titles")
+    public Map<String, Object> createInvoiceTitle(@RequestBody Map<String, Object> request) {
+        jdbcClient.sql("""
+            INSERT INTO invoice_titles (buyer_name, title_type, invoice_title, tax_no, receive_email, is_default)
+            VALUES (:buyerName, :titleType, :invoiceTitle, :taxNo, :email, false)
+            """)
+            .param("buyerName", string(request.getOrDefault("buyerName", "杭州采购王")))
+            .param("titleType", string(request.getOrDefault("titleType", "COMPANY")))
+            .param("invoiceTitle", string(request.getOrDefault("title", request.getOrDefault("invoiceTitle", ""))))
+            .param("taxNo", string(request.getOrDefault("taxNo", "")))
+            .param("email", string(request.getOrDefault("email", request.getOrDefault("receiveEmail", ""))))
+            .update();
+        return rows("SELECT * FROM invoice_titles ORDER BY id DESC").get(0);
     }
 
     @GetMapping("/system/parameters")
     public Map<String, Object> systemParameters() {
-        return row("payTimeoutMinutes", 15, "autoConfirmReceiptDays", 10, "afterSaleDays", 7, "stockWarningThreshold", 50);
+        Map<String, Object> result = new LinkedHashMap<>();
+        rows("SELECT param_key, param_value FROM system_parameters").forEach(item -> result.put(String.valueOf(item.get("paramKey")), item.get("paramValue")));
+        return result;
+    }
+
+    @GetMapping("/admin/operation-logs")
+    public List<Map<String, Object>> operationLogs() {
+        return rows("""
+            SELECT id, log_no, operator_name, module_name, operation_name, related_no, operation_content, operation_result, created_at
+            FROM operation_logs
+            ORDER BY id DESC
+            """);
     }
 
     private Long firstProductId() {
         return productRepository.findAll().stream().findFirst().map(Product::id).orElse(1L);
+    }
+
+    private int soldQty(Long productId) {
+        return jdbcClient.sql("SELECT COALESCE(SUM(quantity), 0) FROM sales_order_items WHERE product_id = :productId")
+            .param("productId", productId)
+            .query(Integer.class)
+            .single();
+    }
+
+    private int stockWarningThreshold() {
+        return Integer.parseInt(String.valueOf(systemParameters().getOrDefault("stockWarningThreshold", "50")));
+    }
+
+    private long count(String sql) {
+        return jdbcClient.sql(sql).query(Long.class).single();
     }
 
     private Number number(Object value) {
@@ -362,11 +720,70 @@ public class PhaseOneController {
         return new BigDecimal(String.valueOf(value));
     }
 
-    private void seedWorkflowData() {
-        afterSales.put(1L, row("id", 1, "afterSaleNo", "AS202606070001", "orderNo", "SO202606040010", "buyerName", "上海宏达采购", "type", "ONLY_REFUND", "productName", "康师傅冰红茶 500ml/15瓶", "quantity", 2, "refundAmount", 72, "status", "WAIT_AUDIT", "createdAt", "2026-06-07 10:20"));
-        afterSales.put(2L, row("id", 2, "afterSaleNo", "AS202606070003", "orderNo", "SO202606050012", "buyerName", "宁波云仓采购", "type", "RETURN_REFUND", "productName", "娃哈哈 596ml/24瓶", "quantity", 3, "refundAmount", 126, "status", "WAIT_RETURN_RECEIVE", "createdAt", "2026-06-07 10:45"));
-        invoices.put(1L, row("id", 1, "invoiceApplyNo", "INV202606070001", "orderNo", "SO202606050021", "buyerName", "杭州某某商贸", "invoiceType", "电子普票", "titleType", "企业", "title", "杭州某某商贸有限公司", "amount", 2860, "status", "WAIT_INVOICE"));
-        invoices.put(2L, row("id", 2, "invoiceApplyNo", "INV202606070002", "orderNo", "SO202606040018", "buyerName", "苏州瑞丰食品", "invoiceType", "电子专票", "titleType", "企业", "title", "苏州瑞丰食品有限公司", "amount", 6420, "status", "INVOICED"));
+    private String string(Object value) {
+        return value == null ? "" : String.valueOf(value);
+    }
+
+    private String normalizeStatus(Object value) {
+        String status = string(value).trim().toUpperCase();
+        if ("启用".equals(value) || "ON".equals(status)) {
+            return "ENABLED";
+        }
+        if ("禁用".equals(value) || "停用".equals(value) || "OFF".equals(status)) {
+            return "DISABLED";
+        }
+        return status;
+    }
+
+    private List<Map<String, Object>> rows(String sql) {
+        return jdbcClient.sql(sql).query(this::mapRow).list();
+    }
+
+    private Map<String, Object> one(String sql, String paramName, Object value) {
+        return jdbcClient.sql(sql)
+            .param(paramName, value)
+            .query(this::mapRow)
+            .optional()
+            .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Data not found"));
+    }
+
+    private void log(String module, String operation, String relatedNo, String content) {
+        String logNo = "LOG" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + System.currentTimeMillis() % 100000;
+        jdbcClient.sql("""
+            INSERT INTO operation_logs (log_no, operator_name, module_name, operation_name, related_no, operation_content, operation_result)
+            VALUES (:logNo, '系统', :module, :operation, :relatedNo, :content, 'SUCCESS')
+            """)
+            .param("logNo", logNo)
+            .param("module", module)
+            .param("operation", operation)
+            .param("relatedNo", relatedNo)
+            .param("content", content)
+            .update();
+    }
+
+    private Map<String, Object> mapRow(ResultSet rs, int rowNum) throws SQLException {
+        ResultSetMetaData metaData = rs.getMetaData();
+        Map<String, Object> result = new LinkedHashMap<>();
+        for (int i = 1; i <= metaData.getColumnCount(); i++) {
+            result.put(toCamelCase(metaData.getColumnLabel(i)), rs.getObject(i));
+        }
+        return result;
+    }
+
+    private String toCamelCase(String value) {
+        StringBuilder builder = new StringBuilder();
+        boolean upperNext = false;
+        for (char ch : value.toCharArray()) {
+            if (ch == '_') {
+                upperNext = true;
+            } else if (upperNext) {
+                builder.append(Character.toUpperCase(ch));
+                upperNext = false;
+            } else {
+                builder.append(Character.toLowerCase(ch));
+            }
+        }
+        return builder.toString();
     }
 
     private Map<String, Object> row(Object... values) {
