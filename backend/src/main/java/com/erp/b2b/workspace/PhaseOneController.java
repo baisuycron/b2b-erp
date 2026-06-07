@@ -6,6 +6,7 @@ import com.erp.b2b.order.OrderService;
 import com.erp.b2b.product.CreateProductRequest;
 import com.erp.b2b.product.Product;
 import com.erp.b2b.product.ProductRepository;
+import jakarta.validation.Valid;
 import java.math.BigDecimal;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
@@ -178,7 +179,7 @@ public class PhaseOneController {
     }
 
     @PostMapping("/admin/products")
-    public Product createAdminProduct(@RequestBody CreateProductRequest request) {
+    public Product createAdminProduct(@Valid @RequestBody CreateProductRequest request) {
         long suffix = System.currentTimeMillis();
         Product product = productRepository.create(request, "P-" + suffix, "SKU-" + suffix);
         log("商品管理", "新增商品", product.productCode(), "新增商品 " + product.productName());
@@ -253,7 +254,10 @@ public class PhaseOneController {
 
     @PostMapping("/mall/cart/items")
     public Map<String, Object> addCartItem(@RequestBody Map<String, Object> request) {
-        return row("cartItemId", System.currentTimeMillis() % 100000, "productId", request.get("productId"), "quantity", request.getOrDefault("quantity", 1), "checked", true);
+        Long productId = requiredLong(request, "productId");
+        int quantity = positiveInt(request, "quantity");
+        productRepository.findById(productId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
+        return row("cartItemId", System.currentTimeMillis() % 100000, "productId", productId, "quantity", quantity, "checked", true);
     }
 
     @GetMapping("/mall/cart/count")
@@ -272,15 +276,18 @@ public class PhaseOneController {
 
     @PostMapping("/admin/suppliers")
     public Map<String, Object> createSupplier(@RequestBody Map<String, Object> request) {
+        String supplierName = requiredString(request, "supplierName");
+        String contactName = requiredString(request, "contactName");
+        String contactPhone = requiredString(request, "contactPhone");
         String supplierNo = "SUP" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + System.currentTimeMillis() % 100000;
         jdbcClient.sql("""
             INSERT INTO suppliers (supplier_no, supplier_name, contact_name, contact_phone, address, supplier_status)
             VALUES (:supplierNo, :supplierName, :contactName, :contactPhone, :address, 'ENABLED')
             """)
             .param("supplierNo", supplierNo)
-            .param("supplierName", string(request.getOrDefault("supplierName", "新供应商")))
-            .param("contactName", string(request.getOrDefault("contactName", "联系人")))
-            .param("contactPhone", string(request.getOrDefault("contactPhone", "13600000000")))
+            .param("supplierName", supplierName)
+            .param("contactName", contactName)
+            .param("contactPhone", contactPhone)
             .param("address", string(request.getOrDefault("address", "")))
             .update();
         log("采购管理", "新增供应商", supplierNo, "新增供应商 " + request.getOrDefault("supplierName", "新供应商"));
@@ -311,10 +318,10 @@ public class PhaseOneController {
 
     @PostMapping("/admin/purchase-orders")
     public Map<String, Object> createPurchaseOrder(@RequestBody Map<String, Object> request) {
-        Long supplierId = number(request.getOrDefault("supplierId", 1)).longValue();
-        Long productId = number(request.getOrDefault("productId", firstProductId())).longValue();
-        int quantity = number(request.getOrDefault("quantity", 100)).intValue();
-        BigDecimal price = new BigDecimal(String.valueOf(request.getOrDefault("purchasePrice", "20.00")));
+        Long supplierId = requiredLong(request, "supplierId");
+        Long productId = requiredLong(request, "productId");
+        int quantity = positiveInt(request, "quantity");
+        BigDecimal price = positiveMoney(request, "purchasePrice");
         Map<String, Object> supplier = one("SELECT * FROM suppliers WHERE id = :id", "id", supplierId);
         Product product = productRepository.findById(productId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
         String purchaseNo = "PO" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + System.currentTimeMillis() % 100000;
@@ -362,7 +369,7 @@ public class PhaseOneController {
         }
         Long productId = Long.parseLong(String.valueOf(order.get("productId")));
         int waitQty = Integer.parseInt(String.valueOf(order.get("purchaseQty"))) - Integer.parseInt(String.valueOf(order.get("stockedQty")));
-        int quantity = Math.min(number(request.getOrDefault("quantity", waitQty)).intValue(), waitQty);
+        int quantity = Math.min(positiveInt(request, "quantity"), waitQty);
         if (quantity <= 0) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "No quantity can be stocked in");
         }
@@ -433,8 +440,8 @@ public class PhaseOneController {
     @PostMapping("/admin/inventory/adjustments")
     @Transactional
     public Map<String, Object> inventoryAdjustment(@RequestBody Map<String, Object> request) {
-        Long productId = number(request.getOrDefault("productId", firstProductId())).longValue();
-        int quantity = number(request.getOrDefault("quantity", 10)).intValue();
+        Long productId = requiredLong(request, "productId");
+        int quantity = requiredInt(request, "quantity");
         if (quantity == 0) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "Quantity cannot be zero");
         }
@@ -484,7 +491,7 @@ public class PhaseOneController {
 
     @PostMapping("/mall/payments")
     public Map<String, Object> createPayment(@RequestBody Map<String, Object> request) {
-        Long orderId = number(request.get("orderId")).longValue();
+        Long orderId = requiredLong(request, "orderId");
         var order = orderService.markPaid(orderId);
         String paymentNo = "PAY" + order.orderNo().replace("SO", "");
         log("财务管理", "支付成功", paymentNo, "订单支付成功");
@@ -541,18 +548,22 @@ public class PhaseOneController {
 
     @PostMapping({"/mall/after-sales", "/admin/after-sales"})
     public Map<String, Object> createAfterSale(@RequestBody Map<String, Object> request) {
+        String orderNo = requiredString(request, "orderNo");
+        String productName = requiredString(request, "productName");
+        int quantity = positiveInt(request, "quantity");
+        BigDecimal refundAmount = nonNegativeMoney(request, "refundAmount");
         String afterSaleNo = "AS" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + System.currentTimeMillis() % 100000;
         jdbcClient.sql("""
             INSERT INTO after_sale_orders (after_sale_no, order_no, buyer_name, after_sale_type, product_name, quantity, refund_amount, after_sale_status, reason)
             VALUES (:afterSaleNo, :orderNo, :buyerName, :type, :productName, :quantity, :refundAmount, 'WAIT_AUDIT', :reason)
             """)
             .param("afterSaleNo", afterSaleNo)
-            .param("orderNo", string(request.getOrDefault("orderNo", "-")))
+            .param("orderNo", orderNo)
             .param("buyerName", string(request.getOrDefault("buyerName", "杭州采购王")))
             .param("type", string(request.getOrDefault("type", "ONLY_REFUND")))
-            .param("productName", string(request.getOrDefault("productName", "")))
-            .param("quantity", number(request.getOrDefault("quantity", 1)).intValue())
-            .param("refundAmount", new BigDecimal(String.valueOf(request.getOrDefault("refundAmount", "0.00"))))
+            .param("productName", productName)
+            .param("quantity", quantity)
+            .param("refundAmount", refundAmount)
             .param("reason", string(request.getOrDefault("reason", "买家申请售后")))
             .update();
         log("售后管理", "提交售后", afterSaleNo, "提交售后申请");
@@ -571,9 +582,10 @@ public class PhaseOneController {
     public Map<String, Object> auditAfterSale(@PathVariable Long afterSaleId, @RequestBody Map<String, Object> request) {
         boolean approved = Boolean.parseBoolean(String.valueOf(request.getOrDefault("approved", true)));
         String status = approved ? "WAIT_REFUND" : "REJECTED";
+        String remark = requiredString(request, "remark");
         jdbcClient.sql("UPDATE after_sale_orders SET after_sale_status = :status, audit_remark = :remark WHERE id = :id")
             .param("status", status)
-            .param("remark", string(request.getOrDefault("remark", approved ? "同意售后" : "拒绝售后")))
+            .param("remark", remark)
             .param("id", afterSaleId)
             .update();
         log("售后管理", "售后审核", String.valueOf(afterSaleId), "售后审核 " + status);
@@ -615,19 +627,23 @@ public class PhaseOneController {
 
     @PostMapping("/mall/invoices")
     public Map<String, Object> createInvoice(@RequestBody Map<String, Object> request) {
+        String orderNo = requiredString(request, "orderNo");
+        String invoiceTitle = requiredString(request, request.containsKey("title") ? "title" : "invoiceTitle");
+        BigDecimal amount = nonNegativeMoney(request, "amount");
+        String email = requiredEmail(request, request.containsKey("email") ? "email" : "receiveEmail");
         String invoiceApplyNo = "INV" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + System.currentTimeMillis() % 100000;
         jdbcClient.sql("""
             INSERT INTO invoice_applies (invoice_apply_no, order_no, buyer_name, invoice_type, title_type, invoice_title, apply_amount, receive_email, invoice_status)
             VALUES (:invoiceApplyNo, :orderNo, :buyerName, :invoiceType, :titleType, :invoiceTitle, :amount, :email, 'WAIT_INVOICE')
             """)
             .param("invoiceApplyNo", invoiceApplyNo)
-            .param("orderNo", string(request.getOrDefault("orderNo", "-")))
+            .param("orderNo", orderNo)
             .param("buyerName", string(request.getOrDefault("buyerName", "杭州采购王")))
             .param("invoiceType", string(request.getOrDefault("invoiceType", "E_NORMAL")))
             .param("titleType", string(request.getOrDefault("titleType", "COMPANY")))
-            .param("invoiceTitle", string(request.getOrDefault("title", request.getOrDefault("invoiceTitle", "杭州某某商贸有限公司"))))
-            .param("amount", new BigDecimal(String.valueOf(request.getOrDefault("amount", "0.00"))))
-            .param("email", string(request.getOrDefault("email", request.getOrDefault("receiveEmail", "invoice@example.com"))))
+            .param("invoiceTitle", invoiceTitle)
+            .param("amount", amount)
+            .param("email", email)
             .update();
         log("开票管理", "提交开票申请", invoiceApplyNo, "提交开票申请");
         return one("SELECT * FROM invoice_applies WHERE invoice_apply_no = :invoiceApplyNo", "invoiceApplyNo", invoiceApplyNo);
@@ -646,8 +662,9 @@ public class PhaseOneController {
 
     @PostMapping("/admin/invoices/{invoiceApplyId}/reject")
     public Map<String, Object> rejectInvoice(@PathVariable Long invoiceApplyId, @RequestBody Map<String, Object> request) {
+        String reason = requiredString(request, "reason");
         jdbcClient.sql("UPDATE invoice_applies SET invoice_status = 'REJECTED', reject_reason = :reason WHERE id = :id")
-            .param("reason", string(request.getOrDefault("reason", "开票资料不完整")))
+            .param("reason", reason)
             .param("id", invoiceApplyId)
             .update();
         log("开票管理", "驳回开票", String.valueOf(invoiceApplyId), "驳回开票申请");
@@ -665,15 +682,22 @@ public class PhaseOneController {
 
     @PostMapping("/mall/invoice-titles")
     public Map<String, Object> createInvoiceTitle(@RequestBody Map<String, Object> request) {
+        String invoiceTitle = requiredString(request, request.containsKey("title") ? "title" : "invoiceTitle");
+        String email = requiredEmail(request, request.containsKey("email") ? "email" : "receiveEmail");
+        String titleType = string(request.getOrDefault("titleType", "COMPANY"));
+        String taxNo = string(request.getOrDefault("taxNo", ""));
+        if ("COMPANY".equalsIgnoreCase(titleType) && taxNo.isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "taxNo is required for company invoice title");
+        }
         jdbcClient.sql("""
             INSERT INTO invoice_titles (buyer_name, title_type, invoice_title, tax_no, receive_email, is_default)
             VALUES (:buyerName, :titleType, :invoiceTitle, :taxNo, :email, false)
             """)
             .param("buyerName", string(request.getOrDefault("buyerName", "杭州采购王")))
-            .param("titleType", string(request.getOrDefault("titleType", "COMPANY")))
-            .param("invoiceTitle", string(request.getOrDefault("title", request.getOrDefault("invoiceTitle", ""))))
-            .param("taxNo", string(request.getOrDefault("taxNo", "")))
-            .param("email", string(request.getOrDefault("email", request.getOrDefault("receiveEmail", ""))))
+            .param("titleType", titleType)
+            .param("invoiceTitle", invoiceTitle)
+            .param("taxNo", taxNo)
+            .param("email", email)
             .update();
         return rows("SELECT * FROM invoice_titles ORDER BY id DESC").get(0);
     }
@@ -711,6 +735,79 @@ public class PhaseOneController {
 
     private long count(String sql) {
         return jdbcClient.sql(sql).query(Long.class).single();
+    }
+
+    private String requiredString(Map<String, Object> request, String field) {
+        String value = string(request.get(field)).trim();
+        if (value.isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, field + " is required");
+        }
+        return value;
+    }
+
+    private String requiredEmail(Map<String, Object> request, String field) {
+        String value = requiredString(request, field);
+        if (!value.matches("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$")) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, field + " must be a valid email");
+        }
+        return value;
+    }
+
+    private Long requiredLong(Map<String, Object> request, String field) {
+        if (!request.containsKey(field) || request.get(field) == null || string(request.get(field)).isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, field + " is required");
+        }
+        try {
+            return number(request.get(field)).longValue();
+        } catch (RuntimeException exception) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, field + " must be a number");
+        }
+    }
+
+    private int requiredInt(Map<String, Object> request, String field) {
+        if (!request.containsKey(field) || request.get(field) == null || string(request.get(field)).isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, field + " is required");
+        }
+        try {
+            return number(request.get(field)).intValue();
+        } catch (RuntimeException exception) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, field + " must be a number");
+        }
+    }
+
+    private int positiveInt(Map<String, Object> request, String field) {
+        int value = requiredInt(request, field);
+        if (value <= 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, field + " must be greater than zero");
+        }
+        return value;
+    }
+
+    private BigDecimal positiveMoney(Map<String, Object> request, String field) {
+        BigDecimal value = moneyValue(request, field);
+        if (value.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, field + " must be greater than zero");
+        }
+        return value;
+    }
+
+    private BigDecimal nonNegativeMoney(Map<String, Object> request, String field) {
+        BigDecimal value = moneyValue(request, field);
+        if (value.compareTo(BigDecimal.ZERO) < 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, field + " cannot be negative");
+        }
+        return value;
+    }
+
+    private BigDecimal moneyValue(Map<String, Object> request, String field) {
+        if (!request.containsKey(field) || request.get(field) == null || string(request.get(field)).isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, field + " is required");
+        }
+        try {
+            return new BigDecimal(String.valueOf(request.get(field)));
+        } catch (RuntimeException exception) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, field + " must be a valid amount");
+        }
     }
 
     private Number number(Object value) {
