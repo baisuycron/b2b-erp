@@ -3,6 +3,8 @@
     summary: null,
     products: [],
     suppliers: [],
+    categories: [],
+    brands: [],
     purchaseOrders: [],
     purchaseStockIns: [],
     inventory: [],
@@ -22,6 +24,8 @@
   const pageLoaders = {
     "dashboard": () => load("summary"),
     "product-list": () => load("products"),
+    "product-category": () => load("categories"),
+    "product-brand": () => load("brands"),
     "supplier": () => load("suppliers"),
     "purchase-order": () => Promise.all([load("purchaseOrders"), load("products"), load("suppliers")]),
     "purchase-inbound": () => load("purchaseStockIns"),
@@ -44,6 +48,8 @@
     summary: "/api/admin/summary",
     products: "/api/admin/products",
     suppliers: "/api/admin/suppliers",
+    categories: "/api/admin/product-categories",
+    brands: "/api/admin/product-brands",
     purchaseOrders: "/api/admin/purchase-orders",
     purchaseStockIns: "/api/admin/purchase-stock-ins",
     inventory: "/api/admin/inventory",
@@ -145,7 +151,7 @@
         ${fields.map(field => `
           <label class="label ${field.required ? "required" : ""}">${esc(field.label)}</label>
           ${field.type === "select"
-            ? `<select class="select" name="${field.name}" ${field.required ? "required" : ""}>${field.options.map(option => `<option value="${esc(option.value)}">${esc(option.label)}</option>`).join("")}</select>`
+            ? `<select class="select" name="${field.name}" ${field.required ? "required" : ""}>${field.options.map(option => `<option value="${esc(option.value)}" ${String(option.value) === String(field.value ?? "") ? "selected" : ""}>${esc(option.label)}</option>`).join("")}</select>`
             : field.type === "textarea"
               ? `<textarea class="textarea" name="${field.name}" placeholder="${esc(field.placeholder || "")}" ${field.required ? "required" : ""}>${esc(field.value || "")}</textarea>`
               : `<input class="input" name="${field.name}" type="${field.type || "text"}" value="${esc(field.value || "")}" placeholder="${esc(field.placeholder || "")}" ${field.required ? "required" : ""}>`}
@@ -219,41 +225,121 @@
       ${cardTable("商品列表", ["商品编码", "商品名称", "SKU", "单位", "销售价", "库存", "起订量", "状态", "操作"], state.products.map(item => [
         esc(item.productCode), esc(item.productName), esc(item.skuCode || item.skuName), esc(item.unit), money(item.salePrice), esc(item.stockQuantity),
         esc(item.minOrderQuantity), tag(item.saleStatus),
-        `<button class="btn-text" onclick="apiProductSale(${item.id}, '${item.saleStatus === "ON_SALE" ? "off" : "on"}')">${item.saleStatus === "ON_SALE" ? "下架" : "上架"}</button>`
+        `<button class="btn-text" onclick="apiEditProduct(${item.id})">编辑</button> <button class="btn-text" onclick="apiProductSale(${item.id}, '${item.saleStatus === "ON_SALE" ? "off" : "on"}')">${item.saleStatus === "ON_SALE" ? "下架" : "上架"}</button>`
       ]))}`;
   };
 
   window.apiCreateProduct = function () {
-    form("新增商品", [
-      { label: "商品名称", name: "productName", required: true },
-      { label: "SKU名称", name: "skuName", required: true },
-      { label: "单位", name: "unit", value: "件", required: true },
-      { label: "销售价", name: "salePrice", type: "number", required: true },
-      { label: "库存数量", name: "stockQuantity", type: "number", required: true },
-      { label: "起订量", name: "minOrderQuantity", type: "number", value: 1, required: true }
-    ], data => api("/api/admin/products", { method: "POST", body: JSON.stringify(data) }));
+    productForm("新增商品", null, data => api("/api/admin/products", { method: "POST", body: JSON.stringify(data) }));
   };
+
+  window.apiEditProduct = function (id) {
+    const item = state.products.find(product => Number(product.id) === Number(id));
+    if (!item) return showToast("商品数据不存在");
+    productForm("编辑商品", item, data => api(`/api/admin/products/${id}`, { method: "PUT", body: JSON.stringify(data) }));
+  };
+
+  function productForm(title, item, onSubmit) {
+    form(title, [
+      { label: "商品名称", name: "productName", value: item?.productName || "", required: true },
+      { label: "SKU名称", name: "skuName", value: item?.skuName || "", required: true },
+      { label: "单位", name: "unit", value: item?.unit || "件", required: true },
+      { label: "销售价", name: "salePrice", type: "number", value: item?.salePrice || "", required: true },
+      { label: "库存数量", name: "stockQuantity", type: "number", value: item?.stockQuantity ?? 0, required: true },
+      { label: "起订量", name: "minOrderQuantity", type: "number", value: item?.minOrderQuantity || 1, required: true }
+    ], onSubmit);
+  }
 
   window.apiProductSale = function (id, action) {
     api(`/api/admin/products/${id}/${action === "on" ? "on-sale" : "off-sale"}`, { method: "PUT" }).then(reloadCurrent).then(() => showToast("商品状态已更新")).catch(error => showToast(error.message));
+  };
+
+  window.renderCategory = function () {
+    return `${pageHeader("商品分类", "商品分类已接入真实新增、编辑和启停用。", '<button class="btn btn-primary" onclick="apiCreateCategory()">新增分类</button>')}
+      ${cardTable("分类列表", ["分类名称", "上级分类", "排序", "状态", "操作"], state.categories.map(item => [
+        esc(item.categoryName), esc(item.parentName || "-"), esc(item.sortNo), tag(item.status),
+        `<button class="btn-text" onclick="apiEditCategory(${item.id})">编辑</button> <button class="btn-text" onclick="apiCategoryStatus(${item.id}, '${item.status === "ENABLED" ? "DISABLED" : "ENABLED"}')">${item.status === "ENABLED" ? "停用" : "启用"}</button>`
+      ]))}`;
+  };
+
+  window.apiCreateCategory = function () {
+    categoryForm("新增分类", null, data => api("/api/admin/product-categories", { method: "POST", body: JSON.stringify(data) }));
+  };
+
+  window.apiEditCategory = function (id) {
+    const item = state.categories.find(category => Number(category.id) === Number(id));
+    if (!item) return showToast("分类数据不存在");
+    categoryForm("编辑分类", item, data => api(`/api/admin/product-categories/${id}`, { method: "PUT", body: JSON.stringify(data) }));
+  };
+
+  function categoryForm(title, item, onSubmit) {
+    form(title, [
+      { label: "分类名称", name: "categoryName", value: item?.categoryName || "", required: true },
+      { label: "上级分类", name: "parentName", value: item?.parentName || "-" },
+      { label: "排序", name: "sortNo", type: "number", value: item?.sortNo ?? 10, required: true }
+    ], onSubmit);
+  }
+
+  window.apiCategoryStatus = function (id, status) {
+    api(`/api/admin/product-categories/${id}/status`, { method: "PUT", body: JSON.stringify({ status }) }).then(reloadCurrent).then(() => showToast("分类状态已更新")).catch(error => showToast(error.message));
+  };
+
+  window.renderBrand = function () {
+    return `${pageHeader("商品品牌", "商品品牌已接入真实新增、编辑和启停用。", '<button class="btn btn-primary" onclick="apiCreateBrand()">新增品牌</button>')}
+      ${cardTable("品牌列表", ["品牌名称", "首字母", "排序", "状态", "操作"], state.brands.map(item => [
+        esc(item.brandName), esc(item.firstLetter || "-"), esc(item.sortNo), tag(item.status),
+        `<button class="btn-text" onclick="apiEditBrand(${item.id})">编辑</button> <button class="btn-text" onclick="apiBrandStatus(${item.id}, '${item.status === "ENABLED" ? "DISABLED" : "ENABLED"}')">${item.status === "ENABLED" ? "停用" : "启用"}</button>`
+      ]))}`;
+  };
+
+  window.apiCreateBrand = function () {
+    brandForm("新增品牌", null, data => api("/api/admin/product-brands", { method: "POST", body: JSON.stringify(data) }));
+  };
+
+  window.apiEditBrand = function (id) {
+    const item = state.brands.find(brand => Number(brand.id) === Number(id));
+    if (!item) return showToast("品牌数据不存在");
+    brandForm("编辑品牌", item, data => api(`/api/admin/product-brands/${id}`, { method: "PUT", body: JSON.stringify(data) }));
+  };
+
+  function brandForm(title, item, onSubmit) {
+    form(title, [
+      { label: "品牌名称", name: "brandName", value: item?.brandName || "", required: true },
+      { label: "首字母", name: "firstLetter", value: item?.firstLetter || "" },
+      { label: "排序", name: "sortNo", type: "number", value: item?.sortNo ?? 10, required: true }
+    ], onSubmit);
+  }
+
+  window.apiBrandStatus = function (id, status) {
+    api(`/api/admin/product-brands/${id}/status`, { method: "PUT", body: JSON.stringify({ status }) }).then(reloadCurrent).then(() => showToast("品牌状态已更新")).catch(error => showToast(error.message));
   };
 
   window.renderSupplier = function () {
     return `${pageHeader("供应商管理", "供应商列表、启停用和新增都已接入真实 API。", '<button class="btn btn-primary" onclick="apiCreateSupplier()">新增供应商</button>')}
       ${cardTable("供应商列表", ["供应商编号", "供应商名称", "联系人", "联系电话", "采购单数", "采购金额", "状态", "操作"], state.suppliers.map(item => [
         esc(item.supplierNo), esc(item.supplierName), esc(item.contactName), esc(item.phone), esc(item.purchaseCount), money(item.purchaseAmount), tag(item.status),
-        `<button class="btn-text" onclick="apiSupplierStatus(${item.id}, '${item.status === "ENABLED" ? "DISABLED" : "ENABLED"}')">${item.status === "ENABLED" ? "停用" : "启用"}</button>`
+        `<button class="btn-text" onclick="apiEditSupplier(${item.id})">编辑</button> <button class="btn-text" onclick="apiSupplierStatus(${item.id}, '${item.status === "ENABLED" ? "DISABLED" : "ENABLED"}')">${item.status === "ENABLED" ? "停用" : "启用"}</button>`
       ]))}`;
   };
 
   window.apiCreateSupplier = function () {
-    form("新增供应商", [
-      { label: "供应商名称", name: "supplierName", required: true },
-      { label: "联系人", name: "contactName", required: true },
-      { label: "联系电话", name: "contactPhone", required: true },
-      { label: "地址", name: "address", type: "textarea" }
-    ], data => api("/api/admin/suppliers", { method: "POST", body: JSON.stringify(data) }));
+    supplierForm("新增供应商", null, data => api("/api/admin/suppliers", { method: "POST", body: JSON.stringify(data) }));
   };
+
+  window.apiEditSupplier = function (id) {
+    const item = state.suppliers.find(supplier => Number(supplier.id) === Number(id));
+    if (!item) return showToast("供应商数据不存在");
+    supplierForm("编辑供应商", item, data => api(`/api/admin/suppliers/${id}`, { method: "PUT", body: JSON.stringify(data) }));
+  };
+
+  function supplierForm(title, item, onSubmit) {
+    form(title, [
+      { label: "供应商名称", name: "supplierName", value: item?.supplierName || "", required: true },
+      { label: "联系人", name: "contactName", value: item?.contactName || "", required: true },
+      { label: "联系电话", name: "contactPhone", value: item?.phone || "", required: true },
+      { label: "地址", name: "address", type: "textarea", value: item?.address || "" }
+    ], onSubmit);
+  }
 
   window.apiSupplierStatus = function (id, status) {
     api(`/api/admin/suppliers/${id}/status`, { method: "PUT", body: JSON.stringify({ status }) }).then(reloadCurrent).then(() => showToast("供应商状态已更新")).catch(error => showToast(error.message));
@@ -263,20 +349,32 @@
     return `${pageHeader("采购订单", "采购订单已接入真实创建、取消、入库接口。", '<button class="btn btn-primary" onclick="apiCreatePurchase()">新增采购单</button>')}
       ${cardTable("采购订单列表", ["采购单号", "供应商", "商品", "SKU", "采购数", "已入库", "金额", "预计到货", "状态", "操作"], state.purchaseOrders.map(item => [
         esc(item.purchaseNo), esc(item.supplierName), esc(item.productName), esc(item.skuCode), esc(item.purchaseQty), esc(item.stockedQty), money(item.amount), esc(item.expectedArrivalDate), tag(item.status),
-        `${item.status !== "COMPLETED" && item.status !== "CANCELLED" ? `<button class="btn-text" onclick="apiStockIn(${item.id})">采购入库</button> <button class="btn-text-danger" onclick="apiCancelPurchase(${item.id})">取消</button>` : ""}`
+        `${item.status === "WAIT_STOCK_IN" ? `<button class="btn-text" onclick="apiEditPurchase(${item.id})">编辑</button> ` : ""}${item.status !== "COMPLETED" && item.status !== "CANCELLED" ? `<button class="btn-text" onclick="apiStockIn(${item.id})">采购入库</button> <button class="btn-text-danger" onclick="apiCancelPurchase(${item.id})">取消</button>` : ""}`
       ]))}`;
   };
 
   window.apiCreatePurchase = function () {
-    Promise.all([load("products"), load("suppliers")]).then(() => form("新增采购单", [
-      { label: "供应商", name: "supplierId", type: "select", required: true, options: supplierOptions() },
-      { label: "采购商品", name: "productId", type: "select", required: true, options: productOptions() },
-      { label: "采购数量", name: "quantity", type: "number", value: 100, required: true },
-      { label: "采购单价", name: "purchasePrice", type: "number", value: 20, required: true },
-      { label: "预计到货日期", name: "expectedArrivalDate", type: "date", required: true },
-      { label: "备注", name: "remark", type: "textarea" }
-    ], data => api("/api/admin/purchase-orders", { method: "POST", body: JSON.stringify(data) })));
+    Promise.all([load("products"), load("suppliers")]).then(() => purchaseForm("新增采购单", null, data => api("/api/admin/purchase-orders", { method: "POST", body: JSON.stringify(data) })));
   };
+
+  window.apiEditPurchase = function (id) {
+    Promise.all([load("products"), load("suppliers")]).then(() => {
+      const item = state.purchaseOrders.find(order => Number(order.id) === Number(id));
+      if (!item) return showToast("采购单数据不存在");
+      purchaseForm("编辑采购单", item, data => api(`/api/admin/purchase-orders/${id}`, { method: "PUT", body: JSON.stringify(data) }));
+    });
+  };
+
+  function purchaseForm(title, item, onSubmit) {
+    form(title, [
+      { label: "供应商", name: "supplierId", type: "select", value: item?.supplierId || "", required: true, options: supplierOptions() },
+      { label: "采购商品", name: "productId", type: "select", value: item?.targetProductId || item?.productId || "", required: true, options: productOptions() },
+      { label: "采购数量", name: "quantity", type: "number", value: item?.purchaseQty || 100, required: true },
+      { label: "采购单价", name: "purchasePrice", type: "number", value: item?.purchasePrice || 20, required: true },
+      { label: "预计到货日期", name: "expectedArrivalDate", type: "date", value: item?.expectedArrivalDate || "", required: true },
+      { label: "备注", name: "remark", type: "textarea", value: item?.remark || "" }
+    ], onSubmit);
+  }
 
   window.apiStockIn = function (id) {
     form("采购入库", [
@@ -393,18 +491,31 @@
     return `${pageHeader("后台账号", "后台账号已接入新增和启停用接口。", '<button class="btn btn-primary" onclick="apiCreateAccount()">新增账号</button>')}
       ${cardTable("后台账号", ["账号", "姓名", "手机号", "角色", "状态", "创建时间", "操作"], state.accounts.map(item => [
         esc(item.accountName), esc(item.realName), esc(item.phone), esc(item.roleName), tag(item.status), date(item.createdAt),
-        `<button class="btn-text" onclick="apiAccountStatus(${item.id}, '${item.status === "ENABLED" ? "DISABLED" : "ENABLED"}')">${item.status === "ENABLED" ? "停用" : "启用"}</button>`
+        `<button class="btn-text" onclick="apiEditAccount(${item.id})">编辑</button> <button class="btn-text" onclick="apiAccountStatus(${item.id}, '${item.status === "ENABLED" ? "DISABLED" : "ENABLED"}')">${item.status === "ENABLED" ? "停用" : "启用"}</button>`
       ]))}`;
   };
 
   window.apiCreateAccount = function () {
-    form("新增后台账号", [
-      { label: "账号", name: "accountName", required: true },
-      { label: "姓名", name: "realName", required: true },
-      { label: "手机号", name: "phone", required: true },
-      { label: "角色", name: "roleName", value: "客服人员", required: true }
-    ], data => api("/api/admin/accounts", { method: "POST", body: JSON.stringify(data) }));
+    accountForm("新增后台账号", null, data => api("/api/admin/accounts", { method: "POST", body: JSON.stringify(data) }));
   };
+
+  window.apiEditAccount = function (id) {
+    const item = state.accounts.find(account => Number(account.id) === Number(id));
+    if (!item) return showToast("账号数据不存在");
+    accountForm("编辑后台账号", item, data => api(`/api/admin/accounts/${id}`, { method: "PUT", body: JSON.stringify(data) }));
+  };
+
+  function accountForm(title, item, onSubmit) {
+    const fields = [
+      { label: "姓名", name: "realName", value: item?.realName || "", required: true },
+      { label: "手机号", name: "phone", value: item?.phone || "", required: true },
+      { label: "角色", name: "roleName", value: item?.roleName || "客服人员", required: true }
+    ];
+    if (!item) {
+      fields.unshift({ label: "账号", name: "accountName", required: true });
+    }
+    form(title, fields, onSubmit);
+  }
 
   window.apiAccountStatus = function (id, status) {
     api(`/api/admin/accounts/${id}/status`, { method: "PUT", body: JSON.stringify({ status }) }).then(reloadCurrent).then(() => showToast("账号状态已更新")).catch(error => showToast(error.message));
@@ -412,17 +523,28 @@
 
   window.renderSystemRole = function () {
     return `${pageHeader("角色权限", "角色数据已接入真实接口。", '<button class="btn btn-primary" onclick="apiCreateRole()">新增角色</button>')}
-      ${cardTable("角色列表", ["角色名称", "说明", "账号数", "状态", "创建时间"], state.roles.map(item => [
-        esc(item.roleName), esc(item.description), esc(item.accountCount), tag(item.status), date(item.createdAt)
+      ${cardTable("角色列表", ["角色名称", "说明", "账号数", "状态", "创建时间", "操作"], state.roles.map(item => [
+        esc(item.roleName), esc(item.description), esc(item.accountCount), tag(item.status), date(item.createdAt),
+        `<button class="btn-text" onclick="apiEditRole(${item.id})">编辑</button>`
       ]))}`;
   };
 
   window.apiCreateRole = function () {
-    form("新增角色", [
-      { label: "角色名称", name: "roleName", required: true },
-      { label: "角色说明", name: "roleDesc", type: "textarea", required: true }
-    ], data => api("/api/admin/roles", { method: "POST", body: JSON.stringify(data) }));
+    roleForm("新增角色", null, data => api("/api/admin/roles", { method: "POST", body: JSON.stringify(data) }));
   };
+
+  window.apiEditRole = function (id) {
+    const item = state.roles.find(role => Number(role.id) === Number(id));
+    if (!item) return showToast("角色数据不存在");
+    roleForm("编辑角色", item, data => api(`/api/admin/roles/${id}`, { method: "PUT", body: JSON.stringify(data) }));
+  };
+
+  function roleForm(title, item, onSubmit) {
+    form(title, [
+      { label: "角色名称", name: "roleName", value: item?.roleName || "", required: true },
+      { label: "角色说明", name: "roleDesc", type: "textarea", value: item?.description || "", required: true }
+    ], onSubmit);
+  }
 
   window.renderSystemLog = function () {
     return `${pageHeader("操作日志", "关键写操作会写入操作日志。")}

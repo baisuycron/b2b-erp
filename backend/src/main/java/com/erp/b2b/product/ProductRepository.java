@@ -57,6 +57,28 @@ public class ProductRepository {
         return findById(id).orElseThrow();
     }
 
+    public Product update(Long productId, CreateProductRequest request) {
+        jdbcClient.sql("""
+            UPDATE products
+            SET product_name = :productName,
+                sku_name = :skuName,
+                unit = :unit,
+                sale_price = :salePrice,
+                stock_quantity = :stockQuantity,
+                min_order_quantity = :minOrderQuantity
+            WHERE id = :productId
+            """)
+            .param("productId", productId)
+            .param("productName", request.productName())
+            .param("skuName", request.skuName())
+            .param("unit", request.unit())
+            .param("salePrice", request.salePrice())
+            .param("stockQuantity", request.stockQuantity())
+            .param("minOrderQuantity", request.minOrderQuantity())
+            .update();
+        return findById(productId).orElseThrow();
+    }
+
     public int deductStock(Long productId, int quantity) {
         return jdbcClient.sql("""
             UPDATE products

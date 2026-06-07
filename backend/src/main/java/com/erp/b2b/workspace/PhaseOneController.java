@@ -93,18 +93,40 @@ public class PhaseOneController {
 
     @PostMapping("/admin/accounts")
     public Map<String, Object> createAdminAccount(@RequestBody Map<String, Object> request) {
-        String accountName = string(request.getOrDefault("accountName", "user" + System.currentTimeMillis() % 100000));
+        String accountName = requiredString(request, "accountName");
+        String realName = requiredString(request, "realName");
+        String phone = requiredString(request, "phone");
+        String roleName = requiredString(request, "roleName");
         jdbcClient.sql("""
             INSERT INTO admin_accounts (account_name, real_name, phone, role_name, account_status)
             VALUES (:accountName, :realName, :phone, :roleName, 'ENABLED')
             """)
             .param("accountName", accountName)
-            .param("realName", string(request.getOrDefault("realName", accountName)))
-            .param("phone", string(request.getOrDefault("phone", "13800000000")))
-            .param("roleName", string(request.getOrDefault("roleName", "客服人员")))
+            .param("realName", realName)
+            .param("phone", phone)
+            .param("roleName", roleName)
             .update();
         log("系统管理", "新增后台账号", accountName, "新增账号 " + accountName);
         return one("SELECT * FROM admin_accounts WHERE account_name = :accountName", "accountName", accountName);
+    }
+
+    @PutMapping("/admin/accounts/{accountId}")
+    public Map<String, Object> updateAdminAccount(@PathVariable Long accountId, @RequestBody Map<String, Object> request) {
+        String realName = requiredString(request, "realName");
+        String phone = requiredString(request, "phone");
+        String roleName = requiredString(request, "roleName");
+        jdbcClient.sql("""
+            UPDATE admin_accounts
+            SET real_name = :realName, phone = :phone, role_name = :roleName
+            WHERE id = :id
+            """)
+            .param("realName", realName)
+            .param("phone", phone)
+            .param("roleName", roleName)
+            .param("id", accountId)
+            .update();
+        log("系统管理", "编辑后台账号", String.valueOf(accountId), "编辑后台账号资料");
+        return one("SELECT * FROM admin_accounts WHERE id = :id", "id", accountId);
     }
 
     @PutMapping("/admin/accounts/{accountId}/status")
@@ -129,16 +151,34 @@ public class PhaseOneController {
 
     @PostMapping("/admin/roles")
     public Map<String, Object> createRole(@RequestBody Map<String, Object> request) {
-        String roleName = string(request.getOrDefault("roleName", "新角色" + System.currentTimeMillis() % 100000));
+        String roleName = requiredString(request, "roleName");
+        String roleDesc = requiredString(request, "roleDesc");
         jdbcClient.sql("""
             INSERT INTO admin_roles (role_name, role_desc, account_count, role_status)
             VALUES (:roleName, :roleDesc, 0, 'ENABLED')
             """)
             .param("roleName", roleName)
-            .param("roleDesc", string(request.getOrDefault("roleDesc", "自定义角色")))
+            .param("roleDesc", roleDesc)
             .update();
         log("系统管理", "新增角色", roleName, "新增角色 " + roleName);
         return one("SELECT * FROM admin_roles WHERE role_name = :roleName", "roleName", roleName);
+    }
+
+    @PutMapping("/admin/roles/{roleId}")
+    public Map<String, Object> updateRole(@PathVariable Long roleId, @RequestBody Map<String, Object> request) {
+        String roleName = requiredString(request, "roleName");
+        String roleDesc = requiredString(request, "roleDesc");
+        jdbcClient.sql("""
+            UPDATE admin_roles
+            SET role_name = :roleName, role_desc = :roleDesc
+            WHERE id = :id
+            """)
+            .param("roleName", roleName)
+            .param("roleDesc", roleDesc)
+            .param("id", roleId)
+            .update();
+        log("系统管理", "编辑角色", String.valueOf(roleId), "编辑角色资料");
+        return one("SELECT * FROM admin_roles WHERE id = :id", "id", roleId);
     }
 
     @GetMapping("/admin/permissions/tree")
@@ -157,20 +197,106 @@ public class PhaseOneController {
 
     @GetMapping("/admin/product-categories")
     public List<Map<String, Object>> productCategories() {
-        return List.of(
-            row("id", 1, "categoryName", "包装饮用水", "parentName", "-", "sortNo", 10, "status", "ENABLED"),
-            row("id", 2, "categoryName", "办公物资", "parentName", "-", "sortNo", 20, "status", "ENABLED"),
-            row("id", 3, "categoryName", "餐饮耗材", "parentName", "-", "sortNo", 30, "status", "ENABLED")
-        );
+        return rows("""
+            SELECT id, category_name, parent_name, sort_no, category_status AS status, created_at, updated_at
+            FROM product_categories
+            ORDER BY sort_no, id
+            """);
+    }
+
+    @PostMapping("/admin/product-categories")
+    public Map<String, Object> createProductCategory(@RequestBody Map<String, Object> request) {
+        String categoryName = requiredString(request, "categoryName");
+        jdbcClient.sql("""
+            INSERT INTO product_categories (category_name, parent_name, sort_no, category_status)
+            VALUES (:categoryName, :parentName, :sortNo, 'ENABLED')
+            """)
+            .param("categoryName", categoryName)
+            .param("parentName", string(request.getOrDefault("parentName", "-")))
+            .param("sortNo", requiredInt(request, "sortNo"))
+            .update();
+        log("商品管理", "新增商品分类", categoryName, "新增商品分类");
+        return rows("SELECT * FROM product_categories ORDER BY id DESC").get(0);
+    }
+
+    @PutMapping("/admin/product-categories/{categoryId}")
+    public Map<String, Object> updateProductCategory(@PathVariable Long categoryId, @RequestBody Map<String, Object> request) {
+        String categoryName = requiredString(request, "categoryName");
+        jdbcClient.sql("""
+            UPDATE product_categories
+            SET category_name = :categoryName, parent_name = :parentName, sort_no = :sortNo
+            WHERE id = :id
+            """)
+            .param("categoryName", categoryName)
+            .param("parentName", string(request.getOrDefault("parentName", "-")))
+            .param("sortNo", requiredInt(request, "sortNo"))
+            .param("id", categoryId)
+            .update();
+        log("商品管理", "编辑商品分类", String.valueOf(categoryId), "编辑商品分类");
+        return one("SELECT * FROM product_categories WHERE id = :id", "id", categoryId);
+    }
+
+    @PutMapping("/admin/product-categories/{categoryId}/status")
+    public Map<String, Object> updateProductCategoryStatus(@PathVariable Long categoryId, @RequestBody Map<String, Object> request) {
+        String status = normalizeStatus(request.getOrDefault("status", "ENABLED"));
+        jdbcClient.sql("UPDATE product_categories SET category_status = :status WHERE id = :id")
+            .param("status", status)
+            .param("id", categoryId)
+            .update();
+        log("商品管理", "启用/停用商品分类", String.valueOf(categoryId), "商品分类状态更新为 " + status);
+        return one("SELECT * FROM product_categories WHERE id = :id", "id", categoryId);
     }
 
     @GetMapping("/admin/product-brands")
     public List<Map<String, Object>> productBrands() {
-        return List.of(
-            row("id", 1, "brandName", "自营优选", "sortNo", 10, "status", "ENABLED"),
-            row("id", 2, "brandName", "企业集采", "sortNo", 20, "status", "ENABLED"),
-            row("id", 3, "brandName", "办公严选", "sortNo", 30, "status", "ENABLED")
-        );
+        return rows("""
+            SELECT id, brand_name, first_letter, sort_no, brand_status AS status, created_at, updated_at
+            FROM product_brands
+            ORDER BY sort_no, id
+            """);
+    }
+
+    @PostMapping("/admin/product-brands")
+    public Map<String, Object> createProductBrand(@RequestBody Map<String, Object> request) {
+        String brandName = requiredString(request, "brandName");
+        jdbcClient.sql("""
+            INSERT INTO product_brands (brand_name, first_letter, sort_no, brand_status)
+            VALUES (:brandName, :firstLetter, :sortNo, 'ENABLED')
+            """)
+            .param("brandName", brandName)
+            .param("firstLetter", string(request.getOrDefault("firstLetter", "")))
+            .param("sortNo", requiredInt(request, "sortNo"))
+            .update();
+        log("商品管理", "新增商品品牌", brandName, "新增商品品牌");
+        return rows("SELECT * FROM product_brands ORDER BY id DESC").get(0);
+    }
+
+    @PutMapping("/admin/product-brands/{brandId}")
+    public Map<String, Object> updateProductBrand(@PathVariable Long brandId, @RequestBody Map<String, Object> request) {
+        String brandName = requiredString(request, "brandName");
+        jdbcClient.sql("""
+            UPDATE product_brands
+            SET brand_name = :brandName, first_letter = :firstLetter, sort_no = :sortNo
+            WHERE id = :id
+            """)
+            .param("brandName", brandName)
+            .param("firstLetter", string(request.getOrDefault("firstLetter", "")))
+            .param("sortNo", requiredInt(request, "sortNo"))
+            .param("id", brandId)
+            .update();
+        log("商品管理", "编辑商品品牌", String.valueOf(brandId), "编辑商品品牌");
+        return one("SELECT * FROM product_brands WHERE id = :id", "id", brandId);
+    }
+
+    @PutMapping("/admin/product-brands/{brandId}/status")
+    public Map<String, Object> updateProductBrandStatus(@PathVariable Long brandId, @RequestBody Map<String, Object> request) {
+        String status = normalizeStatus(request.getOrDefault("status", "ENABLED"));
+        jdbcClient.sql("UPDATE product_brands SET brand_status = :status WHERE id = :id")
+            .param("status", status)
+            .param("id", brandId)
+            .update();
+        log("商品管理", "启用/停用商品品牌", String.valueOf(brandId), "商品品牌状态更新为 " + status);
+        return one("SELECT * FROM product_brands WHERE id = :id", "id", brandId);
     }
 
     @GetMapping("/admin/products")
@@ -183,6 +309,13 @@ public class PhaseOneController {
         long suffix = System.currentTimeMillis();
         Product product = productRepository.create(request, "P-" + suffix, "SKU-" + suffix);
         log("商品管理", "新增商品", product.productCode(), "新增商品 " + product.productName());
+        return product;
+    }
+
+    @PutMapping("/admin/products/{productId}")
+    public Product updateAdminProduct(@PathVariable Long productId, @Valid @RequestBody CreateProductRequest request) {
+        Product product = productRepository.update(productId, request);
+        log("商品管理", "编辑商品", product.productCode(), "编辑商品 " + product.productName());
         return product;
     }
 
@@ -294,6 +427,29 @@ public class PhaseOneController {
         return one("SELECT * FROM suppliers WHERE supplier_no = :supplierNo", "supplierNo", supplierNo);
     }
 
+    @PutMapping("/admin/suppliers/{supplierId}")
+    public Map<String, Object> updateSupplier(@PathVariable Long supplierId, @RequestBody Map<String, Object> request) {
+        String supplierName = requiredString(request, "supplierName");
+        String contactName = requiredString(request, "contactName");
+        String contactPhone = requiredString(request, "contactPhone");
+        jdbcClient.sql("""
+            UPDATE suppliers
+            SET supplier_name = :supplierName,
+                contact_name = :contactName,
+                contact_phone = :contactPhone,
+                address = :address
+            WHERE id = :id
+            """)
+            .param("supplierName", supplierName)
+            .param("contactName", contactName)
+            .param("contactPhone", contactPhone)
+            .param("address", string(request.getOrDefault("address", "")))
+            .param("id", supplierId)
+            .update();
+        log("采购管理", "编辑供应商", String.valueOf(supplierId), "编辑供应商 " + supplierName);
+        return one("SELECT * FROM suppliers WHERE id = :id", "id", supplierId);
+    }
+
     @PutMapping("/admin/suppliers/{supplierId}/status")
     public Map<String, Object> updateSupplierStatus(@PathVariable Long supplierId, @RequestBody Map<String, Object> request) {
         String status = normalizeStatus(request.getOrDefault("status", "ENABLED"));
@@ -308,8 +464,8 @@ public class PhaseOneController {
     @GetMapping("/admin/purchase-orders")
     public List<Map<String, Object>> purchaseOrders() {
         return rows("""
-            SELECT id, purchase_no, supplier_name, product_id AS target_product_id, product_name, sku_code,
-                   1 AS sku_count, purchase_qty, stocked_qty, purchase_amount AS amount,
+            SELECT id, purchase_no, supplier_id, supplier_name, product_id AS target_product_id, product_name, sku_code,
+                   1 AS sku_count, purchase_qty, stocked_qty, purchase_price, purchase_amount AS amount,
                    expected_arrival_date, purchase_status AS status, remark, created_at, updated_at
             FROM purchase_orders
             ORDER BY id DESC
@@ -349,6 +505,48 @@ public class PhaseOneController {
             .update();
         log("采购管理", "新增采购订单", purchaseNo, "新增采购订单 " + purchaseNo);
         return one("SELECT * FROM purchase_orders WHERE purchase_no = :purchaseNo", "purchaseNo", purchaseNo);
+    }
+
+    @PutMapping("/admin/purchase-orders/{purchaseOrderId}")
+    public Map<String, Object> updatePurchaseOrder(@PathVariable Long purchaseOrderId, @RequestBody Map<String, Object> request) {
+        Map<String, Object> current = one("SELECT * FROM purchase_orders WHERE id = :id", "id", purchaseOrderId);
+        if (!"WAIT_STOCK_IN".equals(current.get("purchaseStatus"))) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Only waiting purchase orders can be edited");
+        }
+        Long supplierId = requiredLong(request, "supplierId");
+        Long productId = requiredLong(request, "productId");
+        int quantity = positiveInt(request, "quantity");
+        BigDecimal price = positiveMoney(request, "purchasePrice");
+        Map<String, Object> supplier = one("SELECT * FROM suppliers WHERE id = :id", "id", supplierId);
+        Product product = productRepository.findById(productId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
+        jdbcClient.sql("""
+            UPDATE purchase_orders
+            SET supplier_id = :supplierId,
+                supplier_name = :supplierName,
+                product_id = :productId,
+                product_name = :productName,
+                sku_code = :skuCode,
+                purchase_qty = :quantity,
+                purchase_price = :price,
+                purchase_amount = :amount,
+                expected_arrival_date = :expectedArrivalDate,
+                remark = :remark
+            WHERE id = :id
+            """)
+            .param("supplierId", supplierId)
+            .param("supplierName", supplier.get("supplierName"))
+            .param("productId", productId)
+            .param("productName", product.productName())
+            .param("skuCode", product.skuCode())
+            .param("quantity", quantity)
+            .param("price", price)
+            .param("amount", price.multiply(BigDecimal.valueOf(quantity)))
+            .param("expectedArrivalDate", string(request.getOrDefault("expectedArrivalDate", LocalDate.now().plusDays(3).toString())))
+            .param("remark", string(request.getOrDefault("remark", "")))
+            .param("id", purchaseOrderId)
+            .update();
+        log("采购管理", "编辑采购订单", String.valueOf(purchaseOrderId), "编辑采购订单");
+        return one("SELECT * FROM purchase_orders WHERE id = :id", "id", purchaseOrderId);
     }
 
     @PostMapping("/admin/purchase-orders/{purchaseOrderId}/cancel")
