@@ -23,6 +23,7 @@
     refunds: [],
     accounts: [],
     roles: [],
+    permissionTree: [],
     logs: [],
     parameters: {},
     currentPage: "dashboard"
@@ -46,7 +47,7 @@
     "finance-payment": () => load("payments"),
     "finance-refund": () => load("refunds"),
     "system-user": () => load("accounts"),
-    "system-role": () => load("roles"),
+    "system-role": () => Promise.all([load("roles"), load("permissionTree")]),
     "system-log": () => load("logs"),
     "system-config": () => load("parameters")
   };
@@ -68,6 +69,7 @@
     refunds: "/api/admin/finance/refunds",
     accounts: "/api/admin/accounts",
     roles: "/api/admin/roles",
+    permissionTree: "/api/admin/permissions/tree",
     logs: "/api/admin/operation-logs",
     parameters: "/api/system/parameters"
   };
@@ -799,10 +801,10 @@
   };
 
   window.renderSystemRole = function () {
-    return `${pageHeader("角色权限", "角色权限支持新增和编辑。", '<button class="btn btn-primary" onclick="apiCreateRole()">新增角色</button>')}
+    return `${pageHeader("角色权限", "角色权限支持新增、编辑和菜单权限配置。", '<button class="btn btn-primary" onclick="apiCreateRole()">新增角色</button>')}
       ${cardTable("角色列表", ["角色名称", "说明", "账号数", "状态", "创建时间", "操作"], state.roles.map(item => [
         esc(item.roleName), esc(item.description), esc(item.accountCount), tag(item.status), date(item.createdAt),
-        `<button class="btn-text" onclick="apiEditRole(${item.id})">编辑</button>`
+        `<button class="btn-text" onclick="apiConfigureRole(${item.id})">配置权限</button> <button class="btn-text" onclick="apiEditRole(${item.id})">编辑</button>`
       ]))}`;
   };
 
@@ -816,12 +818,148 @@
     roleForm("编辑角色", item, data => api(`/api/admin/roles/${id}`, { method: "PUT", body: JSON.stringify(data) }));
   };
 
+  window.apiConfigureRole = function (id) {
+    const item = state.roles.find(role => Number(role.id) === Number(id));
+    if (!item) return showToast("角色数据不存在");
+    roleForm("配置权限", item, data => api(`/api/admin/roles/${id}`, { method: "PUT", body: JSON.stringify(data) }));
+  };
+
   function roleForm(title, item, onSubmit) {
-    form(title, [
-      { label: "角色名称", name: "roleName", value: item?.roleName || "", required: true },
-      { label: "角色说明", name: "roleDesc", type: "textarea", value: item?.description || "", required: true }
-    ], onSubmit);
+    const formId = "roleForm" + Date.now();
+    const treeId = formId + "PermissionTree";
+    const body = `
+      <form id="${formId}" class="form-grid" onsubmit="return false">
+        <label class="label required">角色名称</label>
+        <input class="input" name="roleName" value="${esc(item?.roleName || "")}" placeholder="请输入角色名称" required>
+        <label class="label required">角色说明</label>
+        <textarea class="textarea" name="roleDesc" placeholder="请输入角色说明" required>${esc(item?.description || "")}</textarea>
+      </form>
+      ${rolePermissionBlock(treeId, item)}`;
+    openApiDrawer(title, body, `<button class="btn" onclick="closeDrawer()">取消</button><button class="btn btn-primary" id="${formId}Submit">提交</button>`, true);
+    document.getElementById(formId + "Submit").onclick = async () => {
+      const el = document.getElementById(formId);
+      if (!el.reportValidity()) return;
+      const data = Object.fromEntries(new FormData(el).entries());
+      data.permissions = collectRolePermissions(treeId);
+      try {
+        await onSubmit(data);
+        window.closeDrawer();
+        window.showToast("角色权限已保存");
+        await reloadCurrent();
+      } catch (error) {
+        window.showToast(error.message);
+      }
+    };
   }
+
+  function rolePermissionBlock(treeId, item) {
+    const tree = rolePermissionTree();
+    const selected = selectedRolePermissionKeys(item);
+    return `
+      <div class="section-title">菜单权限配置</div>
+      <div class="permission-tree" id="${treeId}">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <span style="color:var(--text-sub)">勾选该角色可访问的一级菜单和二级菜单/操作。</span>
+          <span>
+            <button type="button" class="btn" onclick="apiSetRolePermissions('${treeId}', true)">全选</button>
+            <button type="button" class="btn" onclick="apiSetRolePermissions('${treeId}', false)">清空</button>
+          </span>
+        </div>
+        ${tree.map(row => {
+          const module = row.module || "";
+          const actions = row.actions || [];
+          const moduleChecked = selected.has(permissionKey(module)) || actions.some(action => selected.has(permissionKey(module, action)));
+          return `<div class="perm-row">
+            <div class="perm-menu"><label class="checkbox"><input type="checkbox" data-perm-module="${esc(module)}" ${moduleChecked ? "checked" : ""} onchange="apiTogglePermissionModule(this)"> ${esc(module)}</label></div>
+            <div class="perm-actions">${actions.map(action => `<label class="checkbox"><input type="checkbox" data-perm-action="${esc(action)}" data-perm-parent="${esc(module)}" ${selected.has(permissionKey(module, action)) || selected.size === 0 ? "checked" : ""} onchange="apiSyncPermissionModule(this)"> ${esc(action)}</label>`).join("")}</div>
+          </div>`;
+        }).join("")}
+      </div>`;
+  }
+
+  function rolePermissionTree() {
+    return Array.isArray(state.permissionTree) && state.permissionTree.length ? state.permissionTree : [
+      { module: "商品管理", actions: ["商品档案", "商品分类", "商品品牌"] },
+      { module: "采购管理", actions: ["供应商管理", "采购订单", "采购入库记录"] },
+      { module: "库存管理", actions: ["库存总览", "库存流水", "库存调整"] },
+      { module: "订单管理", actions: ["订单列表", "订单详情", "订单发货"] },
+      { module: "售后管理", actions: ["售后申请", "审核", "退款处理"] },
+      { module: "开票管理", actions: ["开票申请", "上传发票", "确认开票"] },
+      { module: "买家管理", actions: ["买家列表"] },
+      { module: "财务管理", actions: ["支付记录", "退款记录"] },
+      { module: "系统管理", actions: ["后台账号", "角色权限", "操作日志", "基础配置"] }
+    ];
+  }
+
+  function selectedRolePermissionKeys(item) {
+    const raw = item?.permissionJson || item?.permissionsJson || item?.permissions;
+    if (!raw) return allPermissionKeys();
+    let permissions = raw;
+    if (typeof raw === "string") {
+      try {
+        permissions = JSON.parse(raw);
+      } catch (_) {
+        return allPermissionKeys();
+      }
+    }
+    const keys = new Set();
+    if (Array.isArray(permissions)) {
+      permissions.forEach(row => {
+        if (typeof row === "string") {
+          keys.add(row);
+          return;
+        }
+        const module = row.module || "";
+        if (!module) return;
+        keys.add(permissionKey(module));
+        (row.actions || []).forEach(action => keys.add(permissionKey(module, action)));
+      });
+    }
+    return keys.size ? keys : allPermissionKeys();
+  }
+
+  function allPermissionKeys() {
+    const keys = new Set();
+    rolePermissionTree().forEach(row => {
+      keys.add(permissionKey(row.module));
+      (row.actions || []).forEach(action => keys.add(permissionKey(row.module, action)));
+    });
+    return keys;
+  }
+
+  function permissionKey(module, action = "") {
+    return action ? `${module}::${action}` : module;
+  }
+
+  function collectRolePermissions(treeId) {
+    const root = document.getElementById(treeId);
+    if (!root) return [];
+    return Array.from(root.querySelectorAll(".perm-row")).map(row => {
+      const moduleInput = row.querySelector("[data-perm-module]");
+      const module = moduleInput ? moduleInput.getAttribute("data-perm-module") : "";
+      const actions = Array.from(row.querySelectorAll("[data-perm-action]:checked")).map(input => input.getAttribute("data-perm-action"));
+      return moduleInput && (moduleInput.checked || actions.length) ? { module, actions } : null;
+    }).filter(Boolean);
+  }
+
+  window.apiSetRolePermissions = function (treeId, checked) {
+    const root = document.getElementById(treeId);
+    if (!root) return;
+    root.querySelectorAll("input[type='checkbox']").forEach(input => input.checked = checked);
+  };
+
+  window.apiTogglePermissionModule = function (input) {
+    const row = input.closest(".perm-row");
+    if (!row) return;
+    row.querySelectorAll("[data-perm-action]").forEach(action => action.checked = input.checked);
+  };
+
+  window.apiSyncPermissionModule = function (input) {
+    const row = input.closest(".perm-row");
+    if (!row) return;
+    const moduleInput = row.querySelector("[data-perm-module]");
+    if (moduleInput) moduleInput.checked = Array.from(row.querySelectorAll("[data-perm-action]")).some(action => action.checked);
+  };
 
   window.renderSystemLog = function () {
     return `${pageHeader("操作日志", "关键写操作会写入操作日志。")}

@@ -6,6 +6,8 @@ import com.erp.b2b.order.OrderService;
 import com.erp.b2b.product.CreateProductRequest;
 import com.erp.b2b.product.Product;
 import com.erp.b2b.product.ProductRepository;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.Valid;
 import java.math.BigDecimal;
 import java.sql.ResultSet;
@@ -31,6 +33,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/api")
 public class PhaseOneController {
+    private final ObjectMapper objectMapper = new ObjectMapper();
     private final JdbcClient jdbcClient;
     private final ProductRepository productRepository;
     private final InventoryRepository inventoryRepository;
@@ -155,7 +158,7 @@ public class PhaseOneController {
     @GetMapping("/admin/roles")
     public List<Map<String, Object>> adminRoles() {
         return rows("""
-            SELECT id, role_name, role_desc AS description, account_count, role_status AS status, created_at, updated_at
+            SELECT id, role_name, role_desc AS description, account_count, role_status AS status, permission_json, created_at, updated_at
             FROM admin_roles
             ORDER BY id
             """);
@@ -165,12 +168,14 @@ public class PhaseOneController {
     public Map<String, Object> createRole(@RequestBody Map<String, Object> request) {
         String roleName = requiredString(request, "roleName");
         String roleDesc = requiredString(request, "roleDesc");
+        String permissionJson = permissionJson(request);
         jdbcClient.sql("""
-            INSERT INTO admin_roles (role_name, role_desc, account_count, role_status)
-            VALUES (:roleName, :roleDesc, 0, 'ENABLED')
+            INSERT INTO admin_roles (role_name, role_desc, account_count, role_status, permission_json)
+            VALUES (:roleName, :roleDesc, 0, 'ENABLED', :permissionJson)
             """)
             .param("roleName", roleName)
             .param("roleDesc", roleDesc)
+            .param("permissionJson", permissionJson)
             .update();
         log("系统管理", "新增角色", roleName, "新增角色 " + roleName);
         return one("SELECT * FROM admin_roles WHERE role_name = :roleName", "roleName", roleName);
@@ -180,13 +185,15 @@ public class PhaseOneController {
     public Map<String, Object> updateRole(@PathVariable Long roleId, @RequestBody Map<String, Object> request) {
         String roleName = requiredString(request, "roleName");
         String roleDesc = requiredString(request, "roleDesc");
+        String permissionJson = permissionJson(request);
         jdbcClient.sql("""
             UPDATE admin_roles
-            SET role_name = :roleName, role_desc = :roleDesc
+            SET role_name = :roleName, role_desc = :roleDesc, permission_json = :permissionJson
             WHERE id = :id
             """)
             .param("roleName", roleName)
             .param("roleDesc", roleDesc)
+            .param("permissionJson", permissionJson)
             .param("id", roleId)
             .update();
         log("系统管理", "编辑角色", String.valueOf(roleId), "编辑角色资料");
@@ -196,14 +203,16 @@ public class PhaseOneController {
     @GetMapping("/admin/permissions/tree")
     public List<Map<String, Object>> permissionTree() {
         return List.of(
-            row("module", "商品管理", "actions", List.of("查看", "新增", "编辑", "上架", "下架")),
-            row("module", "采购管理", "actions", List.of("供应商维护", "采购单维护", "采购入库")),
-            row("module", "库存管理", "actions", List.of("库存总览", "库存流水", "库存调整", "预警设置")),
-            row("module", "订单管理", "actions", List.of("查看", "发货", "取消", "确认收货")),
-            row("module", "售后管理", "actions", List.of("审核", "确认退货收货", "退款")),
-            row("module", "开票管理", "actions", List.of("上传发票", "确认开票", "驳回")),
-            row("module", "财务管理", "actions", List.of("支付记录", "退款记录", "异常查看")),
-            row("module", "系统管理", "actions", List.of("账号", "角色", "日志", "基础配置"))
+            row("module", "首页工作台", "actions", List.of("首页统计", "待办事项")),
+            row("module", "商品管理", "actions", List.of("商品档案", "商品分类", "商品品牌")),
+            row("module", "采购管理", "actions", List.of("供应商管理", "采购订单", "采购入库记录")),
+            row("module", "库存管理", "actions", List.of("库存总览", "库存流水", "库存调整")),
+            row("module", "订单管理", "actions", List.of("订单列表", "订单详情", "订单发货")),
+            row("module", "售后管理", "actions", List.of("售后申请", "售后审核", "退货收货", "退款处理")),
+            row("module", "开票管理", "actions", List.of("开票申请", "上传发票", "确认开票", "驳回申请")),
+            row("module", "买家管理", "actions", List.of("买家列表", "买家详情")),
+            row("module", "财务管理", "actions", List.of("支付记录", "退款记录")),
+            row("module", "系统管理", "actions", List.of("后台账号", "角色权限", "操作日志", "基础配置"))
         );
     }
 
@@ -1332,6 +1341,15 @@ public class PhaseOneController {
 
     private String string(Object value) {
         return value == null ? "" : String.valueOf(value);
+    }
+
+    private String permissionJson(Map<String, Object> request) {
+        Object permissions = request.getOrDefault("permissions", List.of());
+        try {
+            return objectMapper.writeValueAsString(permissions);
+        } catch (JsonProcessingException e) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "permissions must be valid JSON");
+        }
     }
 
     private String normalizeStatus(Object value) {
