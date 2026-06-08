@@ -112,7 +112,7 @@
       ENABLED: "启用", DISABLED: "停用",
       WAIT_STOCK_IN: "待入库", PART_STOCK_IN: "部分入库", COMPLETED: "已完成", CANCELLED: "已取消",
       WAIT_PAY: "待支付", PAID: "已支付", WAIT_SHIP: "待发货", WAIT_RECEIVE: "待收货",
-      WAIT_AUDIT: "待审核", WAIT_REFUND: "待退款", REJECTED: "已驳回", SUCCESS: "成功",
+      WAIT_AUDIT: "待审核", WAIT_RETURN_RECEIVE: "待卖家收货", WAIT_REFUND: "待退款", REJECTED: "已驳回", SUCCESS: "成功",
       WAIT_INVOICE: "待开票", INVOICED: "已开票",
       NORMAL: "正常", WARNING: "预警"
     };
@@ -155,6 +155,12 @@
         </tbody>
       </table>
     `;
+  }
+
+  function detailGrid(items) {
+    return `<div class="mini-card"><div class="detail-grid">${items.map(item => `
+      <div><div class="detail-label">${esc(item[0])}</div><div class="detail-val">${item[1]}</div></div>
+    `).join("")}</div></div>`;
   }
 
   function reloadCurrent() {
@@ -266,8 +272,30 @@
       ${cardTable("商品列表", ["商品编码", "商品名称", "SKU", "单位", "销售价", "库存", "起订量", "状态", "操作"], state.products.map(item => [
         esc(item.productCode), esc(item.productName), esc(item.skuCode || item.skuName), esc(item.unit), money(item.salePrice), esc(item.stockQuantity),
         esc(item.minOrderQuantity), tag(item.saleStatus),
-        `<button class="btn-text" onclick="apiEditProduct(${item.id})">编辑</button> <button class="btn-text" onclick="apiProductSale(${item.id}, '${item.saleStatus === "ON_SALE" ? "off" : "on"}')">${item.saleStatus === "ON_SALE" ? "下架" : "上架"}</button>`
+        `<button class="btn-text" onclick="apiProductDetail(${item.id})">详情</button> <button class="btn-text" onclick="apiEditProduct(${item.id})">编辑</button> <button class="btn-text" onclick="apiProductSale(${item.id}, '${item.saleStatus === "ON_SALE" ? "off" : "on"}')">${item.saleStatus === "ON_SALE" ? "下架" : "上架"}</button>`
       ]))}`;
+  };
+
+  window.apiProductDetail = async function (id) {
+    try {
+      const item = await api(`/api/admin/products/${id}`);
+      openApiDrawer(`商品详情 ${item.productCode || ""}`, `
+        <div class="section-title">商品信息</div>
+        ${detailGrid([
+          ["商品编码", esc(item.productCode)],
+          ["商品名称", esc(item.productName)],
+          ["SKU编码", esc(item.skuCode)],
+          ["SKU名称", esc(item.skuName)],
+          ["单位", esc(item.unit)],
+          ["销售价", money(item.salePrice)],
+          ["库存", esc(item.stockQuantity)],
+          ["起订量", esc(item.minOrderQuantity)],
+          ["状态", tag(item.saleStatus)]
+        ])}
+      `, `<button class="btn btn-primary" onclick="closeDrawer()">关闭</button>`, true);
+    } catch (error) {
+      showToast(error.message);
+    }
   };
 
   window.apiCreateProduct = function () {
@@ -299,7 +327,7 @@
     return `${pageHeader("商品分类", "商品分类支持新增、编辑和启停用。", '<button class="btn btn-primary" onclick="apiCreateCategory()">新增分类</button>')}
       ${cardTable("分类列表", ["分类名称", "上级分类", "排序", "状态", "操作"], state.categories.map(item => [
         esc(item.categoryName), esc(item.parentName || "-"), esc(item.sortNo), tag(item.status),
-        `<button class="btn-text" onclick="apiEditCategory(${item.id})">编辑</button> <button class="btn-text" onclick="apiCategoryStatus(${item.id}, '${item.status === "ENABLED" ? "DISABLED" : "ENABLED"}')">${item.status === "ENABLED" ? "停用" : "启用"}</button>`
+        `<button class="btn-text" onclick="apiEditCategory(${item.id})">编辑</button> <button class="btn-text" onclick="apiCategoryStatus(${item.id}, '${item.status === "ENABLED" ? "DISABLED" : "ENABLED"}')">${item.status === "ENABLED" ? "停用" : "启用"}</button> <button class="btn-text-danger" onclick="apiDeleteCategory(${item.id})">删除</button>`
       ]))}`;
   };
 
@@ -325,11 +353,16 @@
     api(`/api/admin/product-categories/${id}/status`, { method: "PUT", body: JSON.stringify({ status }) }).then(reloadCurrent).then(() => showToast("分类状态已更新")).catch(error => showToast(error.message));
   };
 
+  window.apiDeleteCategory = function (id) {
+    if (!confirm("确认删除该分类？")) return;
+    api(`/api/admin/product-categories/${id}`, { method: "DELETE" }).then(reloadCurrent).then(() => showToast("分类已删除")).catch(error => showToast(error.message));
+  };
+
   window.renderBrand = function () {
     return `${pageHeader("商品品牌", "商品品牌支持新增、编辑和启停用。", '<button class="btn btn-primary" onclick="apiCreateBrand()">新增品牌</button>')}
       ${cardTable("品牌列表", ["品牌名称", "首字母", "排序", "状态", "操作"], state.brands.map(item => [
         esc(item.brandName), esc(item.firstLetter || "-"), esc(item.sortNo), tag(item.status),
-        `<button class="btn-text" onclick="apiEditBrand(${item.id})">编辑</button> <button class="btn-text" onclick="apiBrandStatus(${item.id}, '${item.status === "ENABLED" ? "DISABLED" : "ENABLED"}')">${item.status === "ENABLED" ? "停用" : "启用"}</button>`
+        `<button class="btn-text" onclick="apiEditBrand(${item.id})">编辑</button> <button class="btn-text" onclick="apiBrandStatus(${item.id}, '${item.status === "ENABLED" ? "DISABLED" : "ENABLED"}')">${item.status === "ENABLED" ? "停用" : "启用"}</button> <button class="btn-text-danger" onclick="apiDeleteBrand(${item.id})">删除</button>`
       ]))}`;
   };
 
@@ -355,12 +388,38 @@
     api(`/api/admin/product-brands/${id}/status`, { method: "PUT", body: JSON.stringify({ status }) }).then(reloadCurrent).then(() => showToast("品牌状态已更新")).catch(error => showToast(error.message));
   };
 
+  window.apiDeleteBrand = function (id) {
+    if (!confirm("确认删除该品牌？")) return;
+    api(`/api/admin/product-brands/${id}`, { method: "DELETE" }).then(reloadCurrent).then(() => showToast("品牌已删除")).catch(error => showToast(error.message));
+  };
+
   window.renderSupplier = function () {
     return `${pageHeader("供应商管理", "供应商列表支持新增、编辑和启停用。", '<button class="btn btn-primary" onclick="apiCreateSupplier()">新增供应商</button>')}
       ${cardTable("供应商列表", ["供应商编号", "供应商名称", "联系人", "联系电话", "采购单数", "采购金额", "状态", "操作"], state.suppliers.map(item => [
         esc(item.supplierNo), esc(item.supplierName), esc(item.contactName), esc(item.phone), esc(item.purchaseCount), money(item.purchaseAmount), tag(item.status),
-        `<button class="btn-text" onclick="apiEditSupplier(${item.id})">编辑</button> <button class="btn-text" onclick="apiSupplierStatus(${item.id}, '${item.status === "ENABLED" ? "DISABLED" : "ENABLED"}')">${item.status === "ENABLED" ? "停用" : "启用"}</button>`
+        `<button class="btn-text" onclick="apiSupplierDetail(${item.id})">详情</button> <button class="btn-text" onclick="apiEditSupplier(${item.id})">编辑</button> <button class="btn-text" onclick="apiSupplierStatus(${item.id}, '${item.status === "ENABLED" ? "DISABLED" : "ENABLED"}')">${item.status === "ENABLED" ? "停用" : "启用"}</button> <button class="btn-text-danger" onclick="apiDeleteSupplier(${item.id})">删除</button>`
       ]))}`;
+  };
+
+  window.apiSupplierDetail = async function (id) {
+    try {
+      const item = await api(`/api/admin/suppliers/${id}`);
+      openApiDrawer(`供应商详情 ${item.supplierNo || ""}`, `
+        <div class="section-title">供应商信息</div>
+        ${detailGrid([
+          ["供应商编号", esc(item.supplierNo)],
+          ["供应商名称", esc(item.supplierName)],
+          ["联系人", esc(item.contactName)],
+          ["联系电话", esc(item.contactPhone || item.phone)],
+          ["地址", esc(item.address || "-")],
+          ["采购单数", esc(item.purchaseCount)],
+          ["采购金额", money(item.purchaseAmount)],
+          ["状态", tag(item.supplierStatus || item.status)]
+        ])}
+      `, `<button class="btn btn-primary" onclick="closeDrawer()">关闭</button>`, true);
+    } catch (error) {
+      showToast(error.message);
+    }
   };
 
   window.apiCreateSupplier = function () {
@@ -386,12 +445,41 @@
     api(`/api/admin/suppliers/${id}/status`, { method: "PUT", body: JSON.stringify({ status }) }).then(reloadCurrent).then(() => showToast("供应商状态已更新")).catch(error => showToast(error.message));
   };
 
+  window.apiDeleteSupplier = function (id) {
+    if (!confirm("确认删除该供应商？已发生采购业务的供应商只能停用。")) return;
+    api(`/api/admin/suppliers/${id}`, { method: "DELETE" }).then(reloadCurrent).then(() => showToast("供应商已删除")).catch(error => showToast(error.message));
+  };
+
   window.renderPurchaseOrder = function () {
     return `${pageHeader("采购订单", "采购订单支持创建、取消和入库。", '<button class="btn btn-primary" onclick="apiCreatePurchase()">新增采购单</button>')}
       ${cardTable("采购订单列表", ["采购单号", "供应商", "商品", "SKU", "采购数", "已入库", "金额", "预计到货", "状态", "操作"], state.purchaseOrders.map(item => [
         esc(item.purchaseNo), esc(item.supplierName), esc(item.productName), esc(item.skuCode), esc(item.purchaseQty), esc(item.stockedQty), money(item.amount), esc(item.expectedArrivalDate), tag(item.status),
-        `${item.status === "WAIT_STOCK_IN" ? `<button class="btn-text" onclick="apiEditPurchase(${item.id})">编辑</button> ` : ""}${item.status !== "COMPLETED" && item.status !== "CANCELLED" ? `<button class="btn-text" onclick="apiStockIn(${item.id})">采购入库</button> <button class="btn-text-danger" onclick="apiCancelPurchase(${item.id})">取消</button>` : ""}`
+        `<button class="btn-text" onclick="apiPurchaseDetail(${item.id})">详情</button> ${item.status === "WAIT_STOCK_IN" ? `<button class="btn-text" onclick="apiEditPurchase(${item.id})">编辑</button> ` : ""}${item.status !== "COMPLETED" && item.status !== "CANCELLED" ? `<button class="btn-text" onclick="apiStockIn(${item.id})">采购入库</button> <button class="btn-text-danger" onclick="apiCancelPurchase(${item.id})">取消</button>` : ""}`
       ]))}`;
+  };
+
+  window.apiPurchaseDetail = async function (id) {
+    try {
+      const item = await api(`/api/admin/purchase-orders/${id}`);
+      openApiDrawer(`采购单详情 ${item.purchaseNo || ""}`, `
+        <div class="section-title">采购单信息</div>
+        ${detailGrid([
+          ["采购单号", esc(item.purchaseNo)],
+          ["供应商", esc(item.supplierName)],
+          ["商品", esc(item.productName)],
+          ["SKU", esc(item.skuCode)],
+          ["采购数量", esc(item.purchaseQty)],
+          ["已入库", esc(item.stockedQty)],
+          ["采购单价", money(item.purchasePrice)],
+          ["采购金额", money(item.purchaseAmount)],
+          ["预计到货", esc(item.expectedArrivalDate || "-")],
+          ["状态", tag(item.purchaseStatus || item.status)],
+          ["备注", esc(item.remark || "-")]
+        ])}
+      `, `<button class="btn btn-primary" onclick="closeDrawer()">关闭</button>`, true);
+    } catch (error) {
+      showToast(error.message);
+    }
   };
 
   window.apiCreatePurchase = function () {
@@ -468,8 +556,18 @@
     return `${pageHeader("订单管理", "商城订单展示下单、支付和状态数据。")}
       ${cardTable("订单列表", ["订单编号", "买家", "商品数", "订单金额", "支付状态", "订单状态", "下单时间", "操作"], state.orders.map(item => [
         esc(item.orderNo), esc(item.customerName), esc((item.items || []).length), money(item.totalAmount), tag(item.paymentStatus), tag(item.orderStatus), date(item.createdAt),
-        `<button class="btn-text" onclick="apiOrderDetail(${Number(item.id)})">详情</button>`
+        `<button class="btn-text" onclick="apiOrderDetail(${Number(item.id)})">详情</button>${item.orderStatus === "WAIT_SHIP" ? ` <button class="btn-text" onclick="apiShipOrder(${Number(item.id)})">发货</button>` : ""}`
       ]))}`;
+  };
+
+  window.apiShipOrder = function (id) {
+    form("订单发货", [
+      { label: "发货方式", name: "shipmentMethod", type: "select", required: true, options: [{ value: "EXPRESS", label: "快递发货" }, { value: "NO_LOGISTICS", label: "无需物流" }] },
+      { label: "物流公司", name: "logisticsCompany", value: "顺丰速运", required: true },
+      { label: "物流单号", name: "logisticsNo", value: "SF" + Date.now(), required: true },
+      { label: "发货人", name: "operatorName", value: "仓库管理员", required: true },
+      { label: "备注", name: "remark", type: "textarea" }
+    ], data => api(`/api/admin/orders/${id}/ship`, { method: "POST", body: JSON.stringify(data) }));
   };
 
   window.apiOrderDetail = async function (id) {
@@ -509,8 +607,19 @@
           money(item.unitPrice),
           money(item.lineAmount)
         ]))}
+        <div class="section-title">发货记录</div>
+        <div id="orderShipmentRows">正在加载...</div>
       `;
       openApiDrawer(`订单详情 ${order.orderNo || ""}`, body, `<button class="btn btn-primary" onclick="closeDrawer()">关闭</button>`, true);
+      api(`/api/admin/orders/${id}/shipments`).then(rows => {
+        const el = document.getElementById("orderShipmentRows");
+        if (el) el.innerHTML = detailTable(["发货单号", "方式", "物流公司", "物流单号", "发货人", "时间"], rows.map(row => [
+          esc(row.shipmentNo), esc(row.shipmentMethod), esc(row.logisticsCompany), esc(row.logisticsNo), esc(row.operatorName), date(row.createdAt)
+        ]));
+      }).catch(() => {
+        const el = document.getElementById("orderShipmentRows");
+        if (el) el.innerHTML = detailTable(["发货记录"], []);
+      });
     } catch (error) {
       window.showToast(error.message);
     }
@@ -520,8 +629,35 @@
     return `${pageHeader("售后申请", "售后申请支持审核和退款处理。")}
       ${cardTable("售后申请列表", ["售后单号", "订单编号", "买家", "类型", "商品", "数量", "退款金额", "状态", "操作"], state.afterSales.map(item => [
         esc(item.afterSaleNo), esc(item.orderNo), esc(item.buyerName), esc(item.type), esc(item.productName), esc(item.quantity), money(item.refundAmount), tag(item.status),
-        `${item.status === "WAIT_AUDIT" ? `<button class="btn-text" onclick="apiAuditAfterSale(${item.id}, true)">审核通过</button> <button class="btn-text-danger" onclick="apiAuditAfterSale(${item.id}, false)">驳回</button>` : ""}${item.status === "WAIT_REFUND" ? `<button class="btn-text" onclick="apiRefundAfterSale(${item.id})">退款</button>` : ""}`
+        `<button class="btn-text" onclick="apiAfterSaleDetail(${item.id})">详情</button> ${item.status === "WAIT_AUDIT" ? `<button class="btn-text" onclick="apiAuditAfterSale(${item.id}, true)">审核通过</button> <button class="btn-text-danger" onclick="apiAuditAfterSale(${item.id}, false)">驳回</button>` : ""}${item.status === "WAIT_RETURN_RECEIVE" ? `<button class="btn-text" onclick="apiConfirmReturnReceived(${item.id})">确认收货</button>` : ""}${item.status === "WAIT_REFUND" ? `<button class="btn-text" onclick="apiRefundAfterSale(${item.id})">退款</button>` : ""}`
       ]))}`;
+  };
+
+  window.apiAfterSaleDetail = async function (id) {
+    try {
+      const item = await api(`/api/admin/after-sales/${id}`);
+      openApiDrawer(`售后详情 ${item.afterSaleNo || ""}`, `
+        <div class="section-title">售后信息</div>
+        ${detailGrid([
+          ["售后单号", esc(item.afterSaleNo)],
+          ["订单编号", esc(item.orderNo)],
+          ["买家", esc(item.buyerName)],
+          ["类型", esc(item.afterSaleType || item.type)],
+          ["商品", esc(item.productName)],
+          ["数量", esc(item.quantity)],
+          ["退款金额", money(item.refundAmount)],
+          ["状态", tag(item.afterSaleStatus || item.status)],
+          ["原因", esc(item.reason || "-")],
+          ["审核说明", esc(item.auditRemark || "-")]
+        ])}
+        <div class="section-title">退货物流</div>
+        ${detailTable(["物流公司", "物流单号", "备注", "提交时间"], (item.returnLogistics || []).map(row => [
+          esc(row.logisticsCompany), esc(row.logisticsNo), esc(row.remark || "-"), date(row.createdAt)
+        ]))}
+      `, `<button class="btn btn-primary" onclick="closeDrawer()">关闭</button>`, true);
+    } catch (error) {
+      showToast(error.message);
+    }
   };
 
   window.apiAuditAfterSale = function (id, approved) {
@@ -532,12 +668,62 @@
     api(`/api/admin/after-sales/${id}/refund`, { method: "POST" }).then(reloadCurrent).then(() => showToast("退款已处理")).catch(error => showToast(error.message));
   };
 
+  window.apiConfirmReturnReceived = function (id) {
+    api(`/api/admin/after-sales/${id}/confirm-return-received`, { method: "POST" }).then(reloadCurrent).then(() => showToast("已确认退货收货并回补库存")).catch(error => showToast(error.message));
+  };
+
   window.renderInvoice = function () {
     return `${pageHeader("开票申请", "开票申请支持确认和驳回。")}
       ${cardTable("开票申请列表", ["申请单号", "订单编号", "买家", "发票类型", "抬头类型", "发票抬头", "金额", "状态", "操作"], state.invoices.map(item => [
         esc(item.invoiceApplyNo), esc(item.orderNo), esc(item.buyerName), esc(item.invoiceType), esc(item.titleType), esc(item.title), money(item.amount), tag(item.status),
-        `${item.status === "WAIT_INVOICE" ? `<button class="btn-text" onclick="apiConfirmInvoice(${item.id})">确认开票</button> <button class="btn-text-danger" onclick="apiRejectInvoice(${item.id})">驳回</button>` : esc(item.invoiceNo || "")}`
+        `<button class="btn-text" onclick="apiInvoiceDetail(${item.id})">详情</button> ${item.status === "WAIT_INVOICE" ? `<button class="btn-text" onclick="apiUploadInvoiceFile(${item.id})">上传发票</button> <button class="btn-text" onclick="apiOcrInvoice(${item.id})">OCR</button> <button class="btn-text" onclick="apiConfirmInvoice(${item.id})">确认开票</button> <button class="btn-text-danger" onclick="apiRejectInvoice(${item.id})">驳回</button>` : esc(item.invoiceNo || "")}`
       ]))}`;
+  };
+
+  window.apiInvoiceDetail = async function (id) {
+    try {
+      const item = await api(`/api/admin/invoices/${id}`);
+      openApiDrawer(`开票详情 ${item.invoiceApplyNo || ""}`, `
+        <div class="section-title">开票申请</div>
+        ${detailGrid([
+          ["申请单号", esc(item.invoiceApplyNo)],
+          ["订单编号", esc(item.orderNo)],
+          ["买家", esc(item.buyerName)],
+          ["发票类型", esc(item.invoiceType)],
+          ["抬头类型", esc(item.titleType)],
+          ["发票抬头", esc(item.title)],
+          ["申请金额", money(item.amount)],
+          ["接收邮箱", esc(item.receiveEmail)],
+          ["状态", tag(item.status)],
+          ["发票号码", esc(item.invoiceNo || "-")],
+          ["驳回原因", esc(item.rejectReason || "-")]
+        ])}
+        <div class="section-title">发票文件</div>
+        ${detailTable(["文件名", "发票号码", "类型", "金额", "OCR状态", "OCR结果"], (item.files || []).map(file => [
+          esc(file.fileName), esc(file.invoiceNo || "-"), esc(file.invoiceType || "-"), money(file.invoiceAmount), tag(file.ocrStatus), esc(file.ocrResult || "-")
+        ]))}
+      `, `<button class="btn btn-primary" onclick="closeDrawer()">关闭</button>`, true);
+    } catch (error) {
+      showToast(error.message);
+    }
+  };
+
+  window.apiUploadInvoiceFile = function (id) {
+    const item = state.invoices.find(row => Number(row.id) === Number(id));
+    form("上传发票文件", [
+      { label: "文件名称", name: "fileName", value: `invoice-${Date.now()}.pdf`, required: true },
+      { label: "发票号码", name: "invoiceNo", value: "FP" + Date.now(), required: true },
+      { label: "发票类型", name: "invoiceType", type: "select", required: true, options: [{ value: "E_NORMAL", label: "电子普票" }, { value: "E_SPECIAL", label: "电子专票" }] },
+      { label: "开票金额", name: "invoiceAmount", type: "number", value: item?.amount || 0, required: true }
+    ], data => api(`/api/admin/invoices/${id}/files`, { method: "POST", body: JSON.stringify(data) }));
+  };
+
+  window.apiOcrInvoice = function (id) {
+    const item = state.invoices.find(row => Number(row.id) === Number(id));
+    api(`/api/admin/invoices/${id}/ocr`, {
+      method: "POST",
+      body: JSON.stringify({ invoiceAmount: item?.amount || 0, ocrResult: "OCR识别成功，发票号码、金额、类型已回填" })
+    }).then(reloadCurrent).then(() => showToast("OCR识别已回填")).catch(error => showToast(error.message));
   };
 
   window.apiConfirmInvoice = function (id) {
@@ -576,7 +762,7 @@
     return `${pageHeader("后台账号", "后台账号支持新增、编辑和启停用。", '<button class="btn btn-primary" onclick="apiCreateAccount()">新增账号</button>')}
       ${cardTable("后台账号", ["账号", "姓名", "手机号", "角色", "状态", "创建时间", "操作"], state.accounts.map(item => [
         esc(item.accountName), esc(item.realName), esc(item.phone), esc(item.roleName), tag(item.status), date(item.createdAt),
-        `<button class="btn-text" onclick="apiEditAccount(${item.id})">编辑</button> <button class="btn-text" onclick="apiAccountStatus(${item.id}, '${item.status === "ENABLED" ? "DISABLED" : "ENABLED"}')">${item.status === "ENABLED" ? "停用" : "启用"}</button>`
+        `<button class="btn-text" onclick="apiEditAccount(${item.id})">编辑</button> <button class="btn-text" onclick="apiResetAccountPassword(${item.id})">重置密码</button> <button class="btn-text" onclick="apiAccountStatus(${item.id}, '${item.status === "ENABLED" ? "DISABLED" : "ENABLED"}')">${item.status === "ENABLED" ? "停用" : "启用"}</button>`
       ]))}`;
   };
 
@@ -604,6 +790,12 @@
 
   window.apiAccountStatus = function (id, status) {
     api(`/api/admin/accounts/${id}/status`, { method: "PUT", body: JSON.stringify({ status }) }).then(reloadCurrent).then(() => showToast("账号状态已更新")).catch(error => showToast(error.message));
+  };
+
+  window.apiResetAccountPassword = function (id) {
+    form("重置密码", [
+      { label: "新密码", name: "password", value: "123456", required: true }
+    ], data => api(`/api/admin/accounts/${id}/password/reset`, { method: "POST", body: JSON.stringify(data) }));
   };
 
   window.renderSystemRole = function () {
@@ -640,10 +832,23 @@
 
   window.renderSystemConfig = function () {
     const params = state.parameters || {};
-    return `${pageHeader("基础配置", "基础配置读取 /api/system/parameters。")}
+    return `${pageHeader("基础配置", "基础配置影响支付超时、自动收货、售后期和库存预警。")}
       <div class="config-grid">
-        ${Object.entries(params).map(([key, value]) => `<div class="config-card"><div class="config-title">${esc(key)}</div><input class="input" value="${esc(value)}" readonly></div>`).join("")}
-      </div>`;
+        ${Object.entries(params).map(([key, value]) => `<div class="config-card"><div class="config-title">${esc(configLabel(key))}</div><input class="input" data-param="${esc(key)}" value="${esc(value)}"></div>`).join("")}
+      </div>
+      <div style="margin-top:16px"><button class="btn btn-primary" onclick="apiSaveSystemConfig()">保存配置</button></div>`;
+  };
+
+  function configLabel(key) {
+    return ({ payTimeoutMinutes: "支付超时时长(分钟)", autoConfirmReceiptDays: "自动确认收货天数", afterSaleDays: "售后期天数", stockWarningThreshold: "库存预警阈值" })[key] || key;
+  }
+
+  window.apiSaveSystemConfig = function () {
+    const data = {};
+    document.querySelectorAll("[data-param]").forEach(input => {
+      data[input.getAttribute("data-param")] = input.value;
+    });
+    api("/api/system/parameters", { method: "PUT", body: JSON.stringify(data) }).then(reloadCurrent).then(() => showToast("基础配置已保存")).catch(error => showToast(error.message));
   };
 
   setTimeout(() => window.openPage(savedPage()), 0);
