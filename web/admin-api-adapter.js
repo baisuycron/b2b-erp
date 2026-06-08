@@ -871,7 +871,7 @@
           const moduleChecked = selected.has(permissionKey(module)) || actions.some(action => selected.has(permissionKey(module, action)));
           return `<div class="perm-row">
             <div class="perm-menu"><label class="checkbox"><input type="checkbox" data-perm-module="${esc(module)}" ${moduleChecked ? "checked" : ""} onchange="apiTogglePermissionModule(this)"> ${esc(module)}</label></div>
-            <div class="perm-actions">${actions.map(action => `<label class="checkbox"><input type="checkbox" data-perm-action="${esc(action)}" data-perm-parent="${esc(module)}" ${selected.has(permissionKey(module, action)) || selected.size === 0 ? "checked" : ""} onchange="apiSyncPermissionModule(this)"> ${esc(action)}</label>`).join("")}</div>
+            <div class="perm-actions">${actions.map(action => `<label class="checkbox"><input type="checkbox" data-perm-action="${esc(action)}" data-perm-parent="${esc(module)}" ${selected.has(permissionKey(module, action)) ? "checked" : ""} onchange="apiSyncPermissionModule(this)"> ${esc(action)}</label>`).join("")}</div>
           </div>`;
         }).join("")}
       </div>`;
@@ -893,7 +893,7 @@
 
   function selectedRolePermissionKeys(item) {
     const raw = item?.permissionJson || item?.permissionsJson || item?.permissions;
-    if (!raw) return allPermissionKeys();
+    if (raw === undefined || raw === null || raw === "") return allPermissionKeys();
     let permissions = raw;
     if (typeof raw === "string") {
       try {
@@ -915,7 +915,7 @@
         (row.actions || []).forEach(action => keys.add(permissionKey(module, action)));
       });
     }
-    return keys.size ? keys : allPermissionKeys();
+    return keys;
   }
 
   function allPermissionKeys() {
