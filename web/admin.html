@@ -990,10 +990,6 @@
     });
   }
 
-  function closeAllGroups(){
-    document.querySelectorAll('.submenu').forEach(s => s.classList.remove('open'));
-  }
-
   function toggleGroup(name){
     if(document.body.classList.contains('sidebar-collapsed')){
       toggleSidebar(true);
@@ -1002,6 +998,8 @@
     const willOpen = !group.classList.contains('open');
     if(willOpen){
       group.classList.add('open');
+    }else{
+      group.classList.remove('open');
     }
     document.querySelectorAll('.menu-group-title[data-group]').forEach(i => i.classList.remove('active'));
     const title = document.querySelector('.menu-group-title[data-group="' + name + '"]');
