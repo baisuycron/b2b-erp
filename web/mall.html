@@ -183,10 +183,11 @@
       position:fixed;
       right:24px;
       top:180px;
-      z-index:40;
+      z-index:1000;
       display:flex;
       flex-direction:column;
       gap:10px;
+      pointer-events:auto;
     }
 
     .side-shortcut{
@@ -1154,7 +1155,7 @@
   </nav>
 
   <aside class="side-shortcuts">
-    <div class="side-shortcut has-badge" onclick="go('cart')">
+    <div class="side-shortcut has-badge" onclick="goCart()">
       <div class="side-shortcut-badge" id="cartCount">0</div>
       <div class="side-shortcut-icon">🛒</div>
       <div class="side-shortcut-label">购物车</div>
@@ -1283,6 +1284,11 @@
   let selectedSpecIndex = 0;
   let buyQty = 10;
   let detailSpecQtyMap = {};
+  let checkoutItems = null;
+  let mallCategories = [];
+  let mallBrands = [];
+  let currentCategory = '全部分类';
+  let currentBrand = '全部品牌';
 
   let cart = [
     {productId:'p1', specIndex:0, qty:10, checked:true},
@@ -1363,6 +1369,8 @@
   ];
 
   let currentOrderTab = 'all';
+  let currentOrder = ordersData[0];
+  let selectedPayMethod = 'wechat';
 
   let invoiceTitleData = [
     {
@@ -1416,6 +1424,10 @@
       initDetailSpecQtyMap(currentProduct);
     }
 
+    if(page === 'orderDetail'){
+      currentOrder = ordersData.find(order => order.id === id) || currentOrder || ordersData[0];
+    }
+
     setNav(['home','list','cart','orders','addresses','profile'].includes(page) ? page : '');
     const renderMap = {
       home:renderHome,
@@ -1435,6 +1447,11 @@
     pageEl.innerHTML = renderMap[page] ? renderMap[page]() : renderHome();
     updateCartCount();
     window.scrollTo({top:0, behavior:'smooth'});
+  }
+
+  function goCart(){
+    checkoutItems = null;
+    go('cart');
   }
 
   function updateCartCount(){
@@ -1495,16 +1512,38 @@
     return cart.filter(i => i.checked).reduce((sum,item) => sum + cartItemPrice(item) * item.qty, 0);
   }
 
+  function checkoutList(){
+    return checkoutItems || cart.filter(i => i.checked);
+  }
+
+  function checkoutTotal(){
+    return checkoutList().reduce((sum,item) => sum + cartItemPrice(item) * item.qty, 0);
+  }
+
+  function paymentAmountText(){
+    if(checkoutItems){
+      return `¥${checkoutTotal().toFixed(2)}`;
+    }
+    return currentOrder ? currentOrder.amount : '¥0.00';
+  }
+
+  function paymentOrderNo(){
+    return currentOrder ? currentOrder.id : 'SO202606070001';
+  }
+
   function renderHome(){
+    const homeCategories = mallCategories.length
+      ? mallCategories
+      : [...new Set(products.map(p => p.category).filter(Boolean))];
+    const recommendProducts = products.slice(0, 8);
+
     return `
       <section class="hero">
         <div class="category-panel">
           <div class="category-title">商品分类</div>
-          <div class="category-item" onclick="go('list')"><span>包装饮用水</span><span>›</span></div>
-          <div class="category-item" onclick="go('list')"><span>茶饮料</span><span>›</span></div>
-          <div class="category-item" onclick="go('list')"><span>休闲零食</span><span>›</span></div>
-          <div class="category-item" onclick="go('list')"><span>粮油调味</span><span>›</span></div>
-          <div class="category-item" onclick="go('list')"><span>办公物资</span><span>›</span></div>
+          ${homeCategories.length
+            ? homeCategories.map(category => `<div class="category-item" onclick="selectMallCategory('${category}')"><span>${category}</span><span>›</span></div>`).join('')
+            : '<div class="category-item"><span>暂无启用分类</span><span></span></div>'}
         </div>
 
         <div class="banner">
@@ -1535,7 +1574,7 @@
         <span class="link" onclick="go('list')">查看全部 ›</span>
       </div>
       <div class="product-grid">
-        ${products.map(productCard).join('')}
+        ${recommendProducts.length ? recommendProducts.map(productCard).join('') : '<div class="empty">暂无可售商品</div>'}
       </div>
     `;
   }
@@ -1553,20 +1592,22 @@
   }
 
   function renderList(){
+    const categoryOptions = ['全部分类', ...mallCategories];
+    const brandOptions = ['全部品牌', ...mallBrands];
+    const filtered = products.filter(product => {
+      const categoryMatched = currentCategory === '全部分类' || product.category === currentCategory;
+      const brandMatched = currentBrand === '全部品牌' || product.brand === currentBrand;
+      return categoryMatched && brandMatched;
+    });
+
     return `
       <div class="list-layout">
         <aside class="filter-side">
           <div class="filter-title">商品分类</div>
-          <div class="filter-option active">全部分类</div>
-          <div class="filter-option">包装饮用水</div>
-          <div class="filter-option">茶饮料</div>
-          <div class="filter-option">休闲零食</div>
+          ${categoryOptions.map(category => `<div class="filter-option ${currentCategory === category ? 'active' : ''}" onclick="setMallCategory('${category}')">${category}</div>`).join('')}
 
           <div class="filter-title">商品品牌</div>
-          <div class="filter-option active">全部品牌</div>
-          <div class="filter-option">农夫山泉</div>
-          <div class="filter-option">娃哈哈</div>
-          <div class="filter-option">康师傅</div>
+          ${brandOptions.map(brand => `<div class="filter-option ${currentBrand === brand ? 'active' : ''}" onclick="setMallBrand('${brand}')">${brand}</div>`).join('')}
 
         </aside>
 
@@ -1578,19 +1619,38 @@
               <div class="sort-option">价格排序</div>
               <div class="sort-option">库存充足</div>
             </div>
-            <div style="color:var(--text-help)">共 ${products.length} 个商品</div>
+            <div style="color:var(--text-help)">共 ${filtered.length} 个商品</div>
           </div>
 
           <div class="product-grid">
-            ${products.map(productCard).join('')}
+            ${filtered.length ? filtered.map(productCard).join('') : '<div class="empty">暂无可售商品</div>'}
           </div>
         </section>
       </div>
     `;
   }
 
+  function selectMallCategory(category){
+    currentCategory = category;
+    currentBrand = '全部品牌';
+    go('list');
+  }
+
+  function setMallCategory(category){
+    currentCategory = category;
+    pageEl.innerHTML = renderList();
+  }
+
+  function setMallBrand(brand){
+    currentBrand = brand;
+    pageEl.innerHTML = renderList();
+  }
+
   function renderDetail(){
     const p = currentProduct;
+    if(!p){
+      return `<div class="card"><div class="empty">商品不存在或已下架</div></div>`;
+    }
     const totalQty = detailTotalQty();
     const totalAmount = detailTotalAmount(p);
     const defaultPrice = p.quoteType === '阶梯报价'
@@ -1762,23 +1822,30 @@
     pageEl.innerHTML = renderDetail();
   }
 
-  function addCart(jump){
+  function getDetailSelectedItems(){
     const selectedItems = Object.entries(detailSpecQtyMap)
       .map(([specIndex, qty]) => ({specIndex:Number(specIndex), qty:Number(qty || 0)}))
       .filter(item => item.qty > 0);
 
     if(!selectedItems.length){
       showToast('请先填写采购数量');
-      return;
+      return null;
     }
 
     for(const item of selectedItems){
       const spec = currentProduct.specs[item.specIndex];
       if(item.qty > spec.stock){
         showToast(spec.name + ' 库存不足');
-        return;
+        return null;
       }
     }
+
+    return selectedItems;
+  }
+
+  function addCart(jump){
+    const selectedItems = getDetailSelectedItems();
+    if(!selectedItems) return;
 
     selectedItems.forEach(item => {
       const found = cart.find(i => i.productId === currentProduct.id && i.specIndex === item.specIndex);
@@ -1796,8 +1863,21 @@
   }
 
   function buyNow(){
-    addCart(false);
-    go('cart');
+    const selectedItems = getDetailSelectedItems();
+    if(!selectedItems) return;
+
+    checkoutItems = selectedItems.map(item => ({
+      productId:currentProduct.id,
+      specIndex:item.specIndex,
+      qty:item.qty,
+      checked:true
+    }));
+    submitOrder();
+  }
+
+  function checkoutFromCart(){
+    checkoutItems = null;
+    go('confirm');
   }
 
   function renderCart(){
@@ -1833,7 +1913,7 @@
         </div>
         <div style="display:flex;align-items:center;gap:18px">
           <div>合计：<span class="total">¥${cartTotal().toFixed(2)}</span></div>
-          <button class="btn btn-primary" onclick="go('confirm')">去结算</button>
+          <button class="btn btn-primary" onclick="checkoutFromCart()">去结算</button>
         </div>
       </div>
     `;
@@ -1900,7 +1980,7 @@
   }
 
   function renderConfirm(){
-    const checked = cart.filter(i => i.checked);
+    const checked = checkoutList();
     if(!checked.length){
       return `<div class="card"><div class="empty">请先选择需要结算的商品</div></div>`;
     }
@@ -1957,12 +2037,48 @@
       <div class="cart-footer">
         <div style="color:var(--text-help)">提交订单后将冻结对应商品库存</div>
         <div style="display:flex;align-items:center;gap:18px">
-          <div>应付金额：<span class="total">¥${cartTotal().toFixed(2)}</span></div>
+          <div>应付金额：<span class="total">¥${checkoutTotal().toFixed(2)}</span></div>
           <button class="btn" onclick="go('cart')">返回购物车</button>
-          <button class="btn btn-primary" onclick="go('pay')">提交订单</button>
+          <button class="btn btn-primary" onclick="submitOrder()">提交订单</button>
         </div>
       </div>
     `;
+  }
+
+  function submitOrder(){
+    if(!checkoutList().length){
+      showToast('请先选择需要结算的商品');
+      return;
+    }
+    currentOrder = {
+      id:'SO202606070001',
+      goodsCount:checkoutList().reduce((sum,item) => sum + item.qty, 0),
+      amount:`¥${checkoutTotal().toFixed(2)}`,
+      payLabel:'未支付',
+      payTag:'orange',
+      shipLabel:'未发货',
+      shipTag:'gray',
+      statusKey:'pendingPayment',
+      statusLabel:'待支付',
+      statusTag:'orange',
+      orderTime:'2026-06-07 22:30',
+      actions:['详情','去支付']
+    };
+    goPay();
+  }
+
+  function goPay(orderId){
+    if(orderId){
+      currentOrder = ordersData.find(order => order.id === orderId) || currentOrder || ordersData[0];
+      checkoutItems = null;
+    }
+    selectedPayMethod = 'wechat';
+    go('pay');
+  }
+
+  function selectPayMethod(method){
+    selectedPayMethod = method;
+    pageEl.innerHTML = renderPay();
   }
 
   function renderPay(){
@@ -1984,21 +2100,21 @@
             <div>订单已提交，请在 30 分钟内完成支付。超时后订单自动关闭并释放冻结库存。</div>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:20px 0">
-            <div class="address-card active">
+            <div class="address-card ${selectedPayMethod === 'wechat' ? 'active' : ''}" onclick="selectPayMethod('wechat')">
               <div class="address-name">微信支付</div>
               <div class="address-detail">使用微信扫码或跳转支付</div>
             </div>
-            <div class="address-card">
+            <div class="address-card ${selectedPayMethod === 'alipay' ? 'active' : ''}" onclick="selectPayMethod('alipay')">
               <div class="address-name">支付宝</div>
               <div class="address-detail">使用支付宝扫码或跳转支付</div>
             </div>
           </div>
-          <div style="font-size:18px">支付金额：<span class="total">¥${cartTotal().toFixed(2)}</span></div>
+          <div style="font-size:18px">支付金额：<span class="total">${paymentAmountText()}</span></div>
         </div>
       </div>
 
       <div class="cart-footer">
-        <div>订单编号：SO202606070001</div>
+        <div>订单编号：${paymentOrderNo()}</div>
         <div style="display:flex;gap:12px">
           <button class="btn" onclick="go('orders')">稍后支付</button>
           <button class="btn btn-primary" onclick="paySuccess()">模拟支付成功</button>
@@ -2008,7 +2124,20 @@
   }
 
   function paySuccess(){
-    cart = [];
+    if(currentOrder){
+      currentOrder.payLabel = '已支付';
+      currentOrder.payTag = 'green';
+      currentOrder.shipLabel = '待发货';
+      currentOrder.shipTag = 'blue';
+      currentOrder.statusKey = 'pendingShipment';
+      currentOrder.statusLabel = '待发货';
+      currentOrder.statusTag = 'blue';
+      currentOrder.actions = ['详情'];
+    }
+    if(!checkoutItems){
+      cart = cart.filter(item => !item.checked);
+    }
+    checkoutItems = null;
     updateCartCount();
     showToast('支付成功');
     go('orderDetail');
@@ -2044,19 +2173,60 @@
   function renderOrderActions(order){
     return order.actions.map(action => {
       if(action === '详情'){
-        return `<button class="btn-text" onclick="go('orderDetail')">详情</button>`;
+        return `<button class="btn-text" onclick="go('orderDetail','${order.id}')">详情</button>`;
       }
       if(action === '申请开票'){
         return `<button class="btn-text" onclick="openInvoiceApply()">申请开票</button>`;
       }
       if(action === '去支付'){
-        return `<button class="btn-text" onclick="go('pay')">去支付</button>`;
+        return `<button class="btn-text" onclick="goPay('${order.id}')">去支付</button>`;
       }
       if(action === '确认收货'){
         return `<button class="btn-text" onclick="showToast('已确认收货')">确认收货</button>`;
       }
       return `<button class="btn-text">${action}</button>`;
     }).join('');
+  }
+
+  function renderOrderDetailSteps(order){
+    const hasPaid = order.payLabel === '已支付';
+    const hasShipmentStep = hasPaid && ['pendingShipment','pendingReceipt','completed','aftersale'].includes(order.statusKey);
+    const hasReceiptStep = ['pendingReceipt','completed'].includes(order.statusKey);
+    const steps = [
+      {label:'1. 已下单', active:true},
+      {label:hasPaid ? '2. 已支付' : '2. 待支付', active:true},
+      {label:order.shipLabel === '已发货' || order.shipLabel === '部分发货' ? '3. 已发货' : '3. 待发货', active:hasShipmentStep},
+      {label:order.statusKey === 'completed' ? '4. 已完成' : '4. 待收货', active:hasReceiptStep}
+    ];
+
+    return `
+      <div class="order-steps">
+        ${steps.map(step => `<div class="step ${step.active ? 'active' : ''}">${step.label}</div>`).join('')}
+      </div>
+    `;
+  }
+
+  function renderOrderDetailHeaderActions(order){
+    if(order.statusKey === 'pendingPayment'){
+      return `<button class="btn btn-primary" onclick="goPay('${order.id}')">去支付</button>`;
+    }
+
+    if(order.statusKey === 'completed'){
+      return `<button class="btn btn-primary" onclick="openInvoiceApply()">申请开票</button>`;
+    }
+
+    if(order.statusKey === 'pendingReceipt'){
+      return `
+        <button class="btn" onclick="openRefundApply()">申请退款</button>
+        <button class="btn btn-primary" onclick="showToast('已确认收货')">确认收货</button>
+      `;
+    }
+
+    if(order.statusKey === 'aftersale'){
+      return `<button class="btn" onclick="openRefundApply()">查看售后</button>`;
+    }
+
+    return `<button class="btn" onclick="openRefundApply()">申请退款</button>`;
   }
 
   function renderOrders(){
@@ -2115,28 +2285,25 @@
   }
 
   function renderOrderDetail(){
+    const order = currentOrder || ordersData[0];
+    const paid = order.payLabel === '已支付';
+
     return `
-      <div class="order-steps">
-        <div class="step active">1. 已下单</div>
-        <div class="step active">2. 已支付</div>
-        <div class="step active">3. 待发货</div>
-        <div class="step">4. 待收货</div>
-      </div>
+      ${renderOrderDetailSteps(order)}
 
       <div class="card">
         <div class="card-header">
           <div class="card-title">订单详情</div>
-          <div>
-            <button class="btn" onclick="openRefundApply()">申请退款</button>
-            <button class="btn btn-primary" onclick="openInvoiceApply()">申请开票</button>
-          </div>
+          <div style="display:flex;gap:10px">${renderOrderDetailHeaderActions(order)}</div>
         </div>
         <div style="padding:16px">
           <div class="form-grid">
-            <div class="label">订单编号</div><div>SO202606070001</div>
-            <div class="label">订单状态</div><div><span class="tag tag-blue">待发货</span></div>
-            <div class="label">支付方式</div><div>微信支付</div>
-            <div class="label">支付时间</div><div>2026-06-07 09:45</div>
+            <div class="label">订单编号</div><div>${order.id}</div>
+            <div class="label">订单状态</div><div><span class="tag tag-${order.statusTag}">${order.statusLabel}</span></div>
+            <div class="label">支付状态</div><div><span class="tag tag-${order.payTag}">${order.payLabel}</span></div>
+            <div class="label">发货状态</div><div><span class="tag tag-${order.shipTag}">${order.shipLabel}</span></div>
+            <div class="label">支付方式</div><div>${paid ? '微信支付' : '-'}</div>
+            <div class="label">支付时间</div><div>${paid ? '2026-06-07 09:45' : '-'}</div>
             <div class="label">收货地址</div><div>李经理 138****8888，浙江省杭州市西湖区文三路188号</div>
           </div>
         </div>
@@ -2659,5 +2826,6 @@
   updateCartCount();
   go('home');
 </script>
+<script src="commerce-api-adapter.js?v=20260608-mall-taxonomy"></script>
 </body>
 </html>

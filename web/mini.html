@@ -1197,6 +1197,7 @@
   let specQtyMap = {};
   let orderTab = 'all';
   let invoiceTitleTab = 'all';
+  let checkoutItems = null;
 
   let cart = [
     {productId:'p1', specIndex:0, qty:10, checked:true},
@@ -1368,6 +1369,14 @@
 
   function cartTotal(){
     return cart.filter(item => item.checked).reduce((sum,item) => sum + cartItemPrice(item) * item.qty, 0);
+  }
+
+  function checkoutList(){
+    return checkoutItems || cart.filter(item => item.checked);
+  }
+
+  function checkoutTotal(){
+    return checkoutList().reduce((sum,item) => sum + cartItemPrice(item) * item.qty, 0);
   }
 
   function initSpecQty(product){
@@ -1630,12 +1639,19 @@
     content.scrollTop = scrollTop;
   }
 
-  function addToCart(jump){
+  function getDetailSelectedItems(){
     const selected = Object.entries(specQtyMap).map(([idx,qty]) => ({idx:Number(idx), qty:Number(qty || 0)})).filter(i => i.qty > 0);
     if(!selected.length){
       showToast('请先选择采购数量');
-      return;
+      return null;
     }
+
+    return selected;
+  }
+
+  function addToCart(jump){
+    const selected = getDetailSelectedItems();
+    if(!selected) return;
 
     selected.forEach(item => {
       const found = cart.find(c => c.productId === currentProduct.id && c.specIndex === item.idx);
@@ -1652,8 +1668,21 @@
   }
 
   function buyNow(){
-    addToCart(false);
-    go('cart');
+    const selected = getDetailSelectedItems();
+    if(!selected) return;
+
+    checkoutItems = selected.map(item => ({
+      productId:currentProduct.id,
+      specIndex:item.idx,
+      qty:item.qty,
+      checked:true
+    }));
+    submitOrder();
+  }
+
+  function checkoutFromCart(){
+    checkoutItems = null;
+    go('confirm');
   }
 
   function renderCart(){
@@ -1670,7 +1699,7 @@
         </label>
         <div style="display:flex;align-items:center;gap:10px">
           <div>合计：<span class="total">¥${cartTotal().toFixed(2)}</span></div>
-          <button class="btn btn-primary" onclick="go('confirm')">结算</button>
+          <button class="btn btn-primary" onclick="checkoutFromCart()">结算</button>
         </div>
       </div>
     `;
@@ -1736,7 +1765,7 @@
   }
 
   function renderConfirm(){
-    const checked = cart.filter(i => i.checked);
+    const checked = checkoutList();
     if(!checked.length) return '<div class="empty">请先选择结算商品</div>';
 
     return `
@@ -1771,7 +1800,7 @@
       </div>
 
       <div class="sticky-submit no-tab">
-        <div>应付：<span class="total">¥${cartTotal().toFixed(2)}</span></div>
+        <div>应付：<span class="total">¥${checkoutTotal().toFixed(2)}</span></div>
         <button class="btn btn-primary" onclick="submitOrder()">提交订单</button>
       </div>
     `;
@@ -1787,13 +1816,22 @@
         <div style="font-size:54px;color:var(--success);line-height:1">✓</div>
         <div style="font-size:20px;font-weight:800;margin-top:10px">支付成功</div>
         <div style="color:var(--text-help);margin-top:8px">订单已支付，等待卖家发货</div>
-        <div class="total" style="margin-top:18px">¥${cartTotal().toFixed(2)}</div>
+        <div class="total" style="margin-top:18px">¥${checkoutTotal().toFixed(2)}</div>
       </div>
       <div style="display:flex;gap:10px;margin-top:12px">
         <button class="btn" style="flex:1" onclick="go('home')">返回首页</button>
-        <button class="btn btn-primary" style="flex:1" onclick="cart=[];go('orders')">查看订单</button>
+        <button class="btn btn-primary" style="flex:1" onclick="finishMiniOrder()">查看订单</button>
       </div>
     `;
+  }
+
+  function finishMiniOrder(){
+    if(!checkoutItems){
+      cart = cart.filter(item => !item.checked);
+    }
+    checkoutItems = null;
+    updateCartBadge();
+    go('orders');
   }
 
   function getOrderTabs(){
@@ -2305,5 +2343,6 @@
 
   go('home', {}, false);
 </script>
+<script src="commerce-api-adapter.js?v=20260608-mall-taxonomy"></script>
 </body>
 </html>
