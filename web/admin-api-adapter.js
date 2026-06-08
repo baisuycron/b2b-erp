@@ -1,5 +1,6 @@
 (function () {
   const pageStorageKey = "b2b-erp-admin-current-page";
+  const accountStorageKey = "b2b-erp-admin-account-name";
 
   function savedPage() {
     const page = localStorage.getItem(pageStorageKey);
@@ -26,6 +27,7 @@
     permissionTree: [],
     logs: [],
     parameters: {},
+    currentAccountName: localStorage.getItem(accountStorageKey) || "admin",
     currentPage: "dashboard"
   };
 
@@ -46,7 +48,7 @@
     "buyer": () => api("/api/customers").then(data => state.buyers = data).catch(() => state.buyers = []),
     "finance-payment": () => load("payments"),
     "finance-refund": () => load("refunds"),
-    "system-user": () => load("accounts"),
+    "system-user": () => Promise.all([load("accounts"), load("roles")]),
     "system-role": () => Promise.all([load("roles"), load("permissionTree")]),
     "system-log": () => load("logs"),
     "system-config": () => load("parameters")
@@ -168,6 +170,7 @@
   function reloadCurrent() {
     const page = state.currentPage || "dashboard";
     return (pageLoaders[page] ? pageLoaders[page]() : Promise.resolve()).then(() => {
+      applyRolePermissions();
       originalOpenPage(page);
       window.showToast("当前页面数据已刷新");
     });
@@ -237,12 +240,25 @@
   };
 
   window.openPage = function (page) {
+    if (!canAccessPage(page)) {
+      const fallback = firstAllowedPage();
+      if (!fallback) {
+        state.currentPage = "";
+        document.getElementById("content").innerHTML = `<div class="empty-state">当前角色暂无可访问的后台菜单，请联系管理员调整角色权限。</div>`;
+        return;
+      }
+      window.showToast("当前角色无权访问该功能");
+      page = fallback;
+    }
     state.currentPage = page;
     localStorage.setItem(pageStorageKey, page);
     originalOpenPage(page);
     const loader = pageLoaders[page];
     if (!loader) return;
-    loader().then(() => originalOpenPage(page)).catch(error => {
+    loader().then(() => {
+      applyRolePermissions();
+      originalOpenPage(page);
+    }).catch(error => {
       const content = document.getElementById("content");
       if (content) content.insertAdjacentHTML("afterbegin", `<div class="notice"><span>!</span><div>数据加载失败：${esc(error.message)}</div></div>`);
     });
@@ -266,6 +282,91 @@
 
   function targetPage(target) {
     return ({ purchase: "purchase-order", orders: "order", afterSales: "aftersale", invoices: "invoice" })[target] || "dashboard";
+  }
+
+  const pagePermissionMap = {
+    dashboard: ["首页工作台", "首页统计"],
+    "product-list": ["商品管理", "商品档案"],
+    "product-category": ["商品管理", "商品分类"],
+    "product-brand": ["商品管理", "商品品牌"],
+    supplier: ["采购管理", "供应商管理"],
+    "purchase-order": ["采购管理", "采购订单"],
+    "purchase-inbound": ["采购管理", "采购入库记录"],
+    "stock-overview": ["库存管理", "库存总览"],
+    "stock-flow": ["库存管理", "库存流水"],
+    "stock-adjust": ["库存管理", "库存调整"],
+    order: ["订单管理", "订单列表"],
+    aftersale: ["售后管理", "售后申请"],
+    invoice: ["开票管理", "开票申请"],
+    buyer: ["买家管理", "买家列表"],
+    "finance-payment": ["财务管理", "支付记录"],
+    "finance-refund": ["财务管理", "退款记录"],
+    "system-user": ["系统管理", "后台账号"],
+    "system-role": ["系统管理", "角色权限"],
+    "system-log": ["系统管理", "操作日志"],
+    "system-config": ["系统管理", "基础配置"]
+  };
+
+  const groupPermissionMap = {
+    product: "商品管理",
+    purchase: "采购管理",
+    stock: "库存管理",
+    finance: "财务管理",
+    system: "系统管理"
+  };
+
+  function loadPermissionContext() {
+    return Promise.all([load("accounts"), load("roles"), load("permissionTree")]).then(() => applyRolePermissions());
+  }
+
+  function currentAccount() {
+    return state.accounts.find(item => item.accountName === state.currentAccountName)
+      || state.accounts.find(item => item.accountName === "admin")
+      || state.accounts[0]
+      || null;
+  }
+
+  function currentRole() {
+    const account = currentAccount();
+    return account ? state.roles.find(item => item.roleName === account.roleName) : null;
+  }
+
+  function currentPermissionKeys() {
+    const role = currentRole();
+    return role ? selectedRolePermissionKeys(role) : allPermissionKeys();
+  }
+
+  function canAccessPage(page) {
+    const meta = pagePermissionMap[page];
+    if (!meta) return true;
+    const keys = currentPermissionKeys();
+    return keys.has(permissionKey(meta[0])) || keys.has(permissionKey(meta[0], meta[1]));
+  }
+
+  function firstAllowedPage(preferred = "") {
+    if (preferred && canAccessPage(preferred)) return preferred;
+    return Object.keys(pagePermissionMap).find(page => canAccessPage(page)) || "";
+  }
+
+  function applyRolePermissions() {
+    const keys = currentPermissionKeys();
+    document.querySelectorAll("[data-page]").forEach(node => {
+      const page = node.getAttribute("data-page");
+      node.style.display = canAccessPage(page) ? "" : "none";
+    });
+    document.querySelectorAll(".menu-group").forEach(group => {
+      const title = group.querySelector(".menu-group-title[data-group]");
+      const groupName = title ? title.getAttribute("data-group") : "";
+      const module = groupPermissionMap[groupName];
+      const visibleChildren = Array.from(group.querySelectorAll(".submenu-item")).some(item => item.style.display !== "none");
+      group.style.display = !module || keys.has(permissionKey(module)) || visibleChildren ? "" : "none";
+    });
+    const account = currentAccount();
+    const chip = document.querySelector(".user-chip span");
+    if (account && chip) {
+      chip.textContent = `${account.realName || account.accountName}｜${account.roleName}`;
+    }
+    updateGroupArrows();
   }
 
   window.renderProductList = function () {
@@ -782,12 +883,26 @@
     const fields = [
       { label: "姓名", name: "realName", value: item?.realName || "", required: true },
       { label: "手机号", name: "phone", value: item?.phone || "", required: true },
-      { label: "角色", name: "roleName", value: item?.roleName || "客服人员", required: true }
+      { label: "角色", name: "roleName", type: "select", value: item?.roleName || defaultRoleName(), options: roleSelectOptions(item?.roleName), required: true }
     ];
     if (!item) {
       fields.unshift({ label: "账号", name: "accountName", required: true });
     }
     form(title, fields, onSubmit);
+  }
+
+  function defaultRoleName() {
+    const role = state.roles.find(item => item.status === "ENABLED") || state.roles[0];
+    return role ? role.roleName : "";
+  }
+
+  function roleSelectOptions(currentRoleName = "") {
+    const roles = state.roles.filter(role => role.status === "ENABLED" || role.roleName === currentRoleName);
+    const options = roles.map(role => ({ value: role.roleName, label: role.roleName }));
+    if (currentRoleName && !options.some(option => option.value === currentRoleName)) {
+      options.unshift({ value: currentRoleName, label: currentRoleName });
+    }
+    return options.length ? options : [{ value: "", label: "暂无可用角色" }];
   }
 
   window.apiAccountStatus = function (id, status) {
@@ -989,5 +1104,12 @@
     api("/api/system/parameters", { method: "PUT", body: JSON.stringify(data) }).then(reloadCurrent).then(() => showToast("基础配置已保存")).catch(error => showToast(error.message));
   };
 
-  setTimeout(() => window.openPage(savedPage()), 0);
+  setTimeout(() => {
+    loadPermissionContext()
+      .then(() => window.openPage(firstAllowedPage(savedPage())))
+      .catch(error => {
+        window.showToast(error.message);
+        window.openPage(savedPage());
+      });
+  }, 0);
 })();

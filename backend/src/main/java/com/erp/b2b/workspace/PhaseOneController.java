@@ -101,6 +101,7 @@ public class PhaseOneController {
         String realName = requiredString(request, "realName");
         String phone = requiredString(request, "phone");
         String roleName = requiredString(request, "roleName");
+        requireEnabledRole(roleName);
         jdbcClient.sql("""
             INSERT INTO admin_accounts (account_name, real_name, phone, role_name, account_status)
             VALUES (:accountName, :realName, :phone, :roleName, 'ENABLED')
@@ -111,6 +112,7 @@ public class PhaseOneController {
             .param("roleName", roleName)
             .update();
         log("系统管理", "新增后台账号", accountName, "新增账号 " + accountName);
+        refreshRoleAccountCounts();
         return one("SELECT * FROM admin_accounts WHERE account_name = :accountName", "accountName", accountName);
     }
 
@@ -119,6 +121,7 @@ public class PhaseOneController {
         String realName = requiredString(request, "realName");
         String phone = requiredString(request, "phone");
         String roleName = requiredString(request, "roleName");
+        requireEnabledRole(roleName);
         jdbcClient.sql("""
             UPDATE admin_accounts
             SET real_name = :realName, phone = :phone, role_name = :roleName
@@ -130,6 +133,7 @@ public class PhaseOneController {
             .param("id", accountId)
             .update();
         log("系统管理", "编辑后台账号", String.valueOf(accountId), "编辑后台账号资料");
+        refreshRoleAccountCounts();
         return one("SELECT * FROM admin_accounts WHERE id = :id", "id", accountId);
     }
 
@@ -141,6 +145,7 @@ public class PhaseOneController {
             .param("id", accountId)
             .update();
         log("系统管理", "启用/禁用账号", String.valueOf(accountId), "账号状态更新为 " + status);
+        refreshRoleAccountCounts();
         return one("SELECT * FROM admin_accounts WHERE id = :id", "id", accountId);
     }
 
@@ -1226,6 +1231,31 @@ public class PhaseOneController {
 
     private long count(String sql) {
         return jdbcClient.sql(sql).query(Long.class).single();
+    }
+
+    private void requireEnabledRole(String roleName) {
+        Long exists = jdbcClient.sql("""
+            SELECT COUNT(*)
+            FROM admin_roles
+            WHERE role_name = :roleName AND role_status = 'ENABLED'
+            """)
+            .param("roleName", roleName)
+            .query(Long.class)
+            .single();
+        if (exists == 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "roleName must be an enabled role");
+        }
+    }
+
+    private void refreshRoleAccountCounts() {
+        jdbcClient.sql("""
+            UPDATE admin_roles r
+            SET account_count = (
+                SELECT COUNT(*)
+                FROM admin_accounts a
+                WHERE a.role_name = r.role_name
+            )
+            """).update();
     }
 
     private long invoiceFileCount(Long invoiceApplyId) {
