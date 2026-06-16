@@ -1,0 +1,74 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: b2b-erp-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: b2b_erp
+      MYSQL_USER: b2b_erp
+      MYSQL_PASSWORD: ${DB_PASSWORD:-change_me}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change_root_password}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+
+  backend:
+    build:
+      context: .
+      target: backend-runtime
+    container_name: b2b-erp-backend
+    restart: unless-stopped
+    depends_on:
+      - mysql
+      - qdrant
+    environment:
+      SERVER_PORT: ${SERVER_PORT:-8080}
+      DB_URL: ${DB_URL:-jdbc:mysql://mysql:3306/b2b_erp?useUnicode=true&characterEncoding=UTF-8&connectionCollation=utf8mb4_unicode_ci&serverTimezone=Asia/Shanghai}
+      DB_USERNAME: ${DB_USERNAME:-b2b_erp}
+      DB_PASSWORD: ${DB_PASSWORD:-change_me}
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
+      JWT_SECRET: ${JWT_SECRET:-replace_with_a_long_random_string}
+      UPLOAD_DIR: ${UPLOAD_DIR:-/data/b2b-erp/uploads}
+      JAVA_OPTS: ${JAVA_OPTS:--Xms512m -Xmx1024m}
+      IMAGE_SEARCH_ENABLED: ${IMAGE_SEARCH_ENABLED:-true}
+      IMAGE_EMBEDDING_SERVICE_URL: ${IMAGE_EMBEDDING_SERVICE_URL:-http://127.0.0.1:8080/api/internal/image-embedding}
+      QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+      IMAGE_VECTOR_COLLECTION: ${IMAGE_VECTOR_COLLECTION:-product-images}
+      IMAGE_SEARCH_TOP_K_DEFAULT: ${IMAGE_SEARCH_TOP_K_DEFAULT:-20}
+      IMAGE_SEARCH_MINIMUM_SCORE: ${IMAGE_SEARCH_MINIMUM_SCORE:-0.72}
+      IMAGE_EMBEDDING_MODEL: ${IMAGE_EMBEDDING_MODEL:-b2b-visual-signature-v2}
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./docker-data/uploads:/data/b2b-erp/uploads
+
+  nginx:
+    build:
+      context: .
+      target: frontend-runtime
+    container_name: b2b-erp-nginx
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+    volumes:
+      - ./docker-data/uploads:/data/b2b-erp/uploads:ro
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: b2b-erp-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant-data:/qdrant/storage
+
+volumes:
+  mysql-data:
+  qdrant-data:

@@ -6,6 +6,7 @@ public record CreateCustomerRequest(
     @NotBlank String companyName,
     @NotBlank String contactName,
     @NotBlank String contactPhone,
+    String address,
     String salesmanName
 ) {
 }

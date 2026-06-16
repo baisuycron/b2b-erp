@@ -1,0 +1,9 @@
+.git
+.gitignore
+node_modules
+dist-web
+web
+backend/target
+outputs
+.tools
+docker-data

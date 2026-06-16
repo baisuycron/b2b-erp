@@ -19,3 +19,18 @@ management:
     web:
       exposure:
         include: health
+
+b2b:
+  image-search:
+    enabled: ${IMAGE_SEARCH_ENABLED:false}
+    embedding-service-url: ${IMAGE_EMBEDDING_SERVICE_URL:}
+    qdrant-url: ${QDRANT_URL:}
+    qdrant-api-key: ${QDRANT_API_KEY:}
+    collection: ${IMAGE_VECTOR_COLLECTION:product-images}
+    top-k-default: ${IMAGE_SEARCH_TOP_K_DEFAULT:20}
+    minimum-score: ${IMAGE_SEARCH_MINIMUM_SCORE:0.72}
+    embedding-model: ${IMAGE_EMBEDDING_MODEL:b2b-visual-signature-v2}
+  ai:
+    mode: ${AI_MODE:rule}
+    openai-api-key: ${OPENAI_API_KEY:}
+    model: ${AI_MODEL:gpt-4.1-mini}

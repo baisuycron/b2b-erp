@@ -1,0 +1,1921 @@
+package com.erp.b2b.workspace;
+
+import com.erp.b2b.common.ApiException;
+import com.erp.b2b.inventory.InventoryRepository;
+import com.erp.b2b.order.OrderService;
+import com.erp.b2b.product.CreateProductRequest;
+import com.erp.b2b.product.Product;
+import com.erp.b2b.product.ProductRepository;
+import com.erp.b2b.product.search.ImageSearchService;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.validation.Valid;
+import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
+import java.sql.SQLException;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.Arrays;
+import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
+import org.springframework.http.HttpStatus;
+import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequestMapping("/api")
+public class PhaseOneController {
+    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final JdbcClient jdbcClient;
+    private final ProductRepository productRepository;
+    private final ImageSearchService imageSearchService;
+    private final InventoryRepository inventoryRepository;
+    private final OrderService orderService;
+    private final List<Map<String, Object>> buyerCartItems = new ArrayList<>();
+    private final List<Map<String, Object>> buyerAddresses = new ArrayList<>();
+    private final AtomicLong cartItemSequence = new AtomicLong(1000);
+    private final AtomicLong addressSequence = new AtomicLong(1000);
+    private static final String SUPER_ADMIN_ROLE = "超级管理员";
+    private static final String DASHBOARD_PERMISSION_KEY = "dashboard";
+
+    public PhaseOneController(JdbcClient jdbcClient, ProductRepository productRepository, ImageSearchService imageSearchService, InventoryRepository inventoryRepository, OrderService orderService) {
+        this.jdbcClient = jdbcClient;
+        this.productRepository = productRepository;
+        this.imageSearchService = imageSearchService;
+        this.inventoryRepository = inventoryRepository;
+        this.orderService = orderService;
+        buyerAddresses.add(row("id", addressSequence.incrementAndGet(), "receiverName", "李经理", "receiverPhone", "13888888888", "region", "浙江省 杭州市 西湖区", "detailAddress", "文三路188号3号楼1201室", "isDefault", true));
+        buyerAddresses.add(row("id", addressSequence.incrementAndGet(), "receiverName", "王采购", "receiverPhone", "13666666666", "region", "浙江省 杭州市 余杭区", "detailAddress", "未来科技城88号", "isDefault", false));
+    }
+
+    @GetMapping("/admin/summary")
+    public Map<String, Object> adminSummary() {
+        var products = productRepository.findAll();
+        var orders = orderService.listOrders();
+        long pendingAfterSale = count("SELECT COUNT(*) FROM after_sale_orders WHERE after_sale_status NOT IN ('COMPLETED','REJECTED')");
+        long pendingInvoice = count("SELECT COUNT(*) FROM invoice_applies WHERE invoice_status = 'WAIT_INVOICE'");
+        return row(
+            "todayOrders", orders.size(),
+            "todayPaymentAmount", payments().stream().map(item -> new BigDecimal(String.valueOf(item.get("amount")))).reduce(BigDecimal.ZERO, BigDecimal::add),
+            "saleableSkus", products.stream().filter(product -> "ON_SALE".equals(product.saleStatus())).count(),
+            "stockWarning", products.stream().filter(product -> product.stockQuantity() <= stockWarningThreshold()).count(),
+            "pendingAfterSale", pendingAfterSale,
+            "pendingInvoice", pendingInvoice,
+            "todoCards", List.of(
+                row("module", "采购管理", "title", "待入库采购单", "count", count("SELECT COUNT(*) FROM purchase_orders WHERE purchase_status IN ('WAIT_STOCK_IN','PART_STOCK_IN')"), "target", "purchase"),
+                row("module", "订单管理", "title", "待发货订单", "count", orders.stream().filter(order -> "WAIT_SHIP".equals(order.orderStatus())).count(), "target", "orders"),
+                row("module", "售后管理", "title", "待审核售后", "count", count("SELECT COUNT(*) FROM after_sale_orders WHERE after_sale_status = 'WAIT_AUDIT'"), "target", "afterSales"),
+                row("module", "开票管理", "title", "待开票申请", "count", pendingInvoice, "target", "invoices")
+            )
+        );
+    }
+
+    @PostMapping("/admin/login")
+    public Map<String, Object> adminLogin(@RequestBody Map<String, Object> request) {
+        String login = string(request.getOrDefault("phone",
+            request.getOrDefault("username", request.getOrDefault("accountName", "")))).trim();
+        String password = string(request.get("password")).trim();
+        if (login.isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "请输入账号或手机号");
+        }
+        if (password.isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "请输入密码");
+        }
+        if (password.length() < 6 || password.length() > 20) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "密码长度需为6-20位");
+        }
+        Map<String, Object> account = jdbcClient.sql("""
+            SELECT account_name AS username, account_name, real_name, phone, role_name, account_status, password_hash
+            FROM admin_accounts
+            WHERE phone = :login OR account_name = :login
+            """)
+            .param("login", login)
+            .query(this::mapRow)
+            .optional()
+            .orElseThrow(() -> new ApiException(HttpStatus.UNAUTHORIZED, "账号或手机号或密码错误"));
+        if (!passwordHash(password).equals(account.get("passwordHash"))) {
+            throw new ApiException(HttpStatus.UNAUTHORIZED, "账号或手机号或密码错误");
+        }
+        if (!"ENABLED".equals(account.get("accountStatus"))) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "当前账号已被禁用，请联系管理员");
+        }
+        String username = string(account.get("username"));
+        String realName = string(account.get("realName"));
+        List<String> roleNames = roleNames(account.get("roleName"));
+        boolean isSuperAdmin = roleNames.contains(SUPER_ADMIN_ROLE);
+        return row(
+            "token", "admin-token-" + username,
+            "username", username,
+            "accountName", realName,
+            "realName", realName,
+            "phone", account.get("phone"),
+            "role", account.get("roleName"),
+            "roleNames", roleNames,
+            "isSuperAdmin", isSuperAdmin,
+            "permissionKeys", isSuperAdmin ? allPermissionKeys() : rolePermissionKeys(roleNames)
+        );
+    }
+
+    @GetMapping("/admin/accounts")
+    public List<Map<String, Object>> adminAccounts() {
+        List<Map<String, Object>> rows = rows("""
+            SELECT id, account_name AS username, real_name, phone, role_name, account_status AS status, created_at, updated_at
+            FROM admin_accounts
+            ORDER BY id
+            """);
+        rows.forEach(item -> item.put("roleNames", roleNames(item.get("roleName"))));
+        return rows;
+    }
+
+    @PostMapping("/admin/accounts")
+    public Map<String, Object> createAdminAccount(@RequestBody Map<String, Object> request) {
+        String accountName = requiredString(request, "username", "accountName");
+        String realName = requiredString(request, "realName", "accountName");
+        String phone = requiredString(request, "phone");
+        String password = requiredPassword(request);
+        String roleName = requireEnabledRoles(request);
+        ensureUniqueAdminAccount(accountName, phone, null);
+        jdbcClient.sql("""
+            INSERT INTO admin_accounts (account_name, real_name, phone, password_hash, role_name, account_status)
+            VALUES (:accountName, :realName, :phone, :passwordHash, :roleName, 'ENABLED')
+            """)
+            .param("accountName", accountName)
+            .param("realName", realName)
+            .param("phone", phone)
+            .param("passwordHash", passwordHash(password))
+            .param("roleName", roleName)
+            .update();
+        log("系统管理", "新增后台账号", accountName, "新增账号 " + accountName);
+        refreshRoleAccountCounts();
+        return one("SELECT * FROM admin_accounts WHERE account_name = :accountName", "accountName", accountName);
+    }
+
+    @PutMapping("/admin/accounts/{accountId}")
+    public Map<String, Object> updateAdminAccount(@PathVariable Long accountId, @RequestBody Map<String, Object> request) {
+        String accountName = requiredString(request, "username", "accountName");
+        String realName = requiredString(request, "realName", "accountName");
+        String phone = requiredString(request, "phone");
+        String roleName = requireEnabledRoles(request);
+        String status = normalizeStatus(request.getOrDefault("status", "ENABLED"));
+        ensureUniqueAdminAccount(accountName, phone, accountId);
+        jdbcClient.sql("""
+            UPDATE admin_accounts
+            SET account_name = :accountName, real_name = :realName, phone = :phone, role_name = :roleName, account_status = :status
+            WHERE id = :id
+            """)
+            .param("accountName", accountName)
+            .param("realName", realName)
+            .param("phone", phone)
+            .param("roleName", roleName)
+            .param("status", status)
+            .param("id", accountId)
+            .update();
+        log("系统管理", "编辑后台账号", String.valueOf(accountId), "编辑后台账号资料");
+        refreshRoleAccountCounts();
+        return one("SELECT * FROM admin_accounts WHERE id = :id", "id", accountId);
+    }
+
+    @PutMapping("/admin/accounts/{accountId}/status")
+    public Map<String, Object> updateAdminAccountStatus(@PathVariable Long accountId, @RequestBody Map<String, Object> request) {
+        String status = normalizeStatus(request.getOrDefault("status", "ENABLED"));
+        jdbcClient.sql("UPDATE admin_accounts SET account_status = :status WHERE id = :id")
+            .param("status", status)
+            .param("id", accountId)
+            .update();
+        log("系统管理", "启用/禁用账号", String.valueOf(accountId), "账号状态更新为 " + status);
+        refreshRoleAccountCounts();
+        return one("SELECT * FROM admin_accounts WHERE id = :id", "id", accountId);
+    }
+
+    @PostMapping("/admin/accounts/{accountId}/password/reset")
+    public Map<String, Object> resetAdminAccountPassword(@PathVariable Long accountId, @RequestBody Map<String, Object> request) {
+        Map<String, Object> account = one("SELECT * FROM admin_accounts WHERE id = :id", "id", accountId);
+        String password = requiredPassword(request);
+        jdbcClient.sql("UPDATE admin_accounts SET password_hash = :passwordHash WHERE id = :id")
+            .param("passwordHash", passwordHash(password))
+            .param("id", accountId)
+            .update();
+        log("系统管理", "重置后台账号密码", String.valueOf(accountId), "重置账号 " + account.get("accountName") + " 密码");
+        return row("reset", true, "accountId", accountId);
+    }
+
+    @GetMapping("/admin/roles")
+    public List<Map<String, Object>> adminRoles() {
+        return rows("""
+            SELECT id, role_name, role_desc AS description, account_count, role_status AS status, permission_json, created_at, updated_at
+            FROM admin_roles
+            ORDER BY id
+            """);
+    }
+
+    @PostMapping("/admin/roles")
+    public Map<String, Object> createRole(@RequestBody Map<String, Object> request) {
+        String roleName = requiredString(request, "roleName");
+        String roleDesc = optionalString(request, "roleDesc", "description");
+        String status = normalizeStatus(request.getOrDefault("status", "ENABLED"));
+        String permissionJson = permissionJson(request);
+        jdbcClient.sql("""
+            INSERT INTO admin_roles (role_name, role_desc, account_count, role_status, permission_json)
+            VALUES (:roleName, :roleDesc, 0, :status, :permissionJson)
+            """)
+            .param("roleName", roleName)
+            .param("roleDesc", roleDesc)
+            .param("status", status)
+            .param("permissionJson", permissionJson)
+            .update();
+        log("系统管理", "新增角色", roleName, "新增角色 " + roleName);
+        return one("SELECT * FROM admin_roles WHERE role_name = :roleName", "roleName", roleName);
+    }
+
+    @PutMapping("/admin/roles/{roleId}")
+    public Map<String, Object> updateRole(@PathVariable Long roleId, @RequestBody Map<String, Object> request) {
+        String roleName = requiredString(request, "roleName");
+        String roleDesc = optionalString(request, "roleDesc", "description");
+        String status = normalizeStatus(request.getOrDefault("status", "ENABLED"));
+        String permissionJson = permissionJson(request);
+        jdbcClient.sql("""
+            UPDATE admin_roles
+            SET role_name = :roleName, role_desc = :roleDesc, role_status = :status, permission_json = :permissionJson
+            WHERE id = :id
+            """)
+            .param("roleName", roleName)
+            .param("roleDesc", roleDesc)
+            .param("status", status)
+            .param("permissionJson", permissionJson)
+            .param("id", roleId)
+            .update();
+        log("系统管理", "编辑角色", String.valueOf(roleId), "编辑角色资料");
+        return one("SELECT * FROM admin_roles WHERE id = :id", "id", roleId);
+    }
+
+    @DeleteMapping("/admin/roles/{roleId}")
+    public Map<String, Object> deleteRole(@PathVariable Long roleId) {
+        Map<String, Object> role = one("SELECT * FROM admin_roles WHERE id = :id", "id", roleId);
+        String roleName = string(role.get("roleName"));
+        if (SUPER_ADMIN_ROLE.equals(roleName)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "超级管理员角色不允许删除");
+        }
+        Long accountCount = jdbcClient.sql("""
+            SELECT COUNT(*)
+            FROM admin_accounts
+            WHERE FIND_IN_SET(:roleName, REPLACE(role_name, '、', ',')) > 0
+            """)
+            .param("roleName", roleName)
+            .query(Long.class)
+            .single();
+        if (accountCount != null && accountCount > 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "当前角色已关联账号，不能删除");
+        }
+        jdbcClient.sql("DELETE FROM admin_roles WHERE id = :id")
+            .param("id", roleId)
+            .update();
+        log("系统管理", "删除角色", roleName, "删除角色 " + roleName);
+        refreshRoleAccountCounts();
+        return row("deleted", true, "id", roleId);
+    }
+
+    @GetMapping("/admin/permissions/tree")
+    public List<Map<String, Object>> permissionTree() {
+        return List.of(
+            permissionModule(DASHBOARD_PERMISSION_KEY, "首页工作台", List.of()),
+            permissionModule("goods", "商品管理", List.of(row("key", "goods:product-list", "title", "商品档案"), row("key", "goods:product-category", "title", "商品分类"), row("key", "goods:product-brand", "title", "商品品牌"))),
+            permissionModule("purchase", "采购管理", List.of(row("key", "purchase:supplier", "title", "供应商管理"), row("key", "purchase:purchase-order", "title", "采购订单"), row("key", "purchase:purchase-inbound", "title", "采购入库记录"))),
+            permissionModule("stock", "库存管理", List.of(row("key", "stock:stock-overview", "title", "库存总览"), row("key", "stock:stock-flow", "title", "库存流水"))),
+            permissionModule("order", "订单管理", List.of()),
+            permissionModule("aftersale", "售后管理", List.of()),
+            permissionModule("invoice", "开票管理", List.of()),
+            permissionModule("buyer", "买家管理", List.of()),
+            permissionModule("finance", "财务管理", List.of(row("key", "finance:finance-payment", "title", "支付记录"), row("key", "finance:finance-refund", "title", "退款记录"))),
+            permissionModule("system", "系统管理", List.of(row("key", "system:system-user", "title", "后台账号"), row("key", "system:system-role", "title", "角色权限"), row("key", "system:system-log", "title", "操作日志"), row("key", "system:system-config", "title", "基础配置")))
+        );
+    }
+
+    @GetMapping("/admin/product-categories")
+    public List<Map<String, Object>> productCategories() {
+        return rows("""
+            SELECT id, category_name, parent_name, sort_no, category_status AS status, created_at, updated_at
+            FROM product_categories
+            ORDER BY sort_no, id
+            """);
+    }
+
+    @DeleteMapping("/admin/product-categories/{categoryId}")
+    public Map<String, Object> deleteProductCategory(@PathVariable Long categoryId) {
+        Map<String, Object> current = one("SELECT * FROM product_categories WHERE id = :id", "id", categoryId);
+        jdbcClient.sql("DELETE FROM product_categories WHERE id = :id")
+            .param("id", categoryId)
+            .update();
+        log("商品管理", "删除商品分类", String.valueOf(categoryId), "删除商品分类 " + current.get("categoryName"));
+        return row("deleted", true, "id", categoryId);
+    }
+
+    @PostMapping("/admin/product-categories")
+    public Map<String, Object> createProductCategory(@RequestBody Map<String, Object> request) {
+        String categoryName = requiredString(request, "categoryName");
+        jdbcClient.sql("""
+            INSERT INTO product_categories (category_name, parent_name, sort_no, category_status)
+            VALUES (:categoryName, :parentName, :sortNo, 'ENABLED')
+            """)
+            .param("categoryName", categoryName)
+            .param("parentName", string(request.getOrDefault("parentName", "-")))
+            .param("sortNo", requiredInt(request, "sortNo"))
+            .update();
+        log("商品管理", "新增商品分类", categoryName, "新增商品分类");
+        return rows("SELECT * FROM product_categories ORDER BY id DESC").get(0);
+    }
+
+    @PutMapping("/admin/product-categories/{categoryId}")
+    public Map<String, Object> updateProductCategory(@PathVariable Long categoryId, @RequestBody Map<String, Object> request) {
+        String categoryName = requiredString(request, "categoryName");
+        jdbcClient.sql("""
+            UPDATE product_categories
+            SET category_name = :categoryName, parent_name = :parentName, sort_no = :sortNo
+            WHERE id = :id
+            """)
+            .param("categoryName", categoryName)
+            .param("parentName", string(request.getOrDefault("parentName", "-")))
+            .param("sortNo", requiredInt(request, "sortNo"))
+            .param("id", categoryId)
+            .update();
+        log("商品管理", "编辑商品分类", String.valueOf(categoryId), "编辑商品分类");
+        return one("SELECT * FROM product_categories WHERE id = :id", "id", categoryId);
+    }
+
+    @PutMapping("/admin/product-categories/{categoryId}/status")
+    public Map<String, Object> updateProductCategoryStatus(@PathVariable Long categoryId, @RequestBody Map<String, Object> request) {
+        String status = normalizeStatus(request.getOrDefault("status", "ENABLED"));
+        jdbcClient.sql("UPDATE product_categories SET category_status = :status WHERE id = :id")
+            .param("status", status)
+            .param("id", categoryId)
+            .update();
+        log("商品管理", "启用/停用商品分类", String.valueOf(categoryId), "商品分类状态更新为 " + status);
+        return one("SELECT * FROM product_categories WHERE id = :id", "id", categoryId);
+    }
+
+    @GetMapping("/admin/product-brands")
+    public List<Map<String, Object>> productBrands() {
+        return rows("""
+            SELECT id, brand_name, first_letter, sort_no, brand_status AS status, created_at, updated_at
+            FROM product_brands
+            ORDER BY sort_no, id
+            """);
+    }
+
+    @DeleteMapping("/admin/product-brands/{brandId}")
+    public Map<String, Object> deleteProductBrand(@PathVariable Long brandId) {
+        Map<String, Object> current = one("SELECT * FROM product_brands WHERE id = :id", "id", brandId);
+        jdbcClient.sql("DELETE FROM product_brands WHERE id = :id")
+            .param("id", brandId)
+            .update();
+        log("商品管理", "删除商品品牌", String.valueOf(brandId), "删除商品品牌 " + current.get("brandName"));
+        return row("deleted", true, "id", brandId);
+    }
+
+    @PostMapping("/admin/product-brands")
+    public Map<String, Object> createProductBrand(@RequestBody Map<String, Object> request) {
+        String brandName = requiredString(request, "brandName");
+        jdbcClient.sql("""
+            INSERT INTO product_brands (brand_name, first_letter, sort_no, brand_status)
+            VALUES (:brandName, :firstLetter, :sortNo, 'ENABLED')
+            """)
+            .param("brandName", brandName)
+            .param("firstLetter", string(request.getOrDefault("firstLetter", "")))
+            .param("sortNo", requiredInt(request, "sortNo"))
+            .update();
+        log("商品管理", "新增商品品牌", brandName, "新增商品品牌");
+        return rows("SELECT * FROM product_brands ORDER BY id DESC").get(0);
+    }
+
+    @PutMapping("/admin/product-brands/{brandId}")
+    public Map<String, Object> updateProductBrand(@PathVariable Long brandId, @RequestBody Map<String, Object> request) {
+        String brandName = requiredString(request, "brandName");
+        jdbcClient.sql("""
+            UPDATE product_brands
+            SET brand_name = :brandName, first_letter = :firstLetter, sort_no = :sortNo
+            WHERE id = :id
+            """)
+            .param("brandName", brandName)
+            .param("firstLetter", string(request.getOrDefault("firstLetter", "")))
+            .param("sortNo", requiredInt(request, "sortNo"))
+            .param("id", brandId)
+            .update();
+        log("商品管理", "编辑商品品牌", String.valueOf(brandId), "编辑商品品牌");
+        return one("SELECT * FROM product_brands WHERE id = :id", "id", brandId);
+    }
+
+    @PutMapping("/admin/product-brands/{brandId}/status")
+    public Map<String, Object> updateProductBrandStatus(@PathVariable Long brandId, @RequestBody Map<String, Object> request) {
+        String status = normalizeStatus(request.getOrDefault("status", "ENABLED"));
+        jdbcClient.sql("UPDATE product_brands SET brand_status = :status WHERE id = :id")
+            .param("status", status)
+            .param("id", brandId)
+            .update();
+        log("商品管理", "启用/停用商品品牌", String.valueOf(brandId), "商品品牌状态更新为 " + status);
+        return one("SELECT * FROM product_brands WHERE id = :id", "id", brandId);
+    }
+
+    @GetMapping("/admin/products")
+    public List<Product> adminProducts() {
+        return productRepository.findAll();
+    }
+
+    @GetMapping("/admin/products/{productId}")
+    public Product adminProductDetail(@PathVariable Long productId) {
+        return productRepository.findById(productId)
+            .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
+    }
+
+    @PostMapping("/admin/products")
+    public Product createAdminProduct(@Valid @RequestBody CreateProductRequest request) {
+        long suffix = System.currentTimeMillis();
+        Product product = productRepository.create(request, "P-" + suffix, "SKU-" + suffix);
+        imageSearchService.syncProductImages(product);
+        log("商品管理", "新增商品", product.productCode(), "新增商品 " + product.productName());
+        return product;
+    }
+
+    @PutMapping("/admin/products/{productId}")
+    public Product updateAdminProduct(@PathVariable Long productId, @Valid @RequestBody CreateProductRequest request) {
+        Product product = productRepository.update(productId, request);
+        imageSearchService.syncProductImages(product);
+        log("商品管理", "编辑商品", product.productCode(), "编辑商品 " + product.productName());
+        return product;
+    }
+
+    @PutMapping("/admin/products/{productId}/on-sale")
+    public Product onSale(@PathVariable Long productId) {
+        productRepository.setSaleStatus(productId, "ON_SALE");
+        Product product = productRepository.findById(productId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
+        log("商品管理", "商品上架", product.productCode(), "商品上架 " + product.productName());
+        return product;
+    }
+
+    @PutMapping("/admin/products/{productId}/off-sale")
+    public Product offSale(@PathVariable Long productId) {
+        productRepository.setSaleStatus(productId, "OFF_SALE");
+        Product product = productRepository.findById(productId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
+        log("商品管理", "商品下架", product.productCode(), "商品下架 " + product.productName());
+        return product;
+    }
+
+    @GetMapping({"/mall/home/products", "/mall/products"})
+    public List<Product> mallProducts(
+        @RequestParam(required = false) String keyword,
+        @RequestParam(required = false) Long categoryId,
+        @RequestParam(required = false) String categoryName,
+        @RequestParam(required = false) Long brandId,
+        @RequestParam(required = false) String brandName
+    ) {
+        return productRepository.findMallProducts(keyword, categoryId, categoryName, brandId, brandName);
+    }
+
+    @GetMapping("/mall/products/{productId}")
+    public Product mallProductDetail(@PathVariable Long productId) {
+        return productRepository.findById(productId)
+            .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
+    }
+
+    @PostMapping("/buyer/register")
+    public Map<String, Object> buyerRegister(@RequestBody Map<String, Object> request) {
+        String phone = string(request.getOrDefault("phone", request.get("account"))).trim();
+        if (phone.isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "\u8bf7\u8f93\u5165\u624b\u673a\u53f7");
+        }
+        if (customerPhoneExists(phone)) {
+            throw new ApiException(HttpStatus.CONFLICT, "\u5f53\u524d\u624b\u673a\u53f7\u5df2\u88ab\u6ce8\u518c");
+        }
+        return row("buyerNo", "B" + System.currentTimeMillis() % 1000000, "phone", phone, "status", "ENABLED", "auditRequired", false);
+    }
+
+    @PostMapping("/buyer/login")
+    public Map<String, Object> buyerLogin(@RequestBody Map<String, Object> request) {
+        String phone = string(request.getOrDefault("phone", request.get("account"))).trim();
+        if (phone.isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "\u8bf7\u8f93\u5165\u624b\u673a\u53f7");
+        }
+        Map<String, Object> customer = jdbcClient.sql("""
+            SELECT id, company_name, contact_name, contact_phone, audit_status
+            FROM customers
+            WHERE contact_phone = :phone
+            ORDER BY id DESC
+            LIMIT 1
+            """)
+            .param("phone", phone)
+            .query(this::mapRow)
+            .optional()
+            .orElseThrow(() -> new ApiException(HttpStatus.UNAUTHORIZED, "\u624b\u673a\u53f7\u6216\u5bc6\u7801\u9519\u8bef"));
+        if ("DISABLED".equals(customer.get("auditStatus"))) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "\u5f53\u524d\u8d26\u53f7\u5df2\u88ab\u505c\u7528\uff0c\u8bf7\u8054\u7cfb\u5546\u5bb6");
+        }
+        return row(
+            "token", "buyer-token-" + customer.get("id"),
+            "phone", customer.get("contactPhone"),
+            "buyerName", customer.get("contactName"),
+            "companyName", customer.get("companyName"),
+            "status", "ENABLED"
+        );
+    }
+
+    @PostMapping("/buyer/password/update")
+    public Map<String, Object> updateBuyerPassword() {
+        return row("updated", true);
+    }
+
+    @GetMapping("/buyer/profile")
+    public Map<String, Object> buyerProfile() {
+        return row("buyerNo", "B000001", "buyerName", "杭州采购王", "companyName", "杭州某某商贸有限公司", "phone", "13800010001", "accountStatus", "ENABLED");
+    }
+
+    @GetMapping("/mall/cart")
+    public Map<String, Object> mallCart() {
+        List<Map<String, Object>> items = cartItemRows();
+        BigDecimal checkedAmount = items.stream()
+            .filter(item -> Boolean.parseBoolean(String.valueOf(item.getOrDefault("checked", true))))
+            .map(item -> new BigDecimal(String.valueOf(item.get("salePrice"))).multiply(BigDecimal.valueOf(Long.parseLong(String.valueOf(item.get("quantity"))))))
+            .reduce(BigDecimal.ZERO, BigDecimal::add);
+        return row("checkedAmount", checkedAmount, "items", items);
+    }
+
+    @PostMapping("/mall/cart/items")
+    public Map<String, Object> addCartItem(@RequestBody Map<String, Object> request) {
+        Long productId = requiredLong(request, "productId");
+        int quantity = positiveInt(request, "quantity");
+        Product product = productRepository.findById(productId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
+        if (!"ON_SALE".equals(product.saleStatus())) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Product is not on sale");
+        }
+        Map<String, Object> item = buyerCartItems.stream()
+            .filter(row -> productId.equals(Long.parseLong(String.valueOf(row.get("productId")))))
+            .findFirst()
+            .orElse(null);
+        int nextQuantity = quantity;
+        if (item == null) {
+            item = row("cartItemId", cartItemSequence.incrementAndGet(), "productId", productId, "quantity", 0, "checked", true);
+            buyerCartItems.add(item);
+        } else {
+            nextQuantity += Integer.parseInt(String.valueOf(item.get("quantity")));
+        }
+        if (nextQuantity > product.stockQuantity()) {
+            throw new ApiException(HttpStatus.CONFLICT, "Insufficient stock");
+        }
+        item.put("quantity", nextQuantity);
+        item.put("checked", true);
+        return cartItemRow(item);
+    }
+
+    @GetMapping("/mall/cart/count")
+    public Map<String, Object> mallCartCount() {
+        int count = buyerCartItems.stream()
+            .mapToInt(item -> Integer.parseInt(String.valueOf(item.getOrDefault("quantity", 0))))
+            .sum();
+        return row("count", count);
+    }
+
+    @PutMapping("/mall/cart/items/{cartItemId}")
+    public Map<String, Object> updateCartItem(@PathVariable Long cartItemId, @RequestBody Map<String, Object> request) {
+        Map<String, Object> item = findCartItem(cartItemId);
+        if (request.containsKey("quantity")) {
+            int quantity = positiveInt(request, "quantity");
+            Product product = productRepository.findById(Long.parseLong(String.valueOf(item.get("productId"))))
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
+            if (quantity > product.stockQuantity()) {
+                throw new ApiException(HttpStatus.CONFLICT, "Insufficient stock");
+            }
+            item.put("quantity", quantity);
+        }
+        if (request.containsKey("checked")) {
+            item.put("checked", Boolean.parseBoolean(String.valueOf(request.get("checked"))));
+        }
+        return cartItemRow(item);
+    }
+
+    @DeleteMapping("/mall/cart/items/{cartItemId}")
+    public Map<String, Object> deleteCartItem(@PathVariable Long cartItemId) {
+        buyerCartItems.removeIf(item -> cartItemId.equals(Long.parseLong(String.valueOf(item.get("cartItemId")))));
+        return row("deleted", true, "id", cartItemId);
+    }
+
+    @DeleteMapping("/mall/cart")
+    public Map<String, Object> clearCart() {
+        buyerCartItems.clear();
+        return row("deleted", true);
+    }
+
+    @GetMapping("/mall/addresses")
+    public List<Map<String, Object>> mallAddresses() {
+        return buyerAddresses.stream().map(this::addressRow).toList();
+    }
+
+    @PostMapping("/mall/addresses")
+    public Map<String, Object> createAddress(@RequestBody Map<String, Object> request) {
+        Map<String, Object> item = row(
+            "id", addressSequence.incrementAndGet(),
+            "receiverName", requiredString(request, "receiverName"),
+            "receiverPhone", requiredString(request, "receiverPhone"),
+            "region", requiredString(request, "region"),
+            "detailAddress", requiredString(request, "detailAddress"),
+            "isDefault", Boolean.parseBoolean(String.valueOf(request.getOrDefault("isDefault", buyerAddresses.isEmpty())))
+        );
+        if (Boolean.parseBoolean(String.valueOf(item.get("isDefault")))) {
+            clearDefaultAddress();
+        }
+        buyerAddresses.add(item);
+        ensureDefaultAddress();
+        return addressRow(item);
+    }
+
+    @PutMapping("/mall/addresses/{addressId}")
+    public Map<String, Object> updateAddress(@PathVariable Long addressId, @RequestBody Map<String, Object> request) {
+        Map<String, Object> item = findAddress(addressId);
+        item.put("receiverName", requiredString(request, "receiverName"));
+        item.put("receiverPhone", requiredString(request, "receiverPhone"));
+        item.put("region", requiredString(request, "region"));
+        item.put("detailAddress", requiredString(request, "detailAddress"));
+        if (Boolean.parseBoolean(String.valueOf(request.getOrDefault("isDefault", false)))) {
+            clearDefaultAddress();
+            item.put("isDefault", true);
+        }
+        ensureDefaultAddress();
+        return addressRow(item);
+    }
+
+    @DeleteMapping("/mall/addresses/{addressId}")
+    public Map<String, Object> deleteAddress(@PathVariable Long addressId) {
+        buyerAddresses.removeIf(item -> addressId.equals(Long.parseLong(String.valueOf(item.get("id")))));
+        ensureDefaultAddress();
+        return row("deleted", true, "id", addressId);
+    }
+
+    @PutMapping("/mall/addresses/{addressId}/default")
+    public Map<String, Object> setDefaultAddress(@PathVariable Long addressId) {
+        Map<String, Object> item = findAddress(addressId);
+        clearDefaultAddress();
+        item.put("isDefault", true);
+        return addressRow(item);
+    }
+
+    @GetMapping("/admin/suppliers")
+    public List<Map<String, Object>> suppliers() {
+        return rows("""
+            SELECT id, supplier_no, supplier_name, contact_name, contact_phone AS phone, address, supplier_status AS status, purchase_count, purchase_amount, created_at, updated_at
+            FROM suppliers
+            ORDER BY id
+            """);
+    }
+
+    @GetMapping("/admin/suppliers/{supplierId}")
+    public Map<String, Object> supplierDetail(@PathVariable Long supplierId) {
+        return one("SELECT * FROM suppliers WHERE id = :id", "id", supplierId);
+    }
+
+    @PostMapping("/admin/suppliers")
+    public Map<String, Object> createSupplier(@RequestBody Map<String, Object> request) {
+        String supplierName = requiredString(request, "supplierName");
+        String contactName = requiredString(request, "contactName");
+        String contactPhone = requiredString(request, "contactPhone");
+        String supplierNo = "SUP" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + System.currentTimeMillis() % 100000;
+        jdbcClient.sql("""
+            INSERT INTO suppliers (supplier_no, supplier_name, contact_name, contact_phone, address, supplier_status)
+            VALUES (:supplierNo, :supplierName, :contactName, :contactPhone, :address, 'ENABLED')
+            """)
+            .param("supplierNo", supplierNo)
+            .param("supplierName", supplierName)
+            .param("contactName", contactName)
+            .param("contactPhone", contactPhone)
+            .param("address", string(request.getOrDefault("address", "")))
+            .update();
+        log("采购管理", "新增供应商", supplierNo, "新增供应商 " + request.getOrDefault("supplierName", "新供应商"));
+        return one("SELECT * FROM suppliers WHERE supplier_no = :supplierNo", "supplierNo", supplierNo);
+    }
+
+    @PutMapping("/admin/suppliers/{supplierId}")
+    public Map<String, Object> updateSupplier(@PathVariable Long supplierId, @RequestBody Map<String, Object> request) {
+        String supplierName = requiredString(request, "supplierName");
+        String contactName = requiredString(request, "contactName");
+        String contactPhone = requiredString(request, "contactPhone");
+        jdbcClient.sql("""
+            UPDATE suppliers
+            SET supplier_name = :supplierName,
+                contact_name = :contactName,
+                contact_phone = :contactPhone,
+                address = :address
+            WHERE id = :id
+            """)
+            .param("supplierName", supplierName)
+            .param("contactName", contactName)
+            .param("contactPhone", contactPhone)
+            .param("address", string(request.getOrDefault("address", "")))
+            .param("id", supplierId)
+            .update();
+        log("采购管理", "编辑供应商", String.valueOf(supplierId), "编辑供应商 " + supplierName);
+        return one("SELECT * FROM suppliers WHERE id = :id", "id", supplierId);
+    }
+
+    @PutMapping("/admin/suppliers/{supplierId}/status")
+    public Map<String, Object> updateSupplierStatus(@PathVariable Long supplierId, @RequestBody Map<String, Object> request) {
+        String status = normalizeStatus(request.getOrDefault("status", "ENABLED"));
+        jdbcClient.sql("UPDATE suppliers SET supplier_status = :status WHERE id = :id")
+            .param("status", status)
+            .param("id", supplierId)
+            .update();
+        log("采购管理", "启用/停用供应商", String.valueOf(supplierId), "供应商状态更新为 " + status);
+        return one("SELECT * FROM suppliers WHERE id = :id", "id", supplierId);
+    }
+
+    @DeleteMapping("/admin/suppliers/{supplierId}")
+    public Map<String, Object> deleteSupplier(@PathVariable Long supplierId) {
+        Map<String, Object> supplier = one("SELECT * FROM suppliers WHERE id = :id", "id", supplierId);
+        int purchaseCount = Integer.parseInt(String.valueOf(supplier.getOrDefault("purchaseCount", 0)));
+        if (purchaseCount > 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "供应商已发生采购业务，只能停用，不能删除");
+        }
+        jdbcClient.sql("DELETE FROM suppliers WHERE id = :id")
+            .param("id", supplierId)
+            .update();
+        log("采购管理", "删除供应商", String.valueOf(supplierId), "删除供应商 " + supplier.get("supplierName"));
+        return row("deleted", true, "id", supplierId);
+    }
+
+    @GetMapping("/admin/purchase-orders")
+    public List<Map<String, Object>> purchaseOrders() {
+        return rows("""
+            SELECT id, purchase_no, supplier_id, supplier_name, product_id AS target_product_id, product_name, sku_code,
+                   1 AS sku_count, purchase_qty, stocked_qty, purchase_price, purchase_amount AS amount,
+                   expected_arrival_date, purchase_status AS status, remark, created_at, updated_at
+            FROM purchase_orders
+            ORDER BY id DESC
+            """);
+    }
+
+    @GetMapping("/admin/purchase-orders/{purchaseOrderId}")
+    public Map<String, Object> purchaseOrderDetail(@PathVariable Long purchaseOrderId) {
+        return one("SELECT * FROM purchase_orders WHERE id = :id", "id", purchaseOrderId);
+    }
+
+    @PostMapping("/admin/purchase-orders")
+    public Map<String, Object> createPurchaseOrder(@RequestBody Map<String, Object> request) {
+        Long supplierId = requiredLong(request, "supplierId");
+        Long productId = requiredLong(request, "productId");
+        int quantity = positiveInt(request, "quantity");
+        BigDecimal price = positiveMoney(request, "purchasePrice");
+        Map<String, Object> supplier = one("SELECT * FROM suppliers WHERE id = :id", "id", supplierId);
+        Product product = productRepository.findById(productId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
+        String purchaseNo = "PO" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + System.currentTimeMillis() % 100000;
+        jdbcClient.sql("""
+            INSERT INTO purchase_orders (purchase_no, supplier_id, supplier_name, product_id, product_name, sku_code,
+              purchase_qty, stocked_qty, purchase_price, purchase_amount, expected_arrival_date, purchase_status, remark)
+            VALUES (:purchaseNo, :supplierId, :supplierName, :productId, :productName, :skuCode,
+              :quantity, 0, :price, :amount, :expectedArrivalDate, 'WAIT_STOCK_IN', :remark)
+            """)
+            .param("purchaseNo", purchaseNo)
+            .param("supplierId", supplierId)
+            .param("supplierName", supplier.get("supplierName"))
+            .param("productId", productId)
+            .param("productName", product.productName())
+            .param("skuCode", product.skuCode())
+            .param("quantity", quantity)
+            .param("price", price)
+            .param("amount", price.multiply(BigDecimal.valueOf(quantity)))
+            .param("expectedArrivalDate", string(request.getOrDefault("expectedArrivalDate", LocalDate.now().plusDays(3).toString())))
+            .param("remark", string(request.getOrDefault("remark", "")))
+            .update();
+        jdbcClient.sql("UPDATE suppliers SET purchase_count = purchase_count + 1, purchase_amount = purchase_amount + :amount WHERE id = :id")
+            .param("amount", price.multiply(BigDecimal.valueOf(quantity)))
+            .param("id", supplierId)
+            .update();
+        log("采购管理", "新增采购订单", purchaseNo, "新增采购订单 " + purchaseNo);
+        return one("SELECT * FROM purchase_orders WHERE purchase_no = :purchaseNo", "purchaseNo", purchaseNo);
+    }
+
+    @PutMapping("/admin/purchase-orders/{purchaseOrderId}")
+    public Map<String, Object> updatePurchaseOrder(@PathVariable Long purchaseOrderId, @RequestBody Map<String, Object> request) {
+        Map<String, Object> current = one("SELECT * FROM purchase_orders WHERE id = :id", "id", purchaseOrderId);
+        if (!"WAIT_STOCK_IN".equals(current.get("purchaseStatus"))) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Only waiting purchase orders can be edited");
+        }
+        Long supplierId = requiredLong(request, "supplierId");
+        Long productId = requiredLong(request, "productId");
+        int quantity = positiveInt(request, "quantity");
+        BigDecimal price = positiveMoney(request, "purchasePrice");
+        Map<String, Object> supplier = one("SELECT * FROM suppliers WHERE id = :id", "id", supplierId);
+        Product product = productRepository.findById(productId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
+        jdbcClient.sql("""
+            UPDATE purchase_orders
+            SET supplier_id = :supplierId,
+                supplier_name = :supplierName,
+                product_id = :productId,
+                product_name = :productName,
+                sku_code = :skuCode,
+                purchase_qty = :quantity,
+                purchase_price = :price,
+                purchase_amount = :amount,
+                expected_arrival_date = :expectedArrivalDate,
+                remark = :remark
+            WHERE id = :id
+            """)
+            .param("supplierId", supplierId)
+            .param("supplierName", supplier.get("supplierName"))
+            .param("productId", productId)
+            .param("productName", product.productName())
+            .param("skuCode", product.skuCode())
+            .param("quantity", quantity)
+            .param("price", price)
+            .param("amount", price.multiply(BigDecimal.valueOf(quantity)))
+            .param("expectedArrivalDate", string(request.getOrDefault("expectedArrivalDate", LocalDate.now().plusDays(3).toString())))
+            .param("remark", string(request.getOrDefault("remark", "")))
+            .param("id", purchaseOrderId)
+            .update();
+        log("采购管理", "编辑采购订单", String.valueOf(purchaseOrderId), "编辑采购订单");
+        return one("SELECT * FROM purchase_orders WHERE id = :id", "id", purchaseOrderId);
+    }
+
+    @PostMapping("/admin/purchase-orders/{purchaseOrderId}/cancel")
+    public Map<String, Object> cancelPurchaseOrder(@PathVariable Long purchaseOrderId) {
+        jdbcClient.sql("UPDATE purchase_orders SET purchase_status = 'CANCELLED' WHERE id = :id AND purchase_status <> 'COMPLETED'")
+            .param("id", purchaseOrderId)
+            .update();
+        log("采购管理", "取消采购订单", String.valueOf(purchaseOrderId), "取消采购订单");
+        return one("SELECT * FROM purchase_orders WHERE id = :id", "id", purchaseOrderId);
+    }
+
+    @PostMapping("/admin/purchase-orders/{purchaseOrderId}/stock-in")
+    @Transactional
+    public Map<String, Object> stockIn(@PathVariable Long purchaseOrderId, @RequestBody Map<String, Object> request) {
+        Map<String, Object> order = one("SELECT * FROM purchase_orders WHERE id = :id", "id", purchaseOrderId);
+        if ("COMPLETED".equals(order.get("purchaseStatus")) || "CANCELLED".equals(order.get("purchaseStatus"))) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Purchase order cannot be stocked in");
+        }
+        Long productId = Long.parseLong(String.valueOf(order.get("productId")));
+        int waitQty = Integer.parseInt(String.valueOf(order.get("purchaseQty"))) - Integer.parseInt(String.valueOf(order.get("stockedQty")));
+        int quantity = Math.min(positiveInt(request, "quantity"), waitQty);
+        if (quantity <= 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "No quantity can be stocked in");
+        }
+        Product product = productRepository.findById(productId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
+        productRepository.addStock(productId, quantity);
+        Product latest = productRepository.findById(productId).orElseThrow();
+        BigDecimal price = new BigDecimal(String.valueOf(order.get("purchasePrice")));
+        String stockInNo = "IN" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + System.currentTimeMillis() % 100000;
+        jdbcClient.sql("""
+            INSERT INTO purchase_stock_ins (stock_in_no, purchase_order_id, purchase_no, supplier_name, product_id, product_name, sku_code, stock_in_qty, stock_in_amount, operator_name)
+            VALUES (:stockInNo, :purchaseOrderId, :purchaseNo, :supplierName, :productId, :productName, :skuCode, :quantity, :amount, :operatorName)
+            """)
+            .param("stockInNo", stockInNo)
+            .param("purchaseOrderId", purchaseOrderId)
+            .param("purchaseNo", order.get("purchaseNo"))
+            .param("supplierName", order.get("supplierName"))
+            .param("productId", productId)
+            .param("productName", product.productName())
+            .param("skuCode", product.skuCode())
+            .param("quantity", quantity)
+            .param("amount", price.multiply(BigDecimal.valueOf(quantity)))
+            .param("operatorName", string(request.getOrDefault("operatorName", "仓库王")))
+            .update();
+        int stockedQty = Integer.parseInt(String.valueOf(order.get("stockedQty"))) + quantity;
+        String nextStatus = stockedQty >= Integer.parseInt(String.valueOf(order.get("purchaseQty"))) ? "COMPLETED" : "PART_STOCK_IN";
+        jdbcClient.sql("UPDATE purchase_orders SET stocked_qty = :stockedQty, purchase_status = :status WHERE id = :id")
+            .param("stockedQty", stockedQty)
+            .param("status", nextStatus)
+            .param("id", purchaseOrderId)
+            .update();
+        inventoryRepository.insertMovement(productId, "PURCHASE_STOCK_IN", quantity, latest.stockQuantity(), "PURCHASE_ORDER", stockInNo, "采购入库：" + product.productName());
+        log("采购管理", "采购入库", stockInNo, "采购入库 " + quantity + " 件");
+        return row("stockInNo", stockInNo, "purchaseOrderId", purchaseOrderId, "productId", productId, "quantity", quantity, "stockAfter", latest.stockQuantity(), "status", nextStatus);
+    }
+
+    @GetMapping("/admin/purchase-stock-ins")
+    public List<Map<String, Object>> purchaseStockIns() {
+        return rows("""
+            SELECT id, stock_in_no, purchase_no, supplier_name, product_name, sku_code, stock_in_qty, stock_in_amount, operator_name, created_at
+            FROM purchase_stock_ins
+            ORDER BY id DESC
+            """);
+    }
+
+    @GetMapping("/admin/inventory")
+    public List<Map<String, Object>> inventoryOverview() {
+        int warning = stockWarningThreshold();
+        return productRepository.findAll().stream()
+            .map(product -> row(
+                "productId", product.id(),
+                "productName", product.productName(),
+                "skuCode", product.skuCode(),
+                "actualStock", product.stockQuantity(),
+                "occupiedStock", 0,
+                "saleableStock", product.stockQuantity(),
+                "soldQty", soldQty(product.id()),
+                "warningThreshold", warning,
+                "inventoryStatus", product.stockQuantity() <= warning ? "WARNING" : "NORMAL"
+            ))
+            .toList();
+    }
+
+    @GetMapping("/admin/inventory/flows")
+    public Object inventoryFlows() {
+        return inventoryRepository.findAll();
+    }
+
+    @PostMapping("/admin/inventory/adjustments")
+    @Transactional
+    public Map<String, Object> inventoryAdjustment(@RequestBody Map<String, Object> request) {
+        Long productId = requiredLong(request, "productId");
+        int quantity = requiredInt(request, "quantity");
+        if (quantity == 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Quantity cannot be zero");
+        }
+        Product product = productRepository.findById(productId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
+        if (quantity > 0) {
+            productRepository.addStock(productId, quantity);
+        } else {
+            productRepository.deductStock(productId, Math.abs(quantity));
+        }
+        Product latest = productRepository.findById(productId).orElseThrow();
+        String adjustmentNo = "ADJ" + System.currentTimeMillis() % 100000;
+        inventoryRepository.insertMovement(productId, "MANUAL_ADJUST", quantity, latest.stockQuantity(), "INVENTORY_ADJUSTMENT", adjustmentNo, "库存调整：" + product.productName());
+        log("库存管理", "库存调整", adjustmentNo, "库存调整 " + quantity);
+        return row("adjustmentNo", adjustmentNo, "productId", productId, "quantity", quantity, "stockAfter", latest.stockQuantity());
+    }
+
+    @GetMapping("/admin/orders")
+    public Object adminOrders() {
+        return orderService.listOrders();
+    }
+
+    @GetMapping("/admin/orders/{orderId}")
+    public Object adminOrderDetail(@PathVariable Long orderId) {
+        return orderService.getOrder(orderId);
+    }
+
+    @PostMapping("/admin/orders/{orderId}/ship")
+    @Transactional
+    public Object shipAdminOrder(@PathVariable Long orderId, @RequestBody Map<String, Object> request) {
+        String shipmentMethod = requiredString(request, "shipmentMethod").trim().toUpperCase();
+        if (!List.of("EXPRESS", "NO_LOGISTICS").contains(shipmentMethod)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "shipmentMethod must be EXPRESS or NO_LOGISTICS");
+        }
+        String logisticsCompany = "";
+        String logisticsNo = "";
+        if ("EXPRESS".equals(shipmentMethod)) {
+            logisticsCompany = requiredString(request, "logisticsCompany");
+            logisticsNo = requiredString(request, "logisticsNo");
+        }
+        String operatorName = requiredString(request, "operatorName");
+        long operatorExists = jdbcClient.sql("SELECT COUNT(*) FROM admin_accounts WHERE account_name = :accountName")
+            .param("accountName", operatorName)
+            .query(Long.class)
+            .single();
+        if (operatorExists == 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "operatorName must be an existing admin account");
+        }
+        String shipmentNo = "FH" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + System.currentTimeMillis() % 100000;
+        Object shipped = orderService.ship(orderId, new com.erp.b2b.order.ShipOrderRequest(
+            logisticsCompany,
+            logisticsNo
+        ));
+        var order = orderService.getOrder(orderId);
+        jdbcClient.sql("""
+            INSERT INTO order_shipments (shipment_no, order_id, order_no, shipment_method, logistics_company, logistics_no, operator_name, remark)
+            VALUES (:shipmentNo, :orderId, :orderNo, :shipmentMethod, :logisticsCompany, :logisticsNo, :operatorName, :remark)
+            """)
+            .param("shipmentNo", shipmentNo)
+            .param("orderId", orderId)
+            .param("orderNo", order.orderNo())
+            .param("shipmentMethod", shipmentMethod)
+            .param("logisticsCompany", logisticsCompany)
+            .param("logisticsNo", logisticsNo)
+            .param("operatorName", operatorName)
+            .param("remark", string(request.getOrDefault("remark", "")))
+            .update();
+        log("订单管理", "订单发货", order.orderNo(), "订单发货 " + shipmentNo);
+        return shipped;
+    }
+
+    @GetMapping("/admin/orders/{orderId}/shipments")
+    public List<Map<String, Object>> orderShipments(@PathVariable Long orderId) {
+        return rows("""
+            SELECT id, shipment_no, order_id, order_no, shipment_method, logistics_company, logistics_no, operator_name, remark, created_at
+            FROM order_shipments
+            WHERE order_id = :orderId
+            ORDER BY id DESC
+            """, "orderId", orderId);
+    }
+
+    @GetMapping("/mall/orders")
+    public Object mallOrders() {
+        return orderService.listOrders();
+    }
+
+    @GetMapping("/mall/orders/{orderId}")
+    public Object mallOrderDetail(@PathVariable Long orderId) {
+        return orderService.getOrder(orderId);
+    }
+
+    @PostMapping("/mall/orders/confirm")
+    public Map<String, Object> confirmOrder(@RequestBody Map<String, Object> request) {
+        return row("confirmed", true, "items", request.getOrDefault("items", List.of()), "receiverAddress", request.getOrDefault("receiverAddress", "默认收货地址"));
+    }
+
+    @PostMapping("/mall/orders/{orderId}/cancel")
+    public Object cancelOrder(@PathVariable Long orderId) {
+        jdbcClient.sql("UPDATE sales_orders SET order_status = 'CANCELLED' WHERE id = :id AND order_status = 'WAIT_PAY'")
+            .param("id", orderId)
+            .update();
+        log("订单管理", "取消订单", String.valueOf(orderId), "买家取消待支付订单");
+        return orderService.getOrder(orderId);
+    }
+
+    @PostMapping("/mall/orders/{orderId}/confirm-receipt")
+    public Object confirmReceipt(@PathVariable Long orderId) {
+        Object order = orderService.complete(orderId);
+        log("订单管理", "确认收货", String.valueOf(orderId), "买家确认收货");
+        return order;
+    }
+
+    @PostMapping("/mall/payments")
+    public Map<String, Object> createPayment(@RequestBody Map<String, Object> request) {
+        Long orderId = requiredLong(request, "orderId");
+        var order = orderService.markPaid(orderId);
+        String paymentNo = "PAY" + order.orderNo().replace("SO", "");
+        log("财务管理", "支付成功", paymentNo, "订单支付成功");
+        return row("paymentId", paymentNo, "orderId", orderId, "paymentStatus", order.paymentStatus(), "orderStatus", order.orderStatus(), "amount", order.totalAmount());
+    }
+
+    @GetMapping("/mall/payments/{paymentId}/status")
+    public Map<String, Object> paymentStatus(@PathVariable String paymentId) {
+        return row("paymentId", paymentId, "paymentStatus", "PAID");
+    }
+
+    @GetMapping("/admin/finance/payments")
+    public List<Map<String, Object>> payments() {
+        return orderService.listOrders().stream().map(order -> row(
+            "paymentNo", "PAY" + order.orderNo().replace("SO", ""),
+            "orderNo", order.orderNo(),
+            "buyerName", order.customerName(),
+            "paymentMethod", order.paymentMethod(),
+            "amount", order.totalAmount(),
+            "paymentStatus", order.paymentStatus(),
+            "paidAt", "PAID".equals(order.paymentStatus()) ? order.updatedAt() : null
+        )).toList();
+    }
+
+    @GetMapping("/admin/finance/refunds")
+    public List<Map<String, Object>> refunds() {
+        return rows("""
+            SELECT CONCAT('RF', id) AS refund_no, after_sale_no, order_no, buyer_name, 'ORIGINAL' AS refund_method,
+                   refund_amount AS amount, COALESCE(refund_status, 'WAIT_REFUND') AS refund_status, updated_at AS refunded_at
+            FROM after_sale_orders
+            WHERE refund_status IS NOT NULL OR after_sale_status IN ('WAIT_REFUND','COMPLETED')
+            ORDER BY id DESC
+            """);
+    }
+
+    @GetMapping("/admin/finance/payment-exceptions")
+    public List<Map<String, Object>> paymentExceptions() {
+        return List.of();
+    }
+
+    @GetMapping("/admin/after-sales")
+    public List<Map<String, Object>> afterSales() {
+        return rows("""
+            SELECT id, after_sale_no, order_no, buyer_name, after_sale_type AS type, product_name, quantity, refund_amount, after_sale_status AS status, reason, audit_remark, refund_status, created_at, updated_at
+            FROM after_sale_orders
+            ORDER BY id DESC
+            """);
+    }
+
+    @GetMapping("/admin/after-sales/{afterSaleId}")
+    public Map<String, Object> afterSaleDetail(@PathVariable Long afterSaleId) {
+        Map<String, Object> detail = one("SELECT * FROM after_sale_orders WHERE id = :id", "id", afterSaleId);
+        detail.put("returnLogistics", rows("""
+            SELECT id, logistics_company, logistics_no, remark, created_at
+            FROM after_sale_return_logistics
+            WHERE after_sale_id = :id
+            ORDER BY id DESC
+            """, "id", afterSaleId));
+        return detail;
+    }
+
+    @GetMapping("/mall/after-sales")
+    public List<Map<String, Object>> mallAfterSales() {
+        return afterSales();
+    }
+
+    @GetMapping("/mall/after-sales/{afterSaleId}")
+    public Map<String, Object> mallAfterSaleDetail(@PathVariable Long afterSaleId) {
+        return afterSaleDetail(afterSaleId);
+    }
+
+    @PostMapping({"/mall/after-sales", "/admin/after-sales"})
+    public Map<String, Object> createAfterSale(@RequestBody Map<String, Object> request) {
+        String orderNo = requiredString(request, "orderNo");
+        String productName = requiredString(request, "productName");
+        int quantity = positiveInt(request, "quantity");
+        BigDecimal refundAmount = nonNegativeMoney(request, "refundAmount");
+        String afterSaleNo = "AS" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + System.currentTimeMillis() % 100000;
+        jdbcClient.sql("""
+            INSERT INTO after_sale_orders (after_sale_no, order_no, buyer_name, after_sale_type, product_name, quantity, refund_amount, after_sale_status, reason)
+            VALUES (:afterSaleNo, :orderNo, :buyerName, :type, :productName, :quantity, :refundAmount, 'WAIT_AUDIT', :reason)
+            """)
+            .param("afterSaleNo", afterSaleNo)
+            .param("orderNo", orderNo)
+            .param("buyerName", string(request.getOrDefault("buyerName", "杭州采购王")))
+            .param("type", string(request.getOrDefault("type", "ONLY_REFUND")))
+            .param("productName", productName)
+            .param("quantity", quantity)
+            .param("refundAmount", refundAmount)
+            .param("reason", string(request.getOrDefault("reason", "买家申请售后")))
+            .update();
+        log("售后管理", "提交售后", afterSaleNo, "提交售后申请");
+        return one("SELECT * FROM after_sale_orders WHERE after_sale_no = :afterSaleNo", "afterSaleNo", afterSaleNo);
+    }
+
+    @PostMapping("/mall/after-sales/{afterSaleId}/cancel")
+    public Map<String, Object> cancelAfterSale(@PathVariable Long afterSaleId) {
+        jdbcClient.sql("UPDATE after_sale_orders SET after_sale_status = 'CANCELLED' WHERE id = :id AND after_sale_status = 'WAIT_AUDIT'")
+            .param("id", afterSaleId)
+            .update();
+        return one("SELECT * FROM after_sale_orders WHERE id = :id", "id", afterSaleId);
+    }
+
+    @PostMapping("/mall/after-sales/{afterSaleId}/return-logistics")
+    public Map<String, Object> submitReturnLogistics(@PathVariable Long afterSaleId, @RequestBody Map<String, Object> request) {
+        jdbcClient.sql("""
+            INSERT INTO after_sale_return_logistics (after_sale_id, logistics_company, logistics_no, remark)
+            VALUES (:afterSaleId, :logisticsCompany, :logisticsNo, :remark)
+            """)
+            .param("afterSaleId", afterSaleId)
+            .param("logisticsCompany", requiredString(request, "logisticsCompany"))
+            .param("logisticsNo", requiredString(request, "logisticsNo"))
+            .param("remark", string(request.getOrDefault("remark", "")))
+            .update();
+        jdbcClient.sql("UPDATE after_sale_orders SET after_sale_status = 'WAIT_RETURN_RECEIVE' WHERE id = :id AND after_sale_status <> 'COMPLETED'")
+            .param("id", afterSaleId)
+            .update();
+        return afterSaleDetail(afterSaleId);
+    }
+
+    @PostMapping("/admin/after-sales/{afterSaleId}/audit")
+    public Map<String, Object> auditAfterSale(@PathVariable Long afterSaleId, @RequestBody Map<String, Object> request) {
+        boolean approved = Boolean.parseBoolean(String.valueOf(request.getOrDefault("approved", true)));
+        String status = approved ? "WAIT_REFUND" : "REJECTED";
+        String remark = requiredString(request, "remark");
+        jdbcClient.sql("UPDATE after_sale_orders SET after_sale_status = :status, audit_remark = :remark WHERE id = :id")
+            .param("status", status)
+            .param("remark", remark)
+            .param("id", afterSaleId)
+            .update();
+        log("售后管理", "售后审核", String.valueOf(afterSaleId), "售后审核 " + status);
+        return one("SELECT * FROM after_sale_orders WHERE id = :id", "id", afterSaleId);
+    }
+
+    @PostMapping("/admin/after-sales/{afterSaleId}/confirm-return-received")
+    @Transactional
+    public Map<String, Object> confirmReturnReceived(@PathVariable Long afterSaleId) {
+        Map<String, Object> current = one("SELECT * FROM after_sale_orders WHERE id = :id", "id", afterSaleId);
+        if ("RETURN_REFUND".equals(current.get("afterSaleType"))) {
+            Long productId = findProductIdByName(String.valueOf(current.getOrDefault("productName", "")));
+            if (productId != null) {
+                int quantity = Integer.parseInt(String.valueOf(current.getOrDefault("quantity", 1)));
+                productRepository.addStock(productId, quantity);
+                Product latest = productRepository.findById(productId).orElseThrow();
+                inventoryRepository.insertMovement(productId, "RETURN_STOCK_IN", quantity, latest.stockQuantity(), "AFTER_SALE", String.valueOf(current.get("afterSaleNo")), "退货退款确认收货回补库存");
+            }
+        }
+        jdbcClient.sql("UPDATE after_sale_orders SET after_sale_status = 'WAIT_REFUND' WHERE id = :id")
+            .param("id", afterSaleId)
+            .update();
+        log("售后管理", "确认退货收货", String.valueOf(afterSaleId), "确认退货收货");
+        return one("SELECT * FROM after_sale_orders WHERE id = :id", "id", afterSaleId);
+    }
+
+    @PostMapping("/admin/after-sales/{afterSaleId}/refund")
+    public Map<String, Object> refundAfterSale(@PathVariable Long afterSaleId) {
+        jdbcClient.sql("UPDATE after_sale_orders SET after_sale_status = 'COMPLETED', refund_status = 'SUCCESS' WHERE id = :id")
+            .param("id", afterSaleId)
+            .update();
+        log("售后管理", "退款处理", String.valueOf(afterSaleId), "售后退款成功");
+        return one("SELECT * FROM after_sale_orders WHERE id = :id", "id", afterSaleId);
+    }
+
+    @GetMapping("/admin/invoices")
+    public List<Map<String, Object>> adminInvoices() {
+        return rows("""
+            SELECT id, invoice_apply_no, order_no, buyer_name, invoice_type, title_type, invoice_title AS title,
+                   apply_amount AS amount, receive_email, invoice_status AS status, invoice_no, reject_reason, created_at, updated_at
+            FROM invoice_applies
+            ORDER BY id DESC
+            """);
+    }
+
+    @GetMapping("/admin/invoices/{invoiceApplyId}")
+    public Map<String, Object> adminInvoiceDetail(@PathVariable Long invoiceApplyId) {
+        Map<String, Object> detail = one("""
+            SELECT id, invoice_apply_no, order_no, buyer_name, invoice_type, title_type, invoice_title AS title,
+                   apply_amount AS amount, receive_email, invoice_status AS status, invoice_no, reject_reason, created_at, updated_at
+            FROM invoice_applies
+            WHERE id = :id
+            """, "id", invoiceApplyId);
+        detail.put("files", invoiceFiles(invoiceApplyId));
+        return detail;
+    }
+
+    @GetMapping("/mall/invoices")
+    public List<Map<String, Object>> mallInvoices() {
+        return adminInvoices();
+    }
+
+    @GetMapping("/mall/invoices/{invoiceApplyId}")
+    public Map<String, Object> mallInvoiceDetail(@PathVariable Long invoiceApplyId) {
+        return adminInvoiceDetail(invoiceApplyId);
+    }
+
+    @PostMapping("/mall/invoices")
+    public Map<String, Object> createInvoice(@RequestBody Map<String, Object> request) {
+        String orderNo = requiredString(request, "orderNo");
+        String invoiceTitle = requiredString(request, request.containsKey("title") ? "title" : "invoiceTitle");
+        BigDecimal amount = nonNegativeMoney(request, "amount");
+        String email = requiredEmail(request, request.containsKey("email") ? "email" : "receiveEmail");
+        String invoiceApplyNo = "INV" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + System.currentTimeMillis() % 100000;
+        jdbcClient.sql("""
+            INSERT INTO invoice_applies (invoice_apply_no, order_no, buyer_name, invoice_type, title_type, invoice_title, apply_amount, receive_email, invoice_status)
+            VALUES (:invoiceApplyNo, :orderNo, :buyerName, :invoiceType, :titleType, :invoiceTitle, :amount, :email, 'WAIT_INVOICE')
+            """)
+            .param("invoiceApplyNo", invoiceApplyNo)
+            .param("orderNo", orderNo)
+            .param("buyerName", string(request.getOrDefault("buyerName", "杭州采购王")))
+            .param("invoiceType", string(request.getOrDefault("invoiceType", "E_NORMAL")))
+            .param("titleType", string(request.getOrDefault("titleType", "COMPANY")))
+            .param("invoiceTitle", invoiceTitle)
+            .param("amount", amount)
+            .param("email", email)
+            .update();
+        log("开票管理", "提交开票申请", invoiceApplyNo, "提交开票申请");
+        return one("SELECT * FROM invoice_applies WHERE invoice_apply_no = :invoiceApplyNo", "invoiceApplyNo", invoiceApplyNo);
+    }
+
+    @PostMapping("/admin/invoices/{invoiceApplyId}/confirm")
+    public Map<String, Object> confirmInvoice(@PathVariable Long invoiceApplyId) {
+        Map<String, Object> apply = one("SELECT * FROM invoice_applies WHERE id = :id", "id", invoiceApplyId);
+        BigDecimal applyAmount = new BigDecimal(String.valueOf(apply.get("applyAmount")));
+        BigDecimal fileAmount = invoiceFileAmount(invoiceApplyId);
+        if (invoiceFileCount(invoiceApplyId) > 0 && fileAmount.compareTo(applyAmount) != 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "发票文件金额合计必须等于申请开票金额");
+        }
+        String invoiceNo = "FP" + System.currentTimeMillis() % 100000;
+        jdbcClient.sql("UPDATE invoice_applies SET invoice_status = 'INVOICED', invoice_no = :invoiceNo WHERE id = :id")
+            .param("invoiceNo", invoiceNo)
+            .param("id", invoiceApplyId)
+            .update();
+        log("开票管理", "确认开票", String.valueOf(invoiceApplyId), "确认开票 " + invoiceNo);
+        return one("SELECT * FROM invoice_applies WHERE id = :id", "id", invoiceApplyId);
+    }
+
+    @PostMapping("/admin/invoices/{invoiceApplyId}/files")
+    public Map<String, Object> uploadInvoiceFile(@PathVariable Long invoiceApplyId, @RequestBody Map<String, Object> request) {
+        one("SELECT * FROM invoice_applies WHERE id = :id", "id", invoiceApplyId);
+        jdbcClient.sql("""
+            INSERT INTO invoice_files (invoice_apply_id, file_name, invoice_no, invoice_type, invoice_amount, ocr_status, ocr_result)
+            VALUES (:invoiceApplyId, :fileName, :invoiceNo, :invoiceType, :invoiceAmount, 'WAIT_OCR', :ocrResult)
+            """)
+            .param("invoiceApplyId", invoiceApplyId)
+            .param("fileName", requiredString(request, "fileName"))
+            .param("invoiceNo", string(request.getOrDefault("invoiceNo", "")))
+            .param("invoiceType", string(request.getOrDefault("invoiceType", "E_NORMAL")))
+            .param("invoiceAmount", nonNegativeMoney(request, "invoiceAmount"))
+            .param("ocrResult", string(request.getOrDefault("ocrResult", "")))
+            .update();
+        log("开票管理", "上传发票", String.valueOf(invoiceApplyId), "上传发票文件");
+        return adminInvoiceDetail(invoiceApplyId);
+    }
+
+    @PostMapping("/admin/invoices/{invoiceApplyId}/ocr")
+    public Map<String, Object> ocrInvoice(@PathVariable Long invoiceApplyId, @RequestBody Map<String, Object> request) {
+        List<Map<String, Object>> files = invoiceFiles(invoiceApplyId);
+        if (files.isEmpty()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "请先上传发票文件");
+        }
+        Long fileId = request.containsKey("fileId") ? requiredLong(request, "fileId") : Long.parseLong(String.valueOf(files.get(0).get("id")));
+        Map<String, Object> apply = one("SELECT * FROM invoice_applies WHERE id = :id", "id", invoiceApplyId);
+        jdbcClient.sql("""
+            UPDATE invoice_files
+            SET ocr_status = 'SUCCESS',
+                invoice_no = COALESCE(NULLIF(:invoiceNo, ''), invoice_no),
+                invoice_type = COALESCE(NULLIF(:invoiceType, ''), invoice_type),
+                invoice_amount = :invoiceAmount,
+                ocr_result = :ocrResult
+            WHERE id = :fileId AND invoice_apply_id = :invoiceApplyId
+            """)
+            .param("invoiceNo", string(request.getOrDefault("invoiceNo", "OCR" + System.currentTimeMillis() % 100000)))
+            .param("invoiceType", string(request.getOrDefault("invoiceType", apply.getOrDefault("invoiceType", "E_NORMAL"))))
+            .param("invoiceAmount", request.containsKey("invoiceAmount") ? nonNegativeMoney(request, "invoiceAmount") : new BigDecimal(String.valueOf(apply.get("applyAmount"))))
+            .param("ocrResult", string(request.getOrDefault("ocrResult", "OCR识别成功，结果已回填，可人工修改")))
+            .param("fileId", fileId)
+            .param("invoiceApplyId", invoiceApplyId)
+            .update();
+        log("开票管理", "OCR识别", String.valueOf(invoiceApplyId), "OCR识别发票文件");
+        return adminInvoiceDetail(invoiceApplyId);
+    }
+
+    @PostMapping("/admin/invoices/{invoiceApplyId}/reject")
+    public Map<String, Object> rejectInvoice(@PathVariable Long invoiceApplyId, @RequestBody Map<String, Object> request) {
+        String reason = requiredString(request, "reason");
+        jdbcClient.sql("UPDATE invoice_applies SET invoice_status = 'REJECTED', reject_reason = :reason WHERE id = :id")
+            .param("reason", reason)
+            .param("id", invoiceApplyId)
+            .update();
+        log("开票管理", "驳回开票", String.valueOf(invoiceApplyId), "驳回开票申请");
+        return one("SELECT * FROM invoice_applies WHERE id = :id", "id", invoiceApplyId);
+    }
+
+    @GetMapping("/mall/invoice-titles")
+    public List<Map<String, Object>> invoiceTitles() {
+        return rows("""
+            SELECT id, buyer_name, title_type, invoice_title AS title, tax_no, receive_email, is_default, created_at, updated_at
+            FROM invoice_titles
+            ORDER BY is_default DESC, id
+            """);
+    }
+
+    @PostMapping("/mall/invoice-titles")
+    public Map<String, Object> createInvoiceTitle(@RequestBody Map<String, Object> request) {
+        String invoiceTitle = requiredString(request, request.containsKey("title") ? "title" : "invoiceTitle");
+        String email = requiredEmail(request, request.containsKey("email") ? "email" : "receiveEmail");
+        String titleType = string(request.getOrDefault("titleType", "COMPANY"));
+        String taxNo = string(request.getOrDefault("taxNo", ""));
+        if ("COMPANY".equalsIgnoreCase(titleType) && taxNo.isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "taxNo is required for company invoice title");
+        }
+        jdbcClient.sql("""
+            INSERT INTO invoice_titles (buyer_name, title_type, invoice_title, tax_no, receive_email, is_default)
+            VALUES (:buyerName, :titleType, :invoiceTitle, :taxNo, :email, false)
+            """)
+            .param("buyerName", string(request.getOrDefault("buyerName", "杭州采购王")))
+            .param("titleType", titleType)
+            .param("invoiceTitle", invoiceTitle)
+            .param("taxNo", taxNo)
+            .param("email", email)
+            .update();
+        return rows("SELECT * FROM invoice_titles ORDER BY id DESC").get(0);
+    }
+
+    @PutMapping("/mall/invoice-titles/{titleId}")
+    public Map<String, Object> updateInvoiceTitle(@PathVariable Long titleId, @RequestBody Map<String, Object> request) {
+        String invoiceTitle = requiredString(request, request.containsKey("title") ? "title" : "invoiceTitle");
+        String email = requiredEmail(request, request.containsKey("email") ? "email" : "receiveEmail");
+        String titleType = string(request.getOrDefault("titleType", "COMPANY"));
+        String taxNo = string(request.getOrDefault("taxNo", ""));
+        if ("COMPANY".equalsIgnoreCase(titleType) && taxNo.isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "taxNo is required for company invoice title");
+        }
+        jdbcClient.sql("""
+            UPDATE invoice_titles
+            SET title_type = :titleType,
+                invoice_title = :invoiceTitle,
+                tax_no = :taxNo,
+                receive_email = :email
+            WHERE id = :id
+            """)
+            .param("titleType", titleType)
+            .param("invoiceTitle", invoiceTitle)
+            .param("taxNo", taxNo)
+            .param("email", email)
+            .param("id", titleId)
+            .update();
+        return one("SELECT * FROM invoice_titles WHERE id = :id", "id", titleId);
+    }
+
+    @DeleteMapping("/mall/invoice-titles/{titleId}")
+    public Map<String, Object> deleteInvoiceTitle(@PathVariable Long titleId) {
+        Map<String, Object> title = one("SELECT * FROM invoice_titles WHERE id = :id", "id", titleId);
+        if (Boolean.parseBoolean(String.valueOf(title.getOrDefault("isDefault", false)))) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "默认抬头不能删除，请先设置其他默认抬头");
+        }
+        jdbcClient.sql("DELETE FROM invoice_titles WHERE id = :id")
+            .param("id", titleId)
+            .update();
+        return row("deleted", true, "id", titleId);
+    }
+
+    @PutMapping("/mall/invoice-titles/{titleId}/default")
+    public Map<String, Object> setDefaultInvoiceTitle(@PathVariable Long titleId) {
+        one("SELECT * FROM invoice_titles WHERE id = :id", "id", titleId);
+        jdbcClient.sql("UPDATE invoice_titles SET is_default = false").update();
+        jdbcClient.sql("UPDATE invoice_titles SET is_default = true WHERE id = :id")
+            .param("id", titleId)
+            .update();
+        return one("SELECT * FROM invoice_titles WHERE id = :id", "id", titleId);
+    }
+
+    @GetMapping("/system/parameters")
+    public Map<String, Object> systemParameters() {
+        Map<String, Object> result = new LinkedHashMap<>();
+        rows("SELECT param_key, param_value FROM system_parameters").forEach(item -> result.put(String.valueOf(item.get("paramKey")), item.get("paramValue")));
+        return result;
+    }
+
+    @PutMapping("/system/parameters")
+    public Map<String, Object> updateSystemParameters(@RequestBody Map<String, Object> request) {
+        request.forEach((key, value) -> {
+            if (value != null && !string(value).isBlank()) {
+                jdbcClient.sql("UPDATE system_parameters SET param_value = :value WHERE param_key = :key")
+                    .param("key", key)
+                    .param("value", string(value))
+                    .update();
+            }
+        });
+        log("系统管理", "修改基础配置", "system_parameters", "修改基础配置");
+        return systemParameters();
+    }
+
+    @GetMapping("/admin/operation-logs")
+    public List<Map<String, Object>> operationLogs() {
+        return rows("""
+            SELECT id, log_no, operator_name, module_name, operation_name, related_no, operation_content, operation_result, created_at
+            FROM operation_logs
+            ORDER BY id DESC
+            """);
+    }
+
+    private Long firstProductId() {
+        return productRepository.findAll().stream().findFirst().map(Product::id).orElse(1L);
+    }
+
+    private int soldQty(Long productId) {
+        return jdbcClient.sql("SELECT COALESCE(SUM(quantity), 0) FROM sales_order_items WHERE product_id = :productId")
+            .param("productId", productId)
+            .query(Integer.class)
+            .single();
+    }
+
+    private int stockWarningThreshold() {
+        return Integer.parseInt(String.valueOf(systemParameters().getOrDefault("stockWarningThreshold", "50")));
+    }
+
+    private long count(String sql) {
+        return jdbcClient.sql(sql).query(Long.class).single();
+    }
+
+    private void requireEnabledRole(String roleName) {
+        Long exists = jdbcClient.sql("""
+            SELECT COUNT(*)
+            FROM admin_roles
+            WHERE role_name = :roleName AND role_status = 'ENABLED'
+            """)
+            .param("roleName", roleName)
+            .query(Long.class)
+            .single();
+        if (exists == 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "roleName must be an enabled role");
+        }
+    }
+
+    private String requireEnabledRoles(Map<String, Object> request) {
+        List<String> names = roleNames(request.getOrDefault("roleNames", request.get("roleName")));
+        if (names.isEmpty()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "请选择角色");
+        }
+        names.forEach(this::requireEnabledRole);
+        return String.join(",", names);
+    }
+
+    private void ensureUniqueAdminAccount(String accountName, String phone, Long currentId) {
+        Long accountCount = jdbcClient.sql("""
+            SELECT COUNT(*)
+            FROM admin_accounts
+            WHERE account_name = :accountName AND (:currentId IS NULL OR id <> :currentId)
+            """)
+            .param("accountName", accountName)
+            .param("currentId", currentId)
+            .query(Long.class)
+            .single();
+        if (accountCount != null && accountCount > 0) {
+            throw new ApiException(HttpStatus.CONFLICT, "账号已存在，请更换账号");
+        }
+        Long phoneCount = jdbcClient.sql("""
+            SELECT COUNT(*)
+            FROM admin_accounts
+            WHERE phone = :phone AND (:currentId IS NULL OR id <> :currentId)
+            """)
+            .param("phone", phone)
+            .param("currentId", currentId)
+            .query(Long.class)
+            .single();
+        if (phoneCount != null && phoneCount > 0) {
+            throw new ApiException(HttpStatus.CONFLICT, "手机号已存在，请更换手机号");
+        }
+    }
+
+    private void refreshRoleAccountCounts() {
+        jdbcClient.sql("""
+            UPDATE admin_roles r
+            SET account_count = (
+                SELECT COUNT(*)
+                FROM admin_accounts a
+                WHERE FIND_IN_SET(r.role_name, REPLACE(a.role_name, '、', ',')) > 0
+            )
+            """).update();
+    }
+
+    private long invoiceFileCount(Long invoiceApplyId) {
+        return jdbcClient.sql("SELECT COUNT(*) FROM invoice_files WHERE invoice_apply_id = :invoiceApplyId")
+            .param("invoiceApplyId", invoiceApplyId)
+            .query(Long.class)
+            .single();
+    }
+
+    private BigDecimal invoiceFileAmount(Long invoiceApplyId) {
+        return jdbcClient.sql("SELECT COALESCE(SUM(invoice_amount), 0) FROM invoice_files WHERE invoice_apply_id = :invoiceApplyId")
+            .param("invoiceApplyId", invoiceApplyId)
+            .query(BigDecimal.class)
+            .single();
+    }
+
+    private List<Map<String, Object>> invoiceFiles(Long invoiceApplyId) {
+        return rows("""
+            SELECT id, invoice_apply_id, file_name, invoice_no, invoice_type, invoice_amount, ocr_status, ocr_result, created_at, updated_at
+            FROM invoice_files
+            WHERE invoice_apply_id = :invoiceApplyId
+            ORDER BY id
+            """, "invoiceApplyId", invoiceApplyId);
+    }
+
+    private Long findProductIdByName(String productName) {
+        return jdbcClient.sql("SELECT id FROM products WHERE product_name = :productName ORDER BY id LIMIT 1")
+            .param("productName", productName)
+            .query(Long.class)
+            .optional()
+            .orElse(null);
+    }
+
+    private List<Map<String, Object>> cartItemRows() {
+        return buyerCartItems.stream()
+            .map(this::cartItemRow)
+            .toList();
+    }
+
+    private Map<String, Object> cartItemRow(Map<String, Object> item) {
+        Long productId = Long.parseLong(String.valueOf(item.get("productId")));
+        Product product = productRepository.findById(productId)
+            .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
+        return row(
+            "cartItemId", item.get("cartItemId"),
+            "productId", product.id(),
+            "productName", product.productName(),
+            "productCode", product.productCode(),
+            "skuCode", product.skuCode(),
+            "skuName", product.skuName(),
+            "unit", product.unit(),
+            "quantity", item.get("quantity"),
+            "salePrice", product.salePrice(),
+            "stockQuantity", product.stockQuantity(),
+            "saleStatus", product.saleStatus(),
+            "checked", Boolean.parseBoolean(String.valueOf(item.getOrDefault("checked", true)))
+        );
+    }
+
+    private Map<String, Object> findCartItem(Long cartItemId) {
+        return buyerCartItems.stream()
+            .filter(item -> cartItemId.equals(Long.parseLong(String.valueOf(item.get("cartItemId")))))
+            .findFirst()
+            .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Cart item not found"));
+    }
+
+    private Map<String, Object> addressRow(Map<String, Object> item) {
+        String region = string(item.get("region")).trim();
+        String detailAddress = string(item.get("detailAddress")).trim();
+        String fullAddress = (region + " " + detailAddress).trim();
+        return row(
+            "id", item.get("id"),
+            "receiverName", item.get("receiverName"),
+            "receiverPhone", item.get("receiverPhone"),
+            "region", region,
+            "detailAddress", detailAddress,
+            "fullAddress", fullAddress,
+            "isDefault", Boolean.parseBoolean(String.valueOf(item.getOrDefault("isDefault", false)))
+        );
+    }
+
+    private Map<String, Object> findAddress(Long addressId) {
+        return buyerAddresses.stream()
+            .filter(item -> addressId.equals(Long.parseLong(String.valueOf(item.get("id")))))
+            .findFirst()
+            .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Address not found"));
+    }
+
+    private void clearDefaultAddress() {
+        buyerAddresses.forEach(item -> item.put("isDefault", false));
+    }
+
+    private void ensureDefaultAddress() {
+        if (!buyerAddresses.isEmpty() && buyerAddresses.stream().noneMatch(item -> Boolean.parseBoolean(String.valueOf(item.getOrDefault("isDefault", false))))) {
+            buyerAddresses.get(0).put("isDefault", true);
+        }
+    }
+
+    private String requiredString(Map<String, Object> request, String field) {
+        String value = string(request.get(field)).trim();
+        if (value.isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, field + " is required");
+        }
+        return value;
+    }
+
+    private String requiredString(Map<String, Object> request, String... fields) {
+        for (String field : fields) {
+            String value = string(request.get(field)).trim();
+            if (!value.isBlank()) {
+                return value;
+            }
+        }
+        throw new ApiException(HttpStatus.BAD_REQUEST, String.join("/", fields) + " is required");
+    }
+
+    private String optionalString(Map<String, Object> request, String... fields) {
+        for (String field : fields) {
+            String value = string(request.get(field)).trim();
+            if (!value.isBlank()) {
+                return value;
+            }
+        }
+        return "";
+    }
+
+    private String requiredPassword(Map<String, Object> request) {
+        String password = string(request.getOrDefault("password", request.get("newPassword"))).trim();
+        if (password.isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "请输入密码");
+        }
+        if (password.length() < 6 || password.length() > 20) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "密码长度需为6-20位");
+        }
+        return password;
+    }
+
+    private String requiredEmail(Map<String, Object> request, String field) {
+        String value = requiredString(request, field);
+        if (!value.matches("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$")) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, field + " must be a valid email");
+        }
+        return value;
+    }
+
+    private Long requiredLong(Map<String, Object> request, String field) {
+        if (!request.containsKey(field) || request.get(field) == null || string(request.get(field)).isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, field + " is required");
+        }
+        try {
+            return number(request.get(field)).longValue();
+        } catch (RuntimeException exception) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, field + " must be a number");
+        }
+    }
+
+    private int requiredInt(Map<String, Object> request, String field) {
+        if (!request.containsKey(field) || request.get(field) == null || string(request.get(field)).isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, field + " is required");
+        }
+        try {
+            return number(request.get(field)).intValue();
+        } catch (RuntimeException exception) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, field + " must be a number");
+        }
+    }
+
+    private int positiveInt(Map<String, Object> request, String field) {
+        int value = requiredInt(request, field);
+        if (value <= 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, field + " must be greater than zero");
+        }
+        return value;
+    }
+
+    private BigDecimal positiveMoney(Map<String, Object> request, String field) {
+        BigDecimal value = moneyValue(request, field);
+        if (value.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, field + " must be greater than zero");
+        }
+        return value;
+    }
+
+    private BigDecimal nonNegativeMoney(Map<String, Object> request, String field) {
+        BigDecimal value = moneyValue(request, field);
+        if (value.compareTo(BigDecimal.ZERO) < 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, field + " cannot be negative");
+        }
+        return value;
+    }
+
+    private BigDecimal moneyValue(Map<String, Object> request, String field) {
+        if (!request.containsKey(field) || request.get(field) == null || string(request.get(field)).isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, field + " is required");
+        }
+        try {
+            return new BigDecimal(String.valueOf(request.get(field)));
+        } catch (RuntimeException exception) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, field + " must be a valid amount");
+        }
+    }
+
+    private Number number(Object value) {
+        if (value instanceof Number number) {
+            return number;
+        }
+        return new BigDecimal(String.valueOf(value));
+    }
+
+    private String string(Object value) {
+        return value == null ? "" : String.valueOf(value);
+    }
+
+    private boolean customerPhoneExists(String phone) {
+        Long count = jdbcClient.sql("SELECT COUNT(*) FROM customers WHERE contact_phone = :phone")
+            .param("phone", phone)
+            .query(Long.class)
+            .single();
+        return count != null && count > 0;
+    }
+
+    private String passwordHash(String password) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return Base64.getEncoder().encodeToString(digest.digest(password.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is not available", e);
+        }
+    }
+
+    private String permissionJson(Map<String, Object> request) {
+        Object permissions = request.getOrDefault("permissionKeys", request.getOrDefault("permissions", List.of()));
+        try {
+            return objectMapper.writeValueAsString(permissions);
+        } catch (JsonProcessingException e) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "permissions must be valid JSON");
+        }
+    }
+
+    private List<String> roleNames(Object value) {
+        if (value instanceof List<?> values) {
+            return values.stream()
+                .map(this::string)
+                .map(String::trim)
+                .filter(text -> !text.isBlank())
+                .distinct()
+                .toList();
+        }
+        return Arrays.stream(string(value).split("[,，、]"))
+            .map(String::trim)
+            .filter(text -> !text.isBlank())
+            .distinct()
+            .toList();
+    }
+
+    private List<String> rolePermissionKeys(List<String> roleNames) {
+        if (roleNames.isEmpty()) {
+            return List.of(DASHBOARD_PERMISSION_KEY);
+        }
+        Set<String> keys = new LinkedHashSet<>();
+        keys.add(DASHBOARD_PERMISSION_KEY);
+        for (String roleName : roleNames) {
+            jdbcClient.sql("SELECT permission_json FROM admin_roles WHERE role_name = :roleName AND role_status = 'ENABLED'")
+                .param("roleName", roleName)
+                .query(String.class)
+                .optional()
+                .ifPresent(raw -> keys.addAll(parsePermissionKeys(raw)));
+        }
+        return new ArrayList<>(keys);
+    }
+
+    private List<String> parsePermissionKeys(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return List.of();
+        }
+        try {
+            Object parsed = objectMapper.readValue(raw, Object.class);
+            if (parsed instanceof List<?> values) {
+                return values.stream().map(this::string).filter(value -> !value.isBlank()).toList();
+            }
+        } catch (JsonProcessingException ignored) {
+            return List.of();
+        }
+        return List.of();
+    }
+
+    private List<String> allPermissionKeys() {
+        return permissionTree().stream()
+            .flatMap(item -> {
+                List<String> keys = new ArrayList<>();
+                keys.add(string(item.get("key")));
+                Object children = item.get("children");
+                if (children instanceof List<?> values) {
+                    values.forEach(child -> {
+                        if (child instanceof Map<?, ?> childMap) {
+                            keys.add(string(childMap.get("key")));
+                        }
+                    });
+                }
+                return keys.stream();
+            })
+            .filter(value -> !value.isBlank())
+            .toList();
+    }
+
+    private Map<String, Object> permissionModule(String key, String title, List<Map<String, Object>> children) {
+        return row("key", key, "title", title, "children", children);
+    }
+
+    private String normalizeStatus(Object value) {
+        String status = string(value).trim().toUpperCase();
+        if ("启用".equals(value) || "ON".equals(status)) {
+            return "ENABLED";
+        }
+        if ("禁用".equals(value) || "停用".equals(value) || "OFF".equals(status)) {
+            return "DISABLED";
+        }
+        return status;
+    }
+
+    private List<Map<String, Object>> rows(String sql) {
+        return jdbcClient.sql(sql).query(this::mapRow).list();
+    }
+
+    private List<Map<String, Object>> rows(String sql, String paramName, Object value) {
+        return jdbcClient.sql(sql)
+            .param(paramName, value)
+            .query(this::mapRow)
+            .list();
+    }
+
+    private Map<String, Object> one(String sql, String paramName, Object value) {
+        return jdbcClient.sql(sql)
+            .param(paramName, value)
+            .query(this::mapRow)
+            .optional()
+            .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Data not found"));
+    }
+
+    private void log(String module, String operation, String relatedNo, String content) {
+        String logNo = "LOG" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + System.currentTimeMillis() % 100000;
+        jdbcClient.sql("""
+            INSERT INTO operation_logs (log_no, operator_name, module_name, operation_name, related_no, operation_content, operation_result)
+            VALUES (:logNo, '系统', :module, :operation, :relatedNo, :content, 'SUCCESS')
+            """)
+            .param("logNo", logNo)
+            .param("module", module)
+            .param("operation", operation)
+            .param("relatedNo", relatedNo)
+            .param("content", content)
+            .update();
+    }
+
+    private Map<String, Object> mapRow(ResultSet rs, int rowNum) throws SQLException {
+        ResultSetMetaData metaData = rs.getMetaData();
+        Map<String, Object> result = new LinkedHashMap<>();
+        for (int i = 1; i <= metaData.getColumnCount(); i++) {
+            result.put(toCamelCase(metaData.getColumnLabel(i)), rs.getObject(i));
+        }
+        return result;
+    }
+
+    private String toCamelCase(String value) {
+        StringBuilder builder = new StringBuilder();
+        boolean upperNext = false;
+        for (char ch : value.toCharArray()) {
+            if (ch == '_') {
+                upperNext = true;
+            } else if (upperNext) {
+                builder.append(Character.toUpperCase(ch));
+                upperNext = false;
+            } else {
+                builder.append(Character.toLowerCase(ch));
+            }
+        }
+        return builder.toString();
+    }
+
+    private Map<String, Object> row(Object... values) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        for (int i = 0; i < values.length; i += 2) {
+            result.put(String.valueOf(values[i]), values[i + 1]);
+        }
+        return result;
+    }
+}

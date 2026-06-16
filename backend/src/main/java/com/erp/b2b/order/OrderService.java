@@ -96,7 +96,7 @@ public class OrderService {
                 product.productName(),
                 product.skuCode(),
                 product.skuName(),
-                product.unit(),
+                "BATCH".equals(product.saleMode()) && product.saleUnit() != null && !product.saleUnit().isBlank() ? product.saleUnit() : product.unit(),
                 item.quantity(),
                 0,
                 product.salePrice(),
@@ -147,6 +147,9 @@ public class OrderService {
         }
         if (item.quantity() < product.minOrderQuantity()) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "Quantity is lower than minimum order quantity for " + product.productName());
+        }
+        if ("BATCH".equals(product.saleMode()) && (item.quantity() == null || item.quantity() <= 0)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Quantity must be a positive integer for " + product.productName());
         }
         if (item.quantity() > product.stockQuantity()) {
             throw new ApiException(HttpStatus.CONFLICT, "Insufficient stock for " + product.productName());

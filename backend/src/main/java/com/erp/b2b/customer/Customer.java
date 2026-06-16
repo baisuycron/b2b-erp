@@ -8,7 +8,9 @@ public record Customer(
     String companyName,
     String contactName,
     String contactPhone,
+    String address,
     String auditStatus,
+    String status,
     String salesmanName,
     LocalDateTime createdAt,
     LocalDateTime updatedAt
