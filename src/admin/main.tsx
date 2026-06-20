@@ -1,5 +1,5 @@
 ﻿// @ts-nocheck
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   App as AntApp,
@@ -417,13 +417,10 @@ function AdminRoot() {
       .filter((key, index, arr) => arr.indexOf(key) === index);
   });
   const [loading, setLoading] = useState(false);
-  const [globalLoading, setGlobalLoading] = useState(false);
   const [data, setData] = useState<Record<string, any>>({});
   const dataRef = useRef<Record<string, any>>({});
   const loadedAtRef = useRef<Map<string, number>>(new Map());
   const inflightRequestsRef = useRef<Map<string, Promise<any>>>(new Map());
-  const loadingRequestCountRef = useRef(0);
-  const globalLoadingRequestCountRef = useRef(0);
   const [drawer, setDrawer] = useState<{ title: React.ReactNode; body: React.ReactNode; width?: number | string; className?: string; onClose?: () => void } | null>(null);
 
   const updateData: React.Dispatch<React.SetStateAction<Record<string, any>>> = updater => {
@@ -448,7 +445,7 @@ function AdminRoot() {
 
   const fetchDataKeys = async (
     keys: string[],
-    { force = false, showLoading, trackLoading = true }: { force?: boolean; showLoading?: boolean; trackLoading?: boolean } = {}
+    { force = false, showLoading }: { force?: boolean; showLoading?: boolean } = {}
   ) => {
     const now = Date.now();
     const uniqueKeys = Array.from(new Set(keys));
@@ -461,15 +458,8 @@ function AdminRoot() {
       });
     if (!keysToLoad.length) return;
     const hasCachedPage = keysToLoad.every(key => Object.prototype.hasOwnProperty.call(dataRef.current, key));
-    const shouldShowGlobalLoading = showLoading ?? !hasCachedPage;
-    if (trackLoading) {
-      loadingRequestCountRef.current += 1;
-      setLoading(true);
-    }
-    if (shouldShowGlobalLoading) {
-      globalLoadingRequestCountRef.current += 1;
-      setGlobalLoading(true);
-    }
+    const shouldShowLoading = showLoading ?? !hasCachedPage;
+    if (shouldShowLoading) setLoading(true);
     try {
       const entries = await Promise.all(keysToLoad.map(async key => [key, await fetchDataKey(key, force)] as const));
       const loadedAt = Date.now();
@@ -478,22 +468,12 @@ function AdminRoot() {
     } catch (error: any) {
       message.error(error.message);
     } finally {
-      if (trackLoading) {
-        loadingRequestCountRef.current = Math.max(0, loadingRequestCountRef.current - 1);
-        if (!loadingRequestCountRef.current) setLoading(false);
-      }
-      if (shouldShowGlobalLoading) {
-        globalLoadingRequestCountRef.current = Math.max(0, globalLoadingRequestCountRef.current - 1);
-        if (!globalLoadingRequestCountRef.current) setGlobalLoading(false);
-      }
+      if (shouldShowLoading) setLoading(false);
     }
   };
 
   const loadKeys = (keys: string[]) => fetchDataKeys(keys, { force: true, showLoading: true });
-  const reload = (keys?: string[], options?: { showLoading?: boolean }) => fetchDataKeys(
-    keys || pageLoads[page],
-    { force: true, showLoading: options?.showLoading }
-  );
+  const reload = () => fetchDataKeys(pageLoads[page], { force: true, showLoading: true });
 
   useEffect(() => {
     if (loggedIn) void fetchDataKeys(pageLoads[page]);
@@ -502,7 +482,7 @@ function AdminRoot() {
   useEffect(() => {
     if (!loggedIn) return;
     const timer = window.setTimeout(() => {
-      void fetchDataKeys(productModulePrefetchKeys, { showLoading: false, trackLoading: false });
+      void fetchDataKeys(productModulePrefetchKeys, { showLoading: false });
     }, 800);
     return () => window.clearTimeout(timer);
   }, [loggedIn]);
@@ -618,10 +598,6 @@ function AdminRoot() {
     setData: updateData,
     go
   };
-  const currentPageKeys = pageLoads[page] || [];
-  const hasCurrentPageCachedData = currentPageKeys.some(key =>
-    Object.prototype.hasOwnProperty.call(dataRef.current, key)
-  );
 
   return (
     <Layout className="admin-shell">
@@ -672,11 +648,11 @@ function AdminRoot() {
           <div
             className={`page-wrap ${page === "product-list" || page === "supplier" ? "page-wrap-product-list" : ""} ${page === "product-category" || page === "product-brand" || page === "product-attribute-template" ? "page-wrap-management-board" : ""}`}
           >
-            <PageRenderer page={page} ctx={ctx} loading={loading} />
+            <PageRenderer page={page} ctx={ctx} loading={false} />
           </div>
         </Content>
       </Layout>
-      <GlobalLoadingMask visible={loading && globalLoading && !hasCurrentPageCachedData} />
+      <GlobalLoadingMask visible={loading} />
       <Drawer
         open={Boolean(drawer)}
         title={drawer?.title}
@@ -810,7 +786,7 @@ function PageHeader({ page }: { page: PageKey }) {
 type Ctx = {
   data: Record<string, any>;
   setDrawer: (drawer: { title: React.ReactNode; body: React.ReactNode; width?: number | string; className?: string; onClose?: () => void } | null) => void;
-  reload: (keys?: string[], options?: { showLoading?: boolean }) => Promise<void>;
+  reload: () => void;
   message: any;
   loadKeys: (keys: string[]) => Promise<void>;
   setData?: React.Dispatch<React.SetStateAction<Record<string, any>>>;
@@ -1424,17 +1400,6 @@ const productColumnDefaults = [
   { key: "stockQuantity", label: "库存", width: 100 }
 ];
 
-const productTagOptions = [{ value: "重点商品", label: "重点商品" }, { value: "常规商品", label: "常规商品" }];
-const productSaleStatusOptions = [{ value: "ON_SALE", label: "已上架" }, { value: "OFF_SALE", label: "已下架" }];
-const productArchiveStatusOptions = [{ value: "YES", label: "是" }, { value: "NO", label: "否" }];
-const productSortComparers: Record<string, (a: AnyRecord, b: AnyRecord) => number> = {
-  skuCode: (a, b) => String(a.skuCode || "").localeCompare(String(b.skuCode || "")),
-  productCode: (a, b) => String(a.productCode || "").localeCompare(String(b.productCode || "")),
-  productName: (a, b) => String(a.productName || "").localeCompare(String(b.productName || "")),
-  categoryName: (a, b) => String(a.categoryName || "").localeCompare(String(b.categoryName || "")),
-  saleStatus: (a, b) => String(a.saleStatus || "").localeCompare(String(b.saleStatus || ""))
-};
-
 const defaultProductColumnOrder = productColumnDefaults.map(column => column.key);
 const productColumnSettingsStorageKey = "b2b-erp-product-column-settings";
 const productColumnOrderStorageKey = "b2b-erp-product-column-order";
@@ -1689,12 +1654,12 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
   const [columnOrder, setColumnOrder] = useState(loadProductColumnOrder);
   const [draggingColumnKey, setDraggingColumnKey] = useState<string>();
   const [productSort, setProductSort] = useState<{ key?: string; order?: "ascend" | "descend" }>({});
-  const openProductForm = useCallback(async (item?: AnyRecord) => {
+  const openProductForm = async (item?: AnyRecord) => {
     if (!Object.prototype.hasOwnProperty.call(ctx.data, "attributeTemplates")) {
       await ctx.loadKeys(["attributeTemplates"]);
     }
     productForm(ctx, item);
-  }, [ctx]);
+  };
   const categoryTreeData = useMemo(() => buildCategoryTreeData(categories), [categories]);
   const filteredCategoryTreeData = useMemo(() => filterCategoryTreeData(categoryTreeData, categoryKeyword), [categoryKeyword, categoryTreeData]);
   const visibleExpandedCategoryKeys = useMemo(
@@ -1736,7 +1701,7 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
     { title: "库存", dataIndex: "stockQuantity", width: 90 },
     { title: "状态", dataIndex: "skuStatus", width: 90, render: (value: any) => value === "DISABLED" ? <Tag>停用</Tag> : <Tag color="green">启用</Tag> }
   ], [specDetailGroupNames]);
-  const filteredRows = useMemo(() => rows.filter((item: AnyRecord) => {
+  const filteredRows = rows.filter((item: AnyRecord) => {
     const searchText = [
       item.productCode,
       item.skuCode,
@@ -1755,24 +1720,32 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
       && (!saleStatus || item.saleStatus === saleStatus)
       && (!archiveStatus || item.saleStatus === (archiveStatus === "YES" ? "OFF_SALE" : "ON_SALE"))
       && batchMatched;
-  }), [archiveStatus, batchKeywordSet, brandName, categoryName, keyword, productTag, rows, saleStatus]);
-  const brandOptions = useMemo(() => Array.from(
-    new Set(brands.map((x: AnyRecord) => x.brandName).filter(Boolean))
-  ).map(value => ({ value, label: value })), [brands]);
+  });
+  const brandOptions = Array.from(new Set(brands.map((x: AnyRecord) => x.brandName).filter(Boolean))).map(value => ({ value, label: value }));
+  const tagOptions = [{ value: "重点商品", label: "重点商品" }, { value: "常规商品", label: "常规商品" }];
+  const saleStatusOptions = [{ value: "ON_SALE", label: "已上架" }, { value: "OFF_SALE", label: "已下架" }];
+  const archiveStatusOptions = [{ value: "YES", label: "是" }, { value: "NO", label: "否" }];
   const selectedCategoryKey = categoryName ? `category:${categoryName}` : "category:__all__";
-  const sortedRows = useMemo(() => productSort.key && productSort.order && productSortComparers[productSort.key]
+  const productSortComparers: Record<string, (a: AnyRecord, b: AnyRecord) => number> = {
+    skuCode: (a, b) => String(a.skuCode || "").localeCompare(String(b.skuCode || "")),
+    productCode: (a, b) => String(a.productCode || "").localeCompare(String(b.productCode || "")),
+    productName: (a, b) => String(a.productName || "").localeCompare(String(b.productName || "")),
+    categoryName: (a, b) => String(a.categoryName || "").localeCompare(String(b.categoryName || "")),
+    saleStatus: (a, b) => String(a.saleStatus || "").localeCompare(String(b.saleStatus || ""))
+  };
+  const sortedRows = productSort.key && productSort.order && productSortComparers[productSort.key]
     ? [...filteredRows].sort((a, b) => {
       const result = productSortComparers[productSort.key!](a, b);
       return productSort.order === "ascend" ? result : -result;
     })
-    : filteredRows, [filteredRows, productSort]);
+    : filteredRows;
   const toolbarButton = (label: string, icon?: React.ReactNode, onClick?: () => void) => <Button type="primary" icon={icon} onClick={onClick}>{label}</Button>;
-  const updateColumnSetting = useCallback((key: string, patch: AnyRecord) => {
+  const updateColumnSetting = (key: string, patch: AnyRecord) => {
     setColumnSettings(prev => ({
       ...prev,
       [key]: { ...prev[key], ...patch }
     }));
-  }, []);
+  };
   const moveColumnSetting = (sourceKey?: string, targetKey?: string) => {
     if (!sourceKey || !targetKey || sourceKey === targetKey) return;
     setColumnOrder(prev => {
@@ -1783,7 +1756,7 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
       return next;
     });
   };
-  const startColumnResize = useCallback((key: string, event: React.MouseEvent) => {
+  const startColumnResize = (key: string, event: React.MouseEvent) => {
     event.preventDefault();
     event.stopPropagation();
     const startX = event.clientX;
@@ -1801,15 +1774,15 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
     document.body.classList.add("product-column-resizing");
     document.addEventListener("mousemove", handleMouseMove);
     document.addEventListener("mouseup", handleMouseUp);
-  }, [columnSettings, updateColumnSetting]);
-  const toggleProductSort = useCallback((key: string) => {
+  };
+  const toggleProductSort = (key: string) => {
     setProductSort(prev => {
       if (prev.key !== key) return { key, order: "ascend" };
       if (prev.order === "ascend") return { key, order: "descend" };
       return {};
     });
-  }, []);
-  const renderResizableTitle = useCallback((key: string, label: React.ReactNode, sortable = false) => (
+  };
+  const renderResizableTitle = (key: string, label: React.ReactNode, sortable = false) => (
     <span className="product-column-title" onClick={event => event.stopPropagation()}>
       <span className="product-column-title-text">{label}</span>
       {sortable && (
@@ -1829,7 +1802,7 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
       )}
       <span className="product-column-resize-handle" onMouseDown={event => startColumnResize(key, event)} />
     </span>
-  ), [productSort, startColumnResize, toggleProductSort]);
+  );
   const applyFilters = () => {
     setKeyword(keywordInput.trim());
     setBrandName(brandNameInput);
@@ -1899,7 +1872,7 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
       setBatchEditOpen(false);
       batchEditForm.resetFields();
       setSelectedRowKeys([]);
-      void ctx.reload(["products"], { showLoading: false });
+      ctx.reload();
     } catch (error: any) {
       ctx.message.error(error.message);
     } finally {
@@ -1923,7 +1896,7 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
       }
       ctx.message.success(`已删除 ${Number(result?.deletedCount || selectedProducts.length)} 个商品`);
       setSelectedRowKeys([]);
-      void ctx.reload(["products"], { showLoading: false });
+      ctx.reload();
     } catch (error: any) {
       ctx.message.error(error.message);
       throw error;
@@ -1959,7 +1932,7 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
       setBatchDeleteChecking(false);
     }
   };
-  const baseColumns = useMemo<ColumnsType<AnyRecord>>(() => ([
+  const baseColumns: ColumnsType<AnyRecord> = [
     { key: "index", title: "序号", width: 72, align: "center", className: "product-index-column", render: (_, __, index) => index + 1 },
     { key: "skuCode", title: "商品条码", dataIndex: "skuCode", width: 150, align: "left", className: "product-sku-column", render: (v, item) => <Button className="product-sku-link" type="link" onClick={() => productDetail(ctx, item)}>{v || item.productCode || "-"}</Button> },
     { key: "productCode", title: "商品编码", dataIndex: "productCode", width: 150, render: compactText },
@@ -2003,36 +1976,30 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
         </Space>
       )
     }
-  ]), [ctx, openProductForm]);
-  const columns = useMemo(() => {
-    const baseColumnMap = new Map(baseColumns.map(column => [String(column.key), column]));
-    const orderedBaseColumns = [
-      ...columnOrder.map(key => baseColumnMap.get(key)).filter(Boolean),
-      baseColumnMap.get("action")
-    ].filter(Boolean) as ColumnsType<AnyRecord>;
-    return orderedBaseColumns
-      .filter(column => column.key === "action" || columnSettings[String(column.key)]?.visible !== false)
-      .map(column => {
-        if (column.key === "action") return column;
-        const key = String(column.key);
-        const setting = columnSettings[key] || {};
-        const width = Number(setting.width || column.width || 120);
-        const headerClassName = key === "index" ? "product-index-header" : undefined;
-        return {
-          ...column,
-          width,
-          fixed: setting.fixed || undefined,
-          title: renderResizableTitle(key, column.title, Boolean(productSortComparers[key])),
-          onHeaderCell: () => ({ width, className: headerClassName })
-        };
-      });
-  }, [baseColumns, columnOrder, columnSettings, renderResizableTitle]);
-  const productTableScrollX = useMemo(
-    () => Math.max(960, columns.reduce((sum, column) => sum + Number(column.width || 120), 64)),
-    [columns]
-  );
+  ];
+  const baseColumnMap = new Map(baseColumns.map(column => [String(column.key), column]));
+  const orderedBaseColumns = [
+    ...columnOrder.map(key => baseColumnMap.get(key)).filter(Boolean),
+    baseColumnMap.get("action")
+  ].filter(Boolean);
+  const columns = orderedBaseColumns
+    .filter(column => column.key === "action" || columnSettings[String(column.key)]?.visible !== false)
+    .map(column => {
+      if (column.key === "action") return column;
+      const key = String(column.key);
+      const setting = columnSettings[key] || {};
+      const width = Number(setting.width || column.width || 120);
+      const headerClassName = key === "index" ? "product-index-header" : undefined;
+      return {
+        ...column,
+        width,
+        fixed: setting.fixed || undefined,
+        title: renderResizableTitle(key, column.title, Boolean(productSortComparers[key])),
+        onHeaderCell: () => ({ width, className: headerClassName })
+      };
+    });
+  const productTableScrollX = Math.max(960, columns.reduce((sum, column) => sum + Number(column.width || 120), 64));
   const isInitialProductLoading = loading && sortedRows.length === 0;
-  const isProductRefreshing = loading && sortedRows.length > 0;
 
   useEffect(() => {
     localStorage.setItem(productColumnSettingsStorageKey, JSON.stringify(columnSettings));
@@ -2098,7 +2065,7 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
             </label>
             <label>
               <span>商品状态</span>
-              <Select allowClear placeholder="请选择商品状态" value={saleStatusInput} options={productSaleStatusOptions} onChange={setSaleStatusInput} />
+              <Select allowClear placeholder="请选择商品状态" value={saleStatusInput} options={saleStatusOptions} onChange={setSaleStatusInput} />
             </label>
           </div>
           <label>
@@ -2107,12 +2074,12 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
           </label>
           <label>
             <span>商品标签</span>
-            <Select allowClear placeholder="请选择商品标签" value={productTagInput} options={productTagOptions} onChange={setProductTagInput} />
+            <Select allowClear placeholder="请选择商品标签" value={productTagInput} options={tagOptions} onChange={setProductTagInput} />
           </label>
           <div className="product-archive-filter-actions-stack">
             <label>
               <span>是否淘汰</span>
-              <Select allowClear placeholder="请选择" value={archiveStatusInput} options={productArchiveStatusOptions} onChange={setArchiveStatusInput} />
+              <Select allowClear placeholder="请选择" value={archiveStatusInput} options={archiveStatusOptions} onChange={setArchiveStatusInput} />
             </label>
             <div className="product-archive-query-actions">
               <Button type="primary" onClick={applyFilters}>查询</Button>
@@ -2129,7 +2096,7 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
         </div>
         <div className={`product-archive-table anchored-pagination-table ${isInitialProductLoading ? "is-initial-loading" : ""}`}>
           <AdminTable
-            loading={isInitialProductLoading}
+            loading={loading}
             rowKey="id"
             columns={columns}
             dataSource={sortedRows}
@@ -2151,11 +2118,6 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
               />
             </Tooltip>
           </div>
-          {isProductRefreshing ? (
-            <div className="product-table-refresh-mask">
-              <div className="product-table-refresh-card">正在刷新...</div>
-            </div>
-          ) : null}
         </div>
       </section>
       <Modal
@@ -2192,7 +2154,7 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
             />
           </Form.Item>
           <Form.Item name="saleStatus" label="商品状态">
-            <Select allowClear placeholder="不修改商品状态" options={productSaleStatusOptions} />
+            <Select allowClear placeholder="不修改商品状态" options={saleStatusOptions} />
           </Form.Item>
         </Form>
       </Modal>
@@ -3056,7 +3018,6 @@ function ProductForm({ ctx, item, draftValues }: { ctx: Ctx; item?: AnyRecord; d
           }
           ctx.message.success("商品已保存，商城端数据已同步");
           ctx.setDrawer(null);
-          void ctx.reload(["products"], { showLoading: false });
         } catch (error: any) {
           ctx.message.error(error.message);
         }
@@ -3563,7 +3524,7 @@ async function productSale(ctx: Ctx, item: AnyRecord) {
   try {
     await request(`/api/admin/products/${item.id}/${item.saleStatus === "ON_SALE" ? "off-sale" : "on-sale"}`, { method: "PUT" });
     ctx.message.success("商品状态已更新");
-    void ctx.reload(["products"], { showLoading: false });
+    ctx.reload();
   } catch (error: any) {
     ctx.message.error(error.message);
   }
@@ -4103,7 +4064,7 @@ function PurchaseOrderPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
         { title: "采购金额", dataIndex: "totalAmount", render: money },
         { title: "预计到货", dataIndex: "expectedArrivalDate", render: dateText },
         { title: "状态", dataIndex: "status", render: tag },
-        { title: "操作", render: (_, item) => <Space><Button type="link" onClick={() => detailDrawer(ctx, "采购订单详情", item)}>详情</Button><Button type="link" onClick={() => request(`/api/admin/purchase-orders/${item.id}/stock-in`, { method: "POST" }).then(() => ctx.reload()).then(() => ctx.message.success("采购入库成功")).catch((e: Error) => ctx.message.error(e.message))}>入库</Button></Space> }
+        { title: "操作", render: (_, item) => <Space><Button type="link" onClick={() => detailDrawer(ctx, "采购订单详情", item)}>详情</Button><Button type="link" onClick={() => request(`/api/admin/purchase-orders/${item.id}/stock-in`, { method: "POST" }).then(ctx.reload).then(() => ctx.message.success("采购入库成功")).catch((e: Error) => ctx.message.error(e.message))}>入库</Button></Space> }
       ]} />
     </Card>
   );

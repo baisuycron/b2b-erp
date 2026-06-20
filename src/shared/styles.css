@@ -729,29 +729,6 @@ body,
   border-top: 1px solid #e7ebf1;
 }
 
-.product-table-refresh-mask {
-  position: absolute;
-  inset: 0;
-  z-index: 20;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(255, 255, 255, 0.45);
-  pointer-events: none;
-}
-
-.product-table-refresh-card {
-  min-width: 120px;
-  padding: 14px 20px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.14);
-  color: #303846;
-  font-size: 14px;
-  font-weight: 600;
-  text-align: center;
-}
-
 .product-archive-table .ant-table-wrapper,
 .product-archive-table .ant-spin-nested-loading,
 .product-archive-table .ant-spin-container {
