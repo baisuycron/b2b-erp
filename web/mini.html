@@ -1239,6 +1239,20 @@
     {id:'SO202606050012', goods:'娃哈哈饮用纯净水等2件', amount:'¥560.00', status:'售后中', key:'aftersale', pay:'已支付', ship:'部分发货', time:'2026-06-05 10:28'}
   ];
 
+  function applyOrderTimeouts(){
+    const timeoutMs = 15 * 60 * 1000;
+    const now = Date.now();
+    orders.forEach(order => {
+      if(order.key !== 'pendingPayment') return;
+      const orderedAt = Date.parse(String(order.time || '').replace(' ', 'T'));
+      if(Number.isNaN(orderedAt) || now - orderedAt <= timeoutMs) return;
+      order.status = '已取消';
+      order.key = 'cancelled';
+      order.pay = '未支付';
+      order.ship = '已取消';
+    });
+  }
+
   const titles = {
     home:'B2B商城',
     category:'全部商品',
@@ -1843,12 +1857,14 @@
   }
 
   function getOrderTabs(){
+    applyOrderTimeouts();
     const tabs = [
       {key:'all',label:'全部'},
       {key:'pendingPayment',label:'待支付'},
       {key:'pendingShipment',label:'待发货'},
       {key:'pendingReceipt',label:'待收货'},
       {key:'completed',label:'已完成'},
+      {key:'cancelled',label:'已取消'},
       {key:'aftersale',label:'售后中'}
     ];
     return tabs.map(t => ({
@@ -2058,7 +2074,7 @@
       <div class="notice">确认收货后的订单支持申请开票。个人抬头仅支持电子普通发票。</div>
       <div class="panel">
         <div class="form-row">
-          <label>选择抬头</label>
+          <label>发票抬头</label>
           <select id="applyInvoiceTitle" onchange="syncInvoiceApply()">
             ${invoiceTitles.map(i => `<option value="${i.id}" ${def && i.id === def.id ? 'selected' : ''}>${i.title}${i.isDefault ? '（默认）' : ''}</option>`).join('')}
           </select>

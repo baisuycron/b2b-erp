@@ -30,8 +30,8 @@ import org.springframework.web.multipart.MultipartFile;
 @RestController
 @RequestMapping("/api/internal/image-embedding")
 public class ImageEmbeddingController {
-    public static final int VECTOR_SIZE = 64;
-    public static final String MODEL_NAME = "b2b-visual-signature-v2";
+    public static final int VECTOR_SIZE = 96;
+    public static final String MODEL_NAME = "b2b-visual-signature-v3";
 
     private static final int SAMPLE_SIZE = 64;
     private static final long MAX_IMAGE_SIZE = 5 * 1024 * 1024;
@@ -124,10 +124,15 @@ public class ImageEmbeddingController {
         throw new ApiException(HttpStatus.BAD_REQUEST, "图片大小不能超过 5MB");
     }
 
-    private List<Double> embed(byte[] bytes) {
+    private SignatureResult embed(byte[] bytes) {
         BufferedImage source = decodeImage(bytes);
         BufferedImage image = scaleToSample(source);
         double[] vector = new double[VECTOR_SIZE];
+        int neutralPixels = 0;
+        int coloredPixels = 0;
+        int redPixels = 0;
+        int bluePixels = 0;
+        int darkPixels = 0;
 
         for (int y = 0; y < SAMPLE_SIZE; y += 1) {
             for (int x = 0; x < SAMPLE_SIZE; x += 1) {
@@ -139,30 +144,61 @@ public class ImageEmbeddingController {
                 double hue = hsb[0];
                 double saturation = hsb[1];
                 double brightness = hsb[2];
-
-                if (saturation > 0.12 && brightness > 0.08) {
-                    int hueBin = Math.min(23, (int) Math.floor(hue * 24));
-                    vector[hueBin] += brightness * (0.25 + saturation * 0.75);
-                }
-                vector[24 + Math.min(7, (int) Math.floor(saturation * 8))] += 0.35;
-                vector[32 + Math.min(7, (int) Math.floor(brightness * 8))] += 0.35;
-                vector[40 + colorFamily(hue, saturation, brightness)] += 1.2;
-
-                int cell = (y / 16) * 4 + (x / 16);
+                double degrees = hue * 360.0;
                 int max = Math.max(red, Math.max(green, blue));
                 int min = Math.min(red, Math.min(green, blue));
                 double colorfulness = (max - min) / 255.0;
+                boolean neutral = saturation < 0.14 || colorfulness < 0.10 || brightness > 0.94;
+                boolean colored = !neutral && brightness > 0.12;
+
+                if (neutral) {
+                    neutralPixels += 1;
+                }
+                if (colored) {
+                    coloredPixels += 1;
+                    if (degrees >= 340 || degrees < 35) redPixels += 1;
+                    if (degrees >= 185 && degrees < 260) bluePixels += 1;
+                }
+                if (brightness < 0.22) {
+                    darkPixels += 1;
+                }
+
+                if (colored) {
+                    int hueBin = Math.min(35, (int) Math.floor(hue * 36));
+                    vector[hueBin] += brightness * (0.35 + saturation * 1.3);
+                    int cell = (y / 16) * 4 + (x / 16);
+                    vector[60 + cell] += colorFamily(hue, saturation, brightness) + 1;
+                }
+                vector[36 + Math.min(7, (int) Math.floor(saturation * 8))] += colored ? 0.7 : 0.05;
+                vector[44 + Math.min(7, (int) Math.floor(brightness * 8))] += colored ? 0.55 : 0.04;
+                vector[52 + colorFamily(hue, saturation, brightness)] += colored ? 1.4 : 0.08;
+
+                int cell = (y / 16) * 4 + (x / 16);
                 double redDominance = Math.max(0, red - Math.max(green, blue)) / 255.0;
-                vector[48 + cell] += colorfulness * (0.35 + saturation) + redDominance * 0.7;
+                double blueDominance = Math.max(0, blue - Math.max(red, green)) / 255.0;
+                vector[76 + cell] += colorfulness * (0.25 + saturation) + redDominance * 0.65 + blueDominance * 0.65;
+                if (darkPixels > 0 && brightness < 0.22) {
+                    vector[92 + Math.min(3, cell / 4)] += 0.4;
+                }
             }
         }
 
         double norm = Math.sqrt(Arrays.stream(vector).map(value -> value * value).sum());
         double divisor = norm == 0 ? 1 : norm;
-        return Arrays.stream(vector)
+        List<Double> embedding = Arrays.stream(vector)
             .map(value -> value / divisor)
             .boxed()
             .toList();
+        double neutralRatio = neutralPixels / (double) (SAMPLE_SIZE * SAMPLE_SIZE);
+        double redRatio = coloredPixels == 0 ? 0 : redPixels / (double) coloredPixels;
+        double blueRatio = coloredPixels == 0 ? 0 : bluePixels / (double) coloredPixels;
+        double darkRatio = darkPixels / (double) (SAMPLE_SIZE * SAMPLE_SIZE);
+        boolean redDocumentLike = neutralRatio > 0.78
+            && coloredPixels > 80
+            && redRatio > 0.42
+            && blueRatio < 0.18
+            && darkRatio < 0.22;
+        return new SignatureResult(embedding, !redDocumentLike, redDocumentLike ? "RED_DOCUMENT_LIKE" : "");
     }
 
     private BufferedImage decodeImage(byte[] bytes) {
@@ -212,11 +248,13 @@ public class ImageEmbeddingController {
         return 7;
     }
 
-    private Map<String, Object> response(List<Double> embedding) {
+    private Map<String, Object> response(SignatureResult result) {
         return Map.of(
-            "embedding", embedding,
+            "embedding", result.embedding(),
             "dimensions", VECTOR_SIZE,
-            "model", MODEL_NAME
+            "model", MODEL_NAME,
+            "indexable", result.indexable(),
+            "rejectionReason", result.rejectionReason()
         );
     }
 
@@ -225,5 +263,8 @@ public class ImageEmbeddingController {
     }
 
     public record ImageUrlRequest(String imageUrl) {
+    }
+
+    private record SignatureResult(List<Double> embedding, boolean indexable, String rejectionReason) {
     }
 }

@@ -33,15 +33,17 @@ public class ProductRepository {
     private static final BigDecimal MAX_PRICE = new BigDecimal("99999.99");
 
     private final JdbcClient jdbcClient;
+    private final ProductSearchCodeGenerator searchCodeGenerator;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public ProductRepository(JdbcClient jdbcClient) {
+    public ProductRepository(JdbcClient jdbcClient, ProductSearchCodeGenerator searchCodeGenerator) {
         this.jdbcClient = jdbcClient;
+        this.searchCodeGenerator = searchCodeGenerator;
     }
 
     public List<Product> findAll() {
         return jdbcClient.sql("""
-            SELECT id, product_code, sku_code, sku_barcode, pinyin_code, pinyin_full, initial_code, product_name, category_name, brand_name, sku_name, sku_status, unit,
+            SELECT id, product_code, sku_code, sku_barcode, pinyin_code, pinyin_full, initial_code, product_name, category_name, brand_name, attribute_template_id, custom_attributes_json, sku_name, sku_status, unit,
                    quote_type, sale_mode, sale_unit, sale_unit_ratio, main_image_url, detail_content, sale_price, stock_quantity,
                    min_order_quantity, sku_list_json, tier_prices_json, sale_status, created_at, updated_at
             FROM products
@@ -53,7 +55,7 @@ public class ProductRepository {
 
     public Optional<Product> findById(Long id) {
         return jdbcClient.sql("""
-            SELECT id, product_code, sku_code, sku_barcode, pinyin_code, pinyin_full, initial_code, product_name, category_name, brand_name, sku_name, sku_status, unit,
+            SELECT id, product_code, sku_code, sku_barcode, pinyin_code, pinyin_full, initial_code, product_name, category_name, brand_name, attribute_template_id, custom_attributes_json, sku_name, sku_status, unit,
                    quote_type, sale_mode, sale_unit, sale_unit_ratio, main_image_url, detail_content, sale_price, stock_quantity,
                    min_order_quantity, sku_list_json, tier_prices_json, sale_status, created_at, updated_at
             FROM products
@@ -95,8 +97,8 @@ public class ProductRepository {
         String text = clean(keyword, "").toLowerCase();
         String likeKeyword = "%" + text + "%";
         return jdbcClient.sql("""
-            SELECT id, product_code, sku_code, sku_barcode, pinyin_code, pinyin_full, initial_code, product_name, category_name, brand_name, sku_name, sku_status, unit,
-                   quote_type, sale_mode, sale_unit, sale_unit_ratio, main_image_url, detail_content, sale_price, stock_quantity,
+            SELECT id, product_code, sku_code, sku_barcode, pinyin_code, pinyin_full, initial_code, product_name, category_name, brand_name, attribute_template_id, custom_attributes_json, sku_name, sku_status, unit,
+                   quote_type, sale_mode, sale_unit, sale_unit_ratio, main_image_url, NULL AS detail_content, sale_price, stock_quantity,
                    min_order_quantity, sku_list_json, tier_prices_json, sale_status, created_at, updated_at
             FROM products
             WHERE sale_status = 'ON_SALE'
@@ -130,7 +132,7 @@ public class ProductRepository {
         int safeLimit = Math.max(1, Math.min(limit, 5));
         String likeKeyword = "%" + text + "%";
         return jdbcClient.sql("""
-            SELECT id, product_code, sku_code, sku_barcode, pinyin_code, pinyin_full, initial_code, product_name, category_name, brand_name, sku_name, sku_status, unit,
+            SELECT id, product_code, sku_code, sku_barcode, pinyin_code, pinyin_full, initial_code, product_name, category_name, brand_name, attribute_template_id, custom_attributes_json, sku_name, sku_status, unit,
                    quote_type, sale_mode, sale_unit, sale_unit_ratio, main_image_url, detail_content, sale_price, stock_quantity,
                    min_order_quantity, sku_list_json, tier_prices_json, sale_status, created_at, updated_at
             FROM products
@@ -240,15 +242,16 @@ public class ProductRepository {
 
     public Product create(CreateProductRequest request, String productCode, String skuCode) {
         ProductPayload payload = normalizePayload(request, skuCode, "ON_SALE");
+        ProductSearchCodeGenerator.SearchCodes searchCodes = searchCodeGenerator.generate(payload.productName());
         KeyHolder keyHolder = new GeneratedKeyHolder();
         jdbcClient.sql("""
             INSERT INTO products (
-                product_code, sku_code, sku_barcode, product_name, category_name, brand_name, sku_name, sku_status, unit,
+                product_code, sku_code, sku_barcode, pinyin_code, pinyin_full, initial_code, product_name, category_name, brand_name, attribute_template_id, custom_attributes_json, sku_name, sku_status, unit,
                 quote_type, sale_mode, sale_unit, sale_unit_ratio, main_image_url, detail_content, sale_price, stock_quantity,
                 min_order_quantity, sku_list_json, tier_prices_json, sale_status
             )
             VALUES (
-                :productCode, :skuCode, :skuBarcode, :productName, :categoryName, :brandName, :skuName, :skuStatus, :unit,
+                :productCode, :skuCode, :skuBarcode, :pinyinCode, :pinyinFull, :initialCode, :productName, :categoryName, :brandName, :attributeTemplateId, :customAttributesJson, :skuName, :skuStatus, :unit,
                 :quoteType, :saleMode, :saleUnit, :saleUnitRatio, :mainImageUrl, :detailContent, :salePrice, :stockQuantity,
                 :minOrderQuantity, :skuListJson, :tierPricesJson, :saleStatus
             )
@@ -256,9 +259,14 @@ public class ProductRepository {
             .param("productCode", productCode)
             .param("skuCode", payload.skuCode())
             .param("skuBarcode", payload.skuBarcode())
+            .param("pinyinCode", searchCodes.pinyinCode())
+            .param("pinyinFull", searchCodes.pinyinFull())
+            .param("initialCode", searchCodes.initialCode())
             .param("productName", payload.productName())
             .param("categoryName", payload.categoryName())
             .param("brandName", payload.brandName())
+            .param("attributeTemplateId", payload.attributeTemplateId())
+            .param("customAttributesJson", payload.customAttributesJson())
             .param("skuName", payload.skuName())
             .param("skuStatus", payload.skuStatus())
             .param("unit", payload.unit())
@@ -283,11 +291,17 @@ public class ProductRepository {
         Product existing = findById(productId)
             .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "商品不存在"));
         ProductPayload payload = normalizePayload(request, existing.skuCode(), existing.saleStatus());
+        ProductSearchCodeGenerator.SearchCodes searchCodes = searchCodeGenerator.generate(payload.productName());
         jdbcClient.sql("""
             UPDATE products
             SET product_name = :productName,
+                pinyin_code = :pinyinCode,
+                pinyin_full = :pinyinFull,
+                initial_code = :initialCode,
                 category_name = :categoryName,
                 brand_name = :brandName,
+                attribute_template_id = :attributeTemplateId,
+                custom_attributes_json = :customAttributesJson,
                 sku_code = :skuCode,
                 sku_barcode = :skuBarcode,
                 sku_name = :skuName,
@@ -309,8 +323,13 @@ public class ProductRepository {
             """)
             .param("productId", productId)
             .param("productName", payload.productName())
+            .param("pinyinCode", searchCodes.pinyinCode())
+            .param("pinyinFull", searchCodes.pinyinFull())
+            .param("initialCode", searchCodes.initialCode())
             .param("categoryName", payload.categoryName())
             .param("brandName", payload.brandName())
+            .param("attributeTemplateId", payload.attributeTemplateId())
+            .param("customAttributesJson", payload.customAttributesJson())
             .param("skuCode", payload.skuCode())
             .param("skuBarcode", payload.skuBarcode())
             .param("skuName", payload.skuName())
@@ -383,6 +402,8 @@ public class ProductRepository {
             rs.getString("product_name"),
             rs.getString("category_name"),
             rs.getString("brand_name"),
+            rs.getObject("attribute_template_id", Long.class),
+            rs.getString("custom_attributes_json"),
             rs.getString("sku_name"),
             rs.getString("sku_status"),
             rs.getString("unit"),
@@ -449,6 +470,8 @@ public class ProductRepository {
             unit,
             clean(request.categoryName(), "后台商品"),
             clean(request.brandName(), "B2B"),
+            normalizeAttributeTemplateId(request.attributeTemplateId()),
+            normalizeCustomAttributes(request.attributeTemplateId(), request.customAttributes()),
             quoteType,
             saleModePayload.saleMode(),
             saleModePayload.saleUnit(),
@@ -462,6 +485,69 @@ public class ProductRepository {
             json(tiers),
             normalizeSaleStatus(request.saleStatus(), fallbackSaleStatus)
         );
+    }
+
+    private Long normalizeAttributeTemplateId(Long templateId) {
+        if (templateId == null) return null;
+        Integer count = jdbcClient.sql("SELECT COUNT(*) FROM product_attribute_templates WHERE id = :id")
+            .param("id", templateId)
+            .query(Integer.class)
+            .single();
+        if (count == null || count == 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "所选商品属性模板不存在");
+        }
+        return templateId;
+    }
+
+    private String normalizeCustomAttributes(Long templateId, List<Map<String, Object>> requestedAttributes) {
+        if (templateId == null) return "[]";
+        String fieldsJson = jdbcClient.sql("SELECT fields_json FROM product_attribute_templates WHERE id = :id")
+            .param("id", templateId)
+            .query(String.class)
+            .optional()
+            .orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST, "所选商品属性模板不存在"));
+        List<Map<String, Object>> templateFields = parseObjectRows(fieldsJson);
+        Map<String, Map<String, Object>> allowedFields = new LinkedHashMap<>();
+        for (Map<String, Object> field : templateFields) {
+            String fieldId = clean(field.get("id"), "");
+            String name = clean(field.get("name"), "");
+            if (!fieldId.isBlank() && !name.isBlank()) allowedFields.put(fieldId, field);
+        }
+        List<Map<String, Object>> source = requestedAttributes == null ? List.of() : requestedAttributes;
+        if (source.size() > 10) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "商品自定义属性最多保留10个字段");
+        }
+        List<Map<String, Object>> normalized = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        for (Map<String, Object> attribute : source) {
+            String fieldId = clean(attribute.get("fieldId"), clean(attribute.get("id"), ""));
+            Map<String, Object> templateField = allowedFields.get(fieldId);
+            if (templateField == null || !seen.add(fieldId)) continue;
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("fieldId", fieldId);
+            row.put("name", clean(templateField.get("name"), ""));
+            row.put("value", clean(attribute.get("value"), ""));
+            normalized.add(row);
+        }
+        return json(normalized);
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> parseObjectRows(String raw) {
+        if (raw == null || raw.isBlank()) return List.of();
+        try {
+            Object parsed = objectMapper.readValue(raw, Object.class);
+            if (!(parsed instanceof List<?> values)) return List.of();
+            List<Map<String, Object>> rows = new ArrayList<>();
+            for (Object value : values) {
+                if (value instanceof Map<?, ?> map) {
+                    rows.add((Map<String, Object>) map);
+                }
+            }
+            return rows;
+        } catch (JsonProcessingException exception) {
+            return List.of();
+        }
     }
 
     private List<Map<String, Object>> normalizeSkuRows(CreateProductRequest request, String fallbackSkuCode) {
@@ -491,6 +577,7 @@ public class ProductRepository {
             normalized.put("minOrderQuantity", validateMinOrderQuantity(integer(row.get("minOrderQuantity"), request.minOrderQuantity()), "最小起订量"));
             normalized.put("skuStatus", normalizeSkuStatus(row.get("skuStatus")));
             normalized.put("skuImageUrl", clean(row.get("skuImageUrl"), ""));
+            normalized.put("specImageGroupId", clean(row.get("specImageGroupId"), ""));
             normalized.put("specKey", clean(row.get("specKey"), ""));
             normalized.put("specValues", specValues);
 
@@ -742,6 +829,8 @@ public class ProductRepository {
         String unit,
         String categoryName,
         String brandName,
+        Long attributeTemplateId,
+        String customAttributesJson,
         String quoteType,
         String saleMode,
         String saleUnit,

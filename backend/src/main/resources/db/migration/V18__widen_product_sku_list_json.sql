@@ -1,0 +1,2 @@
+ALTER TABLE products
+  MODIFY COLUMN sku_list_json LONGTEXT NULL;

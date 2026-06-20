@@ -7,14 +7,18 @@ import com.erp.b2b.product.Product;
 import com.erp.b2b.product.ProductRepository;
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import org.springframework.http.HttpStatus;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class OrderService {
+    private static final int UNPAID_ORDER_TIMEOUT_MINUTES = 15;
+
     private final CustomerRepository customerRepository;
     private final ProductRepository productRepository;
     private final OrderRepository orderRepository;
@@ -25,11 +29,15 @@ public class OrderService {
         this.orderRepository = orderRepository;
     }
 
+    @Transactional
     public List<SalesOrder> listOrders() {
+        cancelExpiredUnpaidOrders();
         return orderRepository.findAll();
     }
 
+    @Transactional
     public SalesOrder getOrder(Long id) {
+        cancelExpiredUnpaidOrders();
         return orderRepository.findById(id)
             .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Order not found"));
     }
@@ -110,6 +118,7 @@ public class OrderService {
 
     @Transactional
     public SalesOrder markPaid(Long id) {
+        cancelExpiredUnpaidOrders();
         SalesOrder order = getOrder(id);
         if (!List.of("WAIT_PAY", "WAIT_CONFIRM").contains(order.orderStatus())) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "Only unpaid orders can be marked paid");
@@ -139,6 +148,45 @@ public class OrderService {
         String nextPaymentStatus = "SHIP_AFTER_PAY".equals(order.paymentMethod()) ? "UNPAID" : order.paymentStatus();
         orderRepository.updateStatus(id, nextOrderStatus, nextPaymentStatus, "RECEIVED");
         return getOrder(id);
+    }
+
+    @Transactional
+    public SalesOrder cancelUnpaidOrder(Long id) {
+        SalesOrder order = getOrder(id);
+        if (!"WAIT_PAY".equals(order.orderStatus()) || !"UNPAID".equals(order.paymentStatus())) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Only unpaid orders can be cancelled");
+        }
+        cancelOrder(order, "Unpaid order cancelled");
+        return getOrder(id);
+    }
+
+    @Scheduled(fixedDelay = 60_000)
+    @Transactional
+    public void cancelExpiredUnpaidOrders() {
+        LocalDateTime expireBefore = LocalDateTime.now().minusMinutes(UNPAID_ORDER_TIMEOUT_MINUTES);
+        List<SalesOrder> expiredOrders = orderRepository.findExpiredUnpaidOrders(expireBefore);
+        for (SalesOrder order : expiredOrders) {
+            cancelOrder(order, "Unpaid order auto cancelled after 15 minutes");
+        }
+    }
+
+    private void cancelOrder(SalesOrder order, String remark) {
+        for (SalesOrderItem item : order.items()) {
+            int updated = productRepository.addStock(item.productId(), item.quantity());
+            if (updated != 1) {
+                throw new ApiException(HttpStatus.CONFLICT, "Failed to release stock for order " + order.orderNo());
+            }
+            Product latestProduct = productRepository.findById(item.productId()).orElseThrow();
+            orderRepository.insertInventoryMovement(
+                item.productId(),
+                "ORDER_CANCEL_RELEASE",
+                item.quantity(),
+                latestProduct.stockQuantity(),
+                order.orderNo(),
+                remark
+            );
+        }
+        orderRepository.updateStatus(order.id(), "CANCELLED", "UNPAID", "CANCELLED");
     }
 
     private void validateProductForOrder(CreateOrderItemRequest item, Product product) {

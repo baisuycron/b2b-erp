@@ -39,6 +39,8 @@ public record CreateProductRequest(
     String skuBarcode,
     String categoryName,
     String brandName,
+    Long attributeTemplateId,
+    List<Map<String, Object>> customAttributes,
     String quoteType,
     String saleMode,
     String saleUnit,

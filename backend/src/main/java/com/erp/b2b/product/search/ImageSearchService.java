@@ -66,14 +66,29 @@ public class ImageSearchService {
 
     public Map<String, Object> rebuildVectors(Integer limit, boolean full) {
         ensureConfigured();
-        int queued = imageVectorRepository.syncMissingFromProducts(productRepository.findAll());
-        int reset = full ? imageVectorRepository.resetAllToPending() : 0;
+        int queued;
+        int reset;
+        if (full) {
+            deleteVectorCollection();
+            queued = imageVectorRepository.replaceAllFromProducts(productRepository.findAll());
+            reset = queued;
+        } else {
+            queued = imageVectorRepository.syncMissingFromProducts(productRepository.findAll());
+            reset = 0;
+        }
         int max = limit == null || limit <= 0 ? 100 : Math.min(limit, 500);
         int success = 0;
         int failed = 0;
+        int skipped = 0;
         for (ProductImageVector image : imageVectorRepository.listPending(max)) {
             try {
-                List<Double> embedding = embedImageUrl(image.imageUrl());
+                EmbeddingResponse embeddingResponse = embedImageUrl(image.imageUrl());
+                if (Boolean.FALSE.equals(embeddingResponse.indexable())) {
+                    imageVectorRepository.markFailed(image.id());
+                    skipped += 1;
+                    continue;
+                }
+                List<Double> embedding = requireEmbedding(embeddingResponse);
                 ensureVectorCollection(embedding.size());
                 Long vectorId = image.id();
                 upsertVector(vectorId, embedding, image);
@@ -84,7 +99,7 @@ public class ImageSearchService {
                 failed += 1;
             }
         }
-        return Map.of("success", success, "failed", failed, "limit", max, "queued", queued, "reset", reset);
+        return Map.of("success", success, "failed", failed, "skipped", skipped, "limit", max, "queued", queued, "reset", reset);
     }
 
     public void syncProductImages(Product product) {
@@ -122,15 +137,14 @@ public class ImageSearchService {
         return requireEmbedding(response);
     }
 
-    private List<Double> embedImageUrl(String imageUrl) {
+    private EmbeddingResponse embedImageUrl(String imageUrl) {
         // TODO: production embedding service should fetch private object storage through signed URLs.
-        EmbeddingResponse response = restClient.post()
+        return restClient.post()
             .uri(trimRight(properties.embeddingServiceUrl()) + "/embed/image-url")
             .contentType(MediaType.APPLICATION_JSON)
             .body(Map.of("imageUrl", imageUrl))
             .retrieve()
             .body(EmbeddingResponse.class);
-        return requireEmbedding(response);
     }
 
     private List<Double> requireEmbedding(EmbeddingResponse response) {
@@ -175,6 +189,26 @@ public class ImageSearchService {
             .retrieve()
             .toBodilessEntity();
         collectionReady = true;
+    }
+
+    private void deleteVectorCollection() {
+        collectionReady = false;
+        String collectionUrl = trimRight(properties.qdrantUrl()) + "/collections/" + properties.collection();
+        try {
+            restClient.delete()
+                .uri(collectionUrl)
+                .headers(headers -> {
+                    if (properties.qdrantApiKey() != null && !properties.qdrantApiKey().isBlank()) {
+                        headers.set("api-key", properties.qdrantApiKey());
+                    }
+                })
+                .retrieve()
+                .toBodilessEntity();
+        } catch (RestClientResponseException ex) {
+            if (ex.getStatusCode().value() != 404) {
+                throw ex;
+            }
+        }
     }
 
     private List<VectorHit> searchVectorDatabase(List<Double> embedding, Long categoryId, Long brandId, int topK) {
@@ -285,7 +319,7 @@ public class ImageSearchService {
             results.add(new ProductImageSearchResult(
                 product.id(),
                 product.productName(),
-                hit.imageUrl().isBlank() ? product.mainImageUrl() : hit.imageUrl(),
+                product.mainImageUrl(),
                 product.salePrice() == null ? BigDecimal.ZERO : product.salePrice(),
                 product.categoryName(),
                 product.brandName(),
@@ -323,7 +357,7 @@ public class ImageSearchService {
         }
     }
 
-    private record EmbeddingResponse(List<Double> embedding) {
+    private record EmbeddingResponse(List<Double> embedding, Boolean indexable, String rejectionReason) {
     }
 
     private record VectorHit(Long productId, double similarity, String imageUrl) {

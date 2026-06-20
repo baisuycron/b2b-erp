@@ -654,12 +654,20 @@
     const order = selectedOrder() || (typeof ordersData !== "undefined" ? ordersData[0] : null);
     if (!order) return `<div class="card"><div class="empty">暂无订单详情</div></div>`;
     const paid = order.payLabel === "已支付";
-    return `
-      <div class="order-steps">
+    const steps = order.statusKey === "cancelled" ? `
+        <div class="step active">1. 已下单</div>
+        <div class="step active">2. 已取消</div>
+        <div class="step">3. 待发货</div>
+        <div class="step">4. 待收货</div>
+      ` : `
         <div class="step active">1. 已下单</div>
         <div class="step ${paid || order.statusKey === "pendingPayment" ? "active" : ""}">2. ${paid ? "已支付" : "待支付"}</div>
         <div class="step ${["pendingShipment","pendingReceipt","completed"].includes(order.statusKey) ? "active" : ""}">3. ${["pendingReceipt","completed"].includes(order.statusKey) ? "已发货" : "待发货"}</div>
         <div class="step ${["pendingReceipt","completed"].includes(order.statusKey) ? "active" : ""}">4. ${order.statusKey === "completed" ? "已完成" : "待收货"}</div>
+      `;
+    return `
+      <div class="order-steps">
+        ${steps}
       </div>
       <div class="card">
         <div class="card-header">
@@ -699,6 +707,7 @@
   }
 
   function renderPcOrderHeaderActions(order) {
+    if (order.statusKey === "cancelled") return "";
     if (order.statusKey === "pendingPayment") return `<button class="btn btn-primary" onclick="goPay('${order.id}')">去支付</button>`;
     if (order.statusKey === "pendingReceipt") {
       return `<button class="btn" onclick="openRefundApply()">申请售后</button><button class="btn btn-primary" onclick="confirmReceipt('${order.id}')">确认收货</button>`;
@@ -783,7 +792,7 @@
       <div style="display:flex;gap:10px">
         ${order.key === "pendingPayment" ? `<button class="btn btn-primary" style="flex:1" onclick="goPay('${order.id}')">去支付</button>` : ""}
         ${order.key === "pendingReceipt" ? `<button class="btn btn-primary" style="flex:1" onclick="confirmReceipt('${order.id}')">确认收货</button>` : ""}
-        <button class="btn" style="flex:1" onclick="go('aftersaleApply')">申请售后</button>
+        ${order.key !== "cancelled" ? `<button class="btn" style="flex:1" onclick="go('aftersaleApply')">申请售后</button>` : ""}
         ${order.key === "completed" ? `<button class="btn btn-primary" style="flex:1" onclick="go('invoiceApply')">申请开票</button>` : ""}
       </div>
     `;
@@ -1231,7 +1240,6 @@
     hydrateAddresses(),
     hydrateProfile()
   ]).then(() => {
-    toast("已连接后端商城接口");
     repaint(isMini ? currentPage : "home");
   }).catch(error => toast(error.message));
 })();

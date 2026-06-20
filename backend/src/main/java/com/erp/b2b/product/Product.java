@@ -14,6 +14,8 @@ public record Product(
     String productName,
     String categoryName,
     String brandName,
+    Long attributeTemplateId,
+    String customAttributesJson,
     String skuName,
     String skuStatus,
     String unit,

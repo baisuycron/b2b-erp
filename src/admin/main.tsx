@@ -1,7 +1,6 @@
 ﻿// @ts-nocheck
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import * as echarts from "echarts";
 import {
   App as AntApp,
   Button,
@@ -39,6 +38,8 @@ import {
   BarcodeOutlined,
   CaretDownOutlined,
   CaretUpOutlined,
+  CheckOutlined,
+  CloseOutlined,
   CopyOutlined,
   DashboardOutlined,
   DeleteOutlined,
@@ -67,6 +68,7 @@ import {
 import "antd/dist/reset.css";
 import zhCN from "antd/locale/zh_CN";
 import "../shared/styles.css";
+import GlobalLoadingMask from "../shared/GlobalLoadingMask";
 import ProductSpecEditor from "./ProductSpecEditor";
 import RichTextEditor from "./RichTextEditor";
 import {
@@ -119,6 +121,7 @@ type PageKey =
   | "product-list"
   | "product-category"
   | "product-brand"
+  | "product-attribute-template"
   | "supplier"
   | "purchase-order"
   | "purchase-inbound"
@@ -149,9 +152,10 @@ function normalizePageKey(page?: PageKey | null): PageKey {
 
 const pageTitles: Record<PageKey, [string, string]> = {
   dashboard: ["首页工作台", "汇总订单、支付、待办和关键业务数据。"],
-  "product-list": ["商品档案", "管理商品主图、详情图文、SKU、报价方式、上下架和库存。"],
+  "product-list": ["商品档案", "管理商品图片、详情图文、SKU、报价方式、上下架和库存。"],
   "product-category": ["商品分类", "用于商品建档和商城分类导航。"],
   "product-brand": ["商品品牌", "用于商品建档和商城品牌筛选。"],
+  "product-attribute-template": ["商品属性模板", "维护商品档案可关联的自定义属性字段。"],
   supplier: ["供应商管理", "维护采购供应商基础资料。"],
   "purchase-order": ["采购订单", "发起采购单并跟踪入库状态。"],
   "purchase-inbound": ["采购入库记录", "查看采购入库明细和状态。"],
@@ -175,6 +179,7 @@ const endpoints: Record<string, string> = {
   products: "/api/admin/products",
   categories: "/api/admin/product-categories",
   brands: "/api/admin/product-brands",
+  attributeTemplates: "/api/admin/product-attribute-templates",
   suppliers: "/api/admin/suppliers",
   purchaseOrders: "/api/admin/purchase-orders",
   purchaseStockIns: "/api/admin/purchase-stock-ins",
@@ -194,10 +199,11 @@ const endpoints: Record<string, string> = {
 };
 
 const pageLoads: Record<PageKey, string[]> = {
-  dashboard: ["summary", "orders", "purchaseOrders", "inventory", "afterSales", "invoices", "payments"],
+  dashboard: ["summary", "orders", "purchaseOrders", "inventory", "afterSales", "invoices", "payments", "refunds", "buyers"],
   "product-list": ["products", "categories", "brands"],
-  "product-category": ["categories", "products"],
+  "product-category": ["categories"],
   "product-brand": ["brands"],
+  "product-attribute-template": ["attributeTemplates"],
   supplier: ["suppliers"],
   "purchase-order": ["purchaseOrders", "products", "suppliers"],
   "purchase-inbound": ["purchaseStockIns"],
@@ -216,11 +222,19 @@ const pageLoads: Record<PageKey, string[]> = {
   "system-config": ["parameters"]
 };
 
+const adminPageCacheTtl = 30_000;
+const productModulePrefetchKeys = Array.from(new Set([
+  ...pageLoads["product-list"],
+  ...pageLoads["product-category"],
+  "attributeTemplates"
+]));
+
 const pagePermissionKeys: Record<PageKey, string[]> = {
   dashboard: [dashboardPermissionKey],
   "product-list": ["goods:product-list"],
   "product-category": ["goods:product-category"],
   "product-brand": ["goods:product-brand"],
+  "product-attribute-template": ["goods:product-attribute-template"],
   supplier: ["purchase:supplier"],
   "purchase-order": ["purchase:purchase-order"],
   "purchase-inbound": ["purchase:purchase-inbound"],
@@ -276,7 +290,7 @@ function renderProductNameCell(value: any, item: AnyRecord) {
   );
 }
 
-const tablePageSizeOptions = ["10", "20", "50", "100", "200"];
+const tablePageSizeOptions = ["20", "50", "100", "200"];
 const managementListTableScrollY = "calc(100vh - 430px)";
 const maxProductNameLength = 30;
 const maxUnitLength = 10;
@@ -288,14 +302,32 @@ const saleModeOptions = [
   { value: "NORMAL", label: "普通售卖" },
   { value: "BATCH", label: "批量售卖" }
 ];
-const saleUnitOptions = ["箱", "包", "盒", "提", "袋", "桶", "扎", "板"].map(value => ({ value, label: value }));
+const defaultSaleUnitValues = ["箱", "包", "盒", "提", "袋", "桶", "扎", "板"];
+const saleUnitStorageKey = "b2b_custom_sale_unit_options";
+
+function readCustomSaleUnitValues() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(saleUnitStorageKey) || "[]");
+    return Array.isArray(parsed)
+      ? parsed.map(value => String(value || "").trim()).filter(Boolean)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveCustomSaleUnitValues(values: string[]) {
+  const next = Array.from(new Set(values.map(value => String(value || "").trim()).filter(Boolean)));
+  localStorage.setItem(saleUnitStorageKey, JSON.stringify(next));
+  return next;
+}
 
 function tablePagination() {
   return {
     position: ["bottomCenter"],
-    showSizeChanger: true,
+    showSizeChanger: { showSearch: false },
     pageSizeOptions: tablePageSizeOptions,
-    defaultPageSize: 10,
+    defaultPageSize: 20,
     showTotal: (total: number) => `\u5171 ${total} \u6761`
   };
 }
@@ -386,25 +418,74 @@ function AdminRoot() {
   });
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<Record<string, any>>({});
-  const [drawer, setDrawer] = useState<{ title: string; body: React.ReactNode; width?: number | string; className?: string } | null>(null);
+  const dataRef = useRef<Record<string, any>>({});
+  const loadedAtRef = useRef<Map<string, number>>(new Map());
+  const inflightRequestsRef = useRef<Map<string, Promise<any>>>(new Map());
+  const [drawer, setDrawer] = useState<{ title: React.ReactNode; body: React.ReactNode; width?: number | string; className?: string; onClose?: () => void } | null>(null);
 
-  const loadKeys = async (keys: string[]) => {
-    setLoading(true);
+  const updateData: React.Dispatch<React.SetStateAction<Record<string, any>>> = updater => {
+    setData(prev => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      dataRef.current = next;
+      return next;
+    });
+  };
+
+  const fetchDataKey = (key: string, force: boolean) => {
+    const currentRequest = inflightRequestsRef.current.get(key);
+    if (currentRequest && !force) return currentRequest;
+    const nextRequest = request(endpoints[key]).finally(() => {
+      if (inflightRequestsRef.current.get(key) === nextRequest) {
+        inflightRequestsRef.current.delete(key);
+      }
+    });
+    inflightRequestsRef.current.set(key, nextRequest);
+    return nextRequest;
+  };
+
+  const fetchDataKeys = async (
+    keys: string[],
+    { force = false, showLoading }: { force?: boolean; showLoading?: boolean } = {}
+  ) => {
+    const now = Date.now();
+    const uniqueKeys = Array.from(new Set(keys));
+    const keysToLoad = force
+      ? uniqueKeys
+      : uniqueKeys.filter(key => {
+        const hasCachedValue = Object.prototype.hasOwnProperty.call(dataRef.current, key);
+        const loadedAt = loadedAtRef.current.get(key) || 0;
+        return !hasCachedValue || now - loadedAt >= adminPageCacheTtl;
+      });
+    if (!keysToLoad.length) return;
+    const hasCachedPage = keysToLoad.every(key => Object.prototype.hasOwnProperty.call(dataRef.current, key));
+    const shouldShowLoading = showLoading ?? !hasCachedPage;
+    if (shouldShowLoading) setLoading(true);
     try {
-      const entries = await Promise.all(keys.map(async key => [key, await request(endpoints[key])] as const));
-      setData(prev => ({ ...prev, ...Object.fromEntries(entries) }));
+      const entries = await Promise.all(keysToLoad.map(async key => [key, await fetchDataKey(key, force)] as const));
+      const loadedAt = Date.now();
+      entries.forEach(([key]) => loadedAtRef.current.set(key, loadedAt));
+      updateData(prev => ({ ...prev, ...Object.fromEntries(entries) }));
     } catch (error: any) {
       message.error(error.message);
     } finally {
-      setLoading(false);
+      if (shouldShowLoading) setLoading(false);
     }
   };
 
-  const reload = () => loadKeys(pageLoads[page]);
+  const loadKeys = (keys: string[]) => fetchDataKeys(keys, { force: true, showLoading: true });
+  const reload = () => fetchDataKeys(pageLoads[page], { force: true, showLoading: true });
 
   useEffect(() => {
-    if (loggedIn) reload();
+    if (loggedIn) void fetchDataKeys(pageLoads[page]);
   }, [page, loggedIn]);
+
+  useEffect(() => {
+    if (!loggedIn) return;
+    const timer = window.setTimeout(() => {
+      void fetchDataKeys(productModulePrefetchKeys, { showLoading: false });
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [loggedIn]);
 
   const go = (key: PageKey) => {
     const nextKey = normalizePageKey(key);
@@ -437,7 +518,8 @@ function AdminRoot() {
       children: [
         { key: "product-list", label: "商品档案" },
         { key: "product-category", label: "商品分类" },
-        { key: "product-brand", label: "商品品牌" }
+        { key: "product-brand", label: "商品品牌" },
+        { key: "product-attribute-template", label: "商品属性模板" }
       ]
     },
     {
@@ -513,7 +595,7 @@ function AdminRoot() {
     reload,
     message,
     loadKeys,
-    setData,
+    setData: updateData,
     go
   };
 
@@ -522,7 +604,7 @@ function AdminRoot() {
       <Sider className="admin-sider" collapsible collapsed={collapsed} onCollapse={setCollapsed} width={224} theme="dark">
         <div style={{ height: 64, display: "flex", alignItems: "center", gap: 10, padding: "0 18px", color: "#fff" }}>
           <div className="admin-logo" style={{ width: 38, height: 38, fontSize: 18 }}>B</div>
-          {!collapsed && <b>B2B ERP</b>}
+          {!collapsed && <b style={{ whiteSpace: "nowrap" }}>夏至 · 商城管理系统</b>}
         </div>
         <Menu className="admin-menu" theme="dark" mode="inline" selectedKeys={[page]} items={visibleMenuItems} onClick={({ key }) => go(key as PageKey)} />
       </Sider>
@@ -551,6 +633,10 @@ function AdminRoot() {
                 localStorage.removeItem(adminAccountKey);
                 localStorage.removeItem(adminPermissionKey);
                 localStorage.removeItem(adminSuperRoleKey);
+                dataRef.current = {};
+                loadedAtRef.current.clear();
+                inflightRequestsRef.current.clear();
+                updateData({});
                 setLoggedIn(false);
               }}
             >
@@ -560,18 +646,19 @@ function AdminRoot() {
         </Header>
         <Content className="admin-content">
           <div
-            className={`page-wrap ${page === "product-list" || page === "supplier" ? "page-wrap-product-list" : ""} ${page === "product-category" || page === "product-brand" ? "page-wrap-management-board" : ""}`}
+            className={`page-wrap ${page === "product-list" || page === "supplier" ? "page-wrap-product-list" : ""} ${page === "product-category" || page === "product-brand" || page === "product-attribute-template" ? "page-wrap-management-board" : ""}`}
           >
-            <PageRenderer page={page} ctx={ctx} loading={loading} />
+            <PageRenderer page={page} ctx={ctx} loading={false} />
           </div>
         </Content>
       </Layout>
+      <GlobalLoadingMask visible={loading} />
       <Drawer
         open={Boolean(drawer)}
         title={drawer?.title}
         width={drawer?.width || 760}
         className={drawer?.className}
-        onClose={() => setDrawer(null)}
+        onClose={() => drawer?.onClose ? drawer.onClose() : setDrawer(null)}
         destroyOnClose
       >
         {drawer?.body}
@@ -630,8 +717,8 @@ function Login({ onSuccess }: { onSuccess: () => void }) {
           <div className="admin-login-brand-inner">
             <div className="admin-logo">B</div>
             <div>
-              <div className="admin-login-brand-title">B2B ERP</div>
-              <div className="admin-login-brand-subtitle">后台管理系统</div>
+              <div className="admin-login-brand-title">夏至</div>
+              <div className="admin-login-brand-subtitle">商城管理系统</div>
             </div>
           </div>
         </div>
@@ -698,7 +785,7 @@ function PageHeader({ page }: { page: PageKey }) {
 
 type Ctx = {
   data: Record<string, any>;
-  setDrawer: (drawer: { title: string; body: React.ReactNode; width?: number | string; className?: string } | null) => void;
+  setDrawer: (drawer: { title: React.ReactNode; body: React.ReactNode; width?: number | string; className?: string; onClose?: () => void } | null) => void;
   reload: () => void;
   message: any;
   loadKeys: (keys: string[]) => Promise<void>;
@@ -711,6 +798,7 @@ function PageRenderer({ page, ctx, loading }: { page: PageKey; ctx: Ctx; loading
   if (page === "product-list") return <ProductPage ctx={ctx} loading={loading} />;
   if (page === "product-category") return <CategoryPage ctx={ctx} loading={loading} />;
   if (page === "product-brand") return <BrandPage ctx={ctx} loading={loading} />;
+  if (page === "product-attribute-template") return <AttributeTemplatePage ctx={ctx} loading={loading} />;
   if (page === "supplier") return <SupplierPage ctx={ctx} loading={loading} />;
   if (page === "purchase-order") return <PurchaseOrderPage ctx={ctx} loading={loading} />;
   if (page === "purchase-inbound") return <SimpleTablePage loading={loading} rows={ctx.data.purchaseStockIns || []} columns={purchaseInboundColumns()} />;
@@ -752,9 +840,21 @@ function Dashboard({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
   const afterSales = ctx.data.afterSales || [];
   const invoices = ctx.data.invoices || [];
   const payments = ctx.data.payments || [];
-  const orderCount = Number(summary.todayOrders ?? summary.todayOrderCount ?? orders.length);
-  const paymentAmount = Number(summary.todayPaymentAmount ?? payments.reduce((sum: number, item: AnyRecord) => sum + Number(item.amount || 0), 0));
-  const saleableSkus = Number(summary.saleableSkus ?? (ctx.data.products || []).filter((item: AnyRecord) => item.saleStatus === "ON_SALE").length);
+  const refunds = ctx.data.refunds || [];
+  const buyers = ctx.data.buyers || [];
+  const todayText = new Date().toLocaleDateString("sv-SE");
+  const orderCount = Number(summary.todayOrders ?? summary.todayOrderCount ?? orders
+    .filter((item: AnyRecord) => String(item.createdAt || "").startsWith(todayText))
+    .length);
+  const paymentAmount = Number(summary.todayPaymentAmount ?? payments
+    .filter((item: AnyRecord) => String(item.paidAt || item.updatedAt || "").startsWith(todayText))
+    .reduce((sum: number, item: AnyRecord) => sum + Number(item.amount || 0), 0));
+  const refundAmount = Number(summary.todayRefundAmount ?? refunds
+    .filter((item: AnyRecord) => String(item.refundedAt || item.updatedAt || "").startsWith(todayText))
+    .reduce((sum: number, item: AnyRecord) => sum + Number(item.amount || item.refundAmount || 0), 0));
+  const newBuyerCount = Number(summary.todayNewBuyers ?? buyers
+    .filter((item: AnyRecord) => String(item.createdAt || "").startsWith(todayText))
+    .length);
   const stockWarning = Number(summary.stockWarning ?? inventory.filter((item: AnyRecord) => Number(item.availableQuantity ?? item.stockQuantity ?? 0) <= 0).length);
   const waitShip = orders.filter((x: AnyRecord) => x.orderStatus === "WAIT_SHIP").length;
   const waitPurchaseIn = purchaseOrders.filter((x: AnyRecord) => ["WAIT_IN", "WAIT_STOCK_IN", "PENDING", "CREATED"].includes(String(x.status))).length;
@@ -788,8 +888,8 @@ function Dashboard({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
       <div className="metric-grid">
         <MetricCard title="今日订单数" value={orderCount} onClick={() => ctx.go?.("order")} />
         <MetricCard title="今日支付金额" value={paymentAmount} prefix="¥" precision={2} onClick={() => ctx.go?.("finance-payment")} />
-        <MetricCard title="在售SKU" value={saleableSkus} onClick={() => ctx.go?.("product-list")} />
-        <MetricCard title="库存预警" value={stockWarning} onClick={() => ctx.go?.("stock-overview")} />
+        <MetricCard title="今日退款金额" value={refundAmount} prefix="¥" precision={2} onClick={() => ctx.go?.("finance-refund")} />
+        <MetricCard title="今日新增买家数" value={newBuyerCount} onClick={() => ctx.go?.("buyer")} />
       </div>
       {stockWarning > 0 ? (
         <Card styles={{ body: { padding: 14 } }}>
@@ -858,6 +958,7 @@ function dashboardShortcutOptions() {
     { key: "product-list", label: "商品档案", icon: <ShoppingOutlined /> },
     { key: "product-category", label: "商品分类", icon: <TagsOutlined /> },
     { key: "product-brand", label: "商品品牌", icon: <AppstoreOutlined /> },
+    { key: "product-attribute-template", label: "商品属性模板", icon: <TagsOutlined /> },
     { key: "supplier", label: "供应商管理", icon: <TeamOutlined /> },
     { key: "purchase-order", label: "采购订单", icon: <InboxOutlined /> },
     { key: "purchase-inbound", label: "采购入库", icon: <InboxOutlined /> },
@@ -905,11 +1006,17 @@ function DashboardTrend({ orders, payments, range, onRangeChange }: { orders: An
   const chartRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!chartRef.current) return;
-    const chart = echarts.init(chartRef.current);
+    let disposed = false;
+    let chart: any;
+    let observer: ResizeObserver | undefined;
+    const resize = () => chart?.resize();
     const labels = rows.map(row => row.label);
     const orderValues = rows.map(row => row.orders);
     const amountValues = rows.map(row => Number(row.amount || 0));
-    chart.setOption({
+    void import("echarts").then(echarts => {
+      if (disposed || !chartRef.current) return;
+      chart = echarts.init(chartRef.current);
+      chart.setOption({
       color: ["#4e7cff", "#22c55e"],
       tooltip: {
         trigger: "axis",
@@ -983,15 +1090,16 @@ function DashboardTrend({ orders, payments, range, onRangeChange }: { orders: An
           emphasis: { focus: "series" }
         }
       ]
+      });
+      window.addEventListener("resize", resize);
+      observer = new ResizeObserver(resize);
+      observer.observe(chartRef.current);
     });
-    const resize = () => chart.resize();
-    window.addEventListener("resize", resize);
-    const observer = new ResizeObserver(resize);
-    observer.observe(chartRef.current);
     return () => {
+      disposed = true;
       window.removeEventListener("resize", resize);
-      observer.disconnect();
-      chart.dispose();
+      observer?.disconnect();
+      chart?.dispose();
     };
   }, [rows]);
   const ranges = [
@@ -1280,15 +1388,15 @@ function collectCategoryNames(node?: AnyRecord) {
 const productColumnDefaults = [
   { key: "index", label: "序号", width: 72 },
   { key: "skuCode", label: "商品条码", width: 150 },
-  { key: "productCode", label: "商品代码", width: 150 },
+  { key: "productCode", label: "商品编码", width: 150 },
   { key: "productName", label: "商品名称", width: 260 },
   { key: "categoryName", label: "商品分类", width: 150 },
   { key: "saleStatus", label: "是否淘汰", width: 120 },
   { key: "skuName", label: "规格", width: 140 },
-  { key: "unit", label: "基本单位", width: 120 },
+  { key: "unit", label: "库存单位", width: 120 },
   { key: "brandName", label: "商品品牌", width: 140 },
   { key: "quoteType", label: "报价方式", width: 140 },
-  { key: "salePrice", label: "售价", width: 120 },
+  { key: "salePrice", label: "单价", width: 120 },
   { key: "stockQuantity", label: "库存", width: 100 }
 ];
 
@@ -1375,6 +1483,9 @@ function normalizeProductRecord(item?: AnyRecord) {
     productName: firstPresent(item.productName, item.product_name),
     categoryName: firstPresent(item.categoryName, item.category_name),
     brandName: firstPresent(item.brandName, item.brand_name),
+    attributeTemplateId: firstPresent(item.attributeTemplateId, item.attribute_template_id),
+    customAttributes: firstPresent(item.customAttributes, item.customAttributesJson, item.custom_attributes_json),
+    customAttributesJson: firstPresent(item.customAttributesJson, item.customAttributes, item.custom_attributes_json),
     skuName: firstPresent(item.skuName, item.sku_name),
     skuStatus: firstPresent(item.skuStatus, item.sku_status),
     unit: firstPresent(item.unit, item.baseUnit, item.base_unit),
@@ -1395,6 +1506,28 @@ function normalizeProductRecord(item?: AnyRecord) {
     updatedAt: firstPresent(item.updatedAt, item.updated_at),
     createdAt: firstPresent(item.createdAt, item.created_at)
   };
+}
+
+function productAttributeRows(templateId: React.Key | undefined, value: any, templates: AnyRecord[]) {
+  const savedRows = parseRows(value);
+  const template = templates.find((item: AnyRecord) => String(item.id) === String(templateId ?? ""));
+  if (!template) return savedRows;
+
+  const savedByFieldId = new Map(savedRows
+    .filter((item: AnyRecord) => item?.fieldId !== undefined && item?.fieldId !== null)
+    .map((item: AnyRecord) => [String(item.fieldId), item]));
+  const savedByName = new Map(savedRows
+    .filter((item: AnyRecord) => String(item?.name || "").trim())
+    .map((item: AnyRecord) => [String(item.name).trim(), item]));
+
+  return (template.fields || []).slice(0, 10).map((field: AnyRecord) => {
+    const saved = savedByFieldId.get(String(field.id)) || savedByName.get(String(field.name || "").trim());
+    return {
+      fieldId: field.id,
+      name: field.name,
+      value: saved?.value ?? ""
+    };
+  });
 }
 
 function unwrapProductResponse(payload: AnyRecord, productId?: React.Key) {
@@ -1507,6 +1640,10 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
   const [batchQueryOpen, setBatchQueryOpen] = useState(false);
   const [batchEditOpen, setBatchEditOpen] = useState(false);
   const [batchEditSubmitting, setBatchEditSubmitting] = useState(false);
+  const [batchDeleteChecking, setBatchDeleteChecking] = useState(false);
+  const [batchDeleteBlockedOpen, setBatchDeleteBlockedOpen] = useState(false);
+  const [batchDeleteBlockedRows, setBatchDeleteBlockedRows] = useState<AnyRecord[]>([]);
+  const [specDetailProduct, setSpecDetailProduct] = useState<AnyRecord>();
   const [batchQueryText, setBatchQueryText] = useState("");
   const [batchKeywordsInput, setBatchKeywordsInput] = useState<string[]>([]);
   const [batchKeywords, setBatchKeywords] = useState<string[]>([]);
@@ -1517,6 +1654,12 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
   const [columnOrder, setColumnOrder] = useState(loadProductColumnOrder);
   const [draggingColumnKey, setDraggingColumnKey] = useState<string>();
   const [productSort, setProductSort] = useState<{ key?: string; order?: "ascend" | "descend" }>({});
+  const openProductForm = async (item?: AnyRecord) => {
+    if (!Object.prototype.hasOwnProperty.call(ctx.data, "attributeTemplates")) {
+      await ctx.loadKeys(["attributeTemplates"]);
+    }
+    productForm(ctx, item);
+  };
   const categoryTreeData = useMemo(() => buildCategoryTreeData(categories), [categories]);
   const filteredCategoryTreeData = useMemo(() => filterCategoryTreeData(categoryTreeData, categoryKeyword), [categoryKeyword, categoryTreeData]);
   const visibleExpandedCategoryKeys = useMemo(
@@ -1532,6 +1675,32 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
     const selectedKeySet = new Set(selectedRowKeys.map(key => String(key)));
     return rows.filter((item: AnyRecord) => selectedKeySet.has(String(item.id)));
   }, [rows, selectedRowKeys]);
+  const specDetailRows = useMemo(() => specDetailProduct
+    ? productSkuRows(specDetailProduct).map((item: AnyRecord, index: number) => ({
+      ...item,
+      key: item.skuCode || item.specKey || `spec-${index}`,
+      index: index + 1
+    }))
+    : [], [specDetailProduct]);
+  const specDetailGroupNames = useMemo(() => Array.from(new Set(specDetailRows.flatMap((item: AnyRecord) =>
+    (item.specValues || []).map((spec: AnyRecord) => String(spec.groupName || "").trim()).filter(Boolean)
+  ))), [specDetailRows]);
+  const specDetailColumns = useMemo(() => [
+    { title: "序号", dataIndex: "index", width: 64, align: "center" },
+    ...(specDetailGroupNames.length
+      ? specDetailGroupNames.map(groupName => ({
+        title: groupName,
+        key: `spec-${groupName}`,
+        width: 110,
+        render: (_: any, item: AnyRecord) => item.specValues?.find((spec: AnyRecord) => spec.groupName === groupName)?.value || "-"
+      }))
+      : [{ title: "规格", dataIndex: "skuName", width: 160, render: (value: any) => value || "-" }]),
+    { title: "SKU编码", dataIndex: "skuCode", width: 150, render: compactText },
+    { title: "SKU条码", dataIndex: "skuBarcode", width: 150, render: compactText },
+    { title: "单价", dataIndex: "salePrice", width: 110, render: money },
+    { title: "库存", dataIndex: "stockQuantity", width: 90 },
+    { title: "状态", dataIndex: "skuStatus", width: 90, render: (value: any) => value === "DISABLED" ? <Tag>停用</Tag> : <Tag color="green">启用</Tag> }
+  ], [specDetailGroupNames]);
   const filteredRows = rows.filter((item: AnyRecord) => {
     const searchText = [
       item.productCode,
@@ -1710,18 +1879,86 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
       setBatchEditSubmitting(false);
     }
   };
+  const showBatchDeleteBlocked = (blocked: AnyRecord[]) => {
+    setBatchDeleteBlockedRows(blocked);
+    setBatchDeleteBlockedOpen(true);
+  };
+  const submitBatchDelete = async () => {
+    try {
+      const result = await request<AnyRecord>("/api/admin/products/batch-delete", {
+        method: "POST",
+        data: { productIds: selectedProducts.map((item: AnyRecord) => item.id) }
+      });
+      const blocked = Array.isArray(result?.blocked) ? result.blocked : [];
+      if (blocked.length) {
+        showBatchDeleteBlocked(blocked);
+        return;
+      }
+      ctx.message.success(`已删除 ${Number(result?.deletedCount || selectedProducts.length)} 个商品`);
+      setSelectedRowKeys([]);
+      ctx.reload();
+    } catch (error: any) {
+      ctx.message.error(error.message);
+      throw error;
+    }
+  };
+  const openBatchDelete = async () => {
+    if (!selectedProducts.length) {
+      ctx.message.error("请先选择需要删除的商品");
+      return;
+    }
+    setBatchDeleteChecking(true);
+    try {
+      const result = await request<AnyRecord>("/api/admin/products/batch-delete/check", {
+        method: "POST",
+        data: { productIds: selectedProducts.map((item: AnyRecord) => item.id) }
+      });
+      const blocked = Array.isArray(result?.blocked) ? result.blocked : [];
+      if (blocked.length) {
+        showBatchDeleteBlocked(blocked);
+        return;
+      }
+      Modal.confirm({
+        title: "确认批量删除商品？",
+        content: `已选中 ${selectedProducts.length} 个商品，删除后网页商城和 H5 商城将不再展示，且无法恢复。`,
+        okText: "确认删除",
+        cancelText: "取消",
+        okButtonProps: { danger: true },
+        onOk: submitBatchDelete
+      });
+    } catch (error: any) {
+      ctx.message.error(error.message);
+    } finally {
+      setBatchDeleteChecking(false);
+    }
+  };
   const baseColumns: ColumnsType<AnyRecord> = [
     { key: "index", title: "序号", width: 72, align: "center", className: "product-index-column", render: (_, __, index) => index + 1 },
     { key: "skuCode", title: "商品条码", dataIndex: "skuCode", width: 150, align: "left", className: "product-sku-column", render: (v, item) => <Button className="product-sku-link" type="link" onClick={() => productDetail(ctx, item)}>{v || item.productCode || "-"}</Button> },
-    { key: "productCode", title: "商品代码", dataIndex: "productCode", width: 150, render: compactText },
+    { key: "productCode", title: "商品编码", dataIndex: "productCode", width: 150, render: compactText },
     { key: "productName", title: "商品名称", dataIndex: "productName", width: 260, render: renderProductNameCell },
     { key: "categoryName", title: "商品分类", dataIndex: "categoryName", width: 150 },
     { key: "saleStatus", title: "是否淘汰", dataIndex: "saleStatus", width: 120, render: v => <span className={v === "OFF_SALE" ? "archive-danger-text" : ""}>{v === "OFF_SALE" ? "是" : "否"}</span> },
-    { key: "skuName", title: "规格", dataIndex: "skuName", width: 140, render: v => v || "-" },
-    { key: "unit", title: "基本单位", dataIndex: "unit", width: 120, render: v => v || "-" },
+    {
+      key: "skuName",
+      title: "规格",
+      dataIndex: "skuName",
+      width: 140,
+      render: (value, item) => {
+        const skuRows = productSkuRows(item);
+        const hasMultipleSpecs = skuRows.length > 1 || skuRows.some((sku: AnyRecord) => (sku.specValues || []).length > 1);
+        return (
+          <div className="product-spec-summary-cell">
+            <span>{value || "-"}</span>
+            {hasMultipleSpecs ? <Button type="link" onClick={() => setSpecDetailProduct(item)}>查看更多</Button> : null}
+          </div>
+        );
+      }
+    },
+    { key: "unit", title: "库存单位", dataIndex: "unit", width: 120, render: v => v || "-" },
     { key: "brandName", title: "商品品牌", dataIndex: "brandName", width: 140, render: v => v || "-" },
     { key: "quoteType", title: "报价方式", dataIndex: "quoteType", width: 140, render: v => v === "TIER_PRICE" ? "阶梯报价" : "规格独立价" },
-    { key: "salePrice", title: "售价", dataIndex: "salePrice", width: 120, render: money },
+    { key: "salePrice", title: "单价", dataIndex: "salePrice", width: 120, render: money },
     { key: "stockQuantity", title: "库存", dataIndex: "stockQuantity", width: 100 },
     {
       key: "action",
@@ -1734,7 +1971,7 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
       onCell: () => ({ className: "product-action-column" }),
       render: (_, item) => (
         <Space size={7} className="product-action-links">
-          <Button type="link" icon={<EditOutlined />} onClick={() => productForm(ctx, item)}>编辑</Button>
+          <Button type="link" icon={<EditOutlined />} onClick={() => void openProductForm(item)}>编辑</Button>
           <Button type="link" onClick={() => productSale(ctx, item)}>{item.saleStatus === "ON_SALE" ? "下架" : "上架"}</Button>
         </Space>
       )
@@ -1762,6 +1999,7 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
       };
     });
   const productTableScrollX = Math.max(960, columns.reduce((sum, column) => sum + Number(column.width || 120), 64));
+  const isInitialProductLoading = loading && sortedRows.length === 0;
 
   useEffect(() => {
     localStorage.setItem(productColumnSettingsStorageKey, JSON.stringify(columnSettings));
@@ -1850,13 +2088,13 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
           </div>
         </div>
         <div className="product-archive-toolbar">
-          {toolbarButton("新增", <PlusOutlined />, () => productForm(ctx))}
+          {toolbarButton("新增", <PlusOutlined />, () => void openProductForm())}
           {toolbarButton("导入")}
           {toolbarButton("导出")}
           {toolbarButton("批量修改", undefined, openBatchEditModal)}
-          {toolbarButton("批量删除")}
+          <Button type="primary" loading={batchDeleteChecking} onClick={openBatchDelete}>批量删除</Button>
         </div>
-        <div className="product-archive-table">
+        <div className={`product-archive-table anchored-pagination-table ${isInitialProductLoading ? "is-initial-loading" : ""}`}>
           <AdminTable
             loading={loading}
             rowKey="id"
@@ -1865,7 +2103,7 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
             rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys }}
             pagination={{ className: "product-archive-pagination" }}
             tableLayout="fixed"
-            scroll={{ x: productTableScrollX, y: "max(300px, calc(100vh - 365px))" }}
+            scroll={{ x: productTableScrollX, y: "100%" }}
           />
           <div className="product-action-header-overlay" aria-hidden={false}>
             <span>操作</span>
@@ -1919,6 +2157,52 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
             <Select allowClear placeholder="不修改商品状态" options={saleStatusOptions} />
           </Form.Item>
         </Form>
+      </Modal>
+      <Modal
+        open={batchDeleteBlockedOpen}
+        title="商品已有业务往来记录，无法删除"
+        width={820}
+        className="product-batch-delete-blocked-modal"
+        onCancel={() => setBatchDeleteBlockedOpen(false)}
+        footer={<Button type="primary" onClick={() => setBatchDeleteBlockedOpen(false)}>我知道了</Button>}
+      >
+        <Typography.Paragraph type="secondary">
+          以下商品存在入库或销售记录，本次选择的商品均未删除。请取消勾选这些商品后重试。
+        </Typography.Paragraph>
+        <Table
+          size="small"
+          rowKey="id"
+          pagination={false}
+          dataSource={batchDeleteBlockedRows}
+          scroll={{ y: 360 }}
+          columns={[
+            { title: "商品编码", dataIndex: "productCode", width: 150, render: compactText },
+            { title: "商品名称", dataIndex: "productName", ellipsis: true },
+            { title: "入库记录", dataIndex: "hasInboundRecord", width: 100, align: "center", render: value => value ? <Tag color="red">已有</Tag> : "无" },
+            { title: "销售记录", dataIndex: "hasSalesRecord", width: 100, align: "center", render: value => value ? <Tag color="red">已有</Tag> : "无" },
+            { title: "校验结果", dataIndex: "reason", width: 190, render: () => <Typography.Text type="danger">存在业务往来，无法删除</Typography.Text> }
+          ]}
+        />
+      </Modal>
+      <Modal
+        open={Boolean(specDetailProduct)}
+        title={`商品规格明细${specDetailProduct?.productName ? ` - ${specDetailProduct.productName}` : ""}`}
+        width={980}
+        className="product-spec-detail-modal"
+        onCancel={() => setSpecDetailProduct(undefined)}
+        footer={<Button type="primary" onClick={() => setSpecDetailProduct(undefined)}>关闭</Button>}
+      >
+        <Typography.Paragraph type="secondary">
+          共 {specDetailRows.length} 个 SKU，可横向滚动查看全部规格和库存信息。
+        </Typography.Paragraph>
+        <Table
+          size="small"
+          rowKey="key"
+          pagination={false}
+          dataSource={specDetailRows}
+          columns={specDetailColumns}
+          scroll={{ x: "max-content", y: 420 }}
+        />
       </Modal>
       <Modal
         open={columnSettingsOpen}
@@ -2001,11 +2285,11 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
         footer={null}
         onCancel={() => setBatchQueryOpen(false)}
       >
-        <div className="product-batch-query-head">商品代码 | 条码 | 名称 | 商品别称</div>
+        <div className="product-batch-query-head">商品编码 | 条码 | 名称 | 商品别称</div>
         <Input.TextArea
           rows={10}
           value={batchQueryText}
-          placeholder="请输入商品代码、条码、名称、商品别称"
+          placeholder="请输入商品编码、条码、名称、商品别称"
           onChange={event => setBatchQueryText(event.target.value)}
         />
         <div className="product-batch-query-tips">
@@ -2031,6 +2315,9 @@ function productSkuRows(item?: AnyRecord) {
     skuBarcode: row.skuBarcode || row.barcode || row.barCode || (index === 0 ? product?.skuBarcode : ""),
     skuName: normalizeSkuName(row, product?.skuName || ""),
     skuImageUrl: row.skuImageUrl || row.imageUrl || "",
+    ...(Object.prototype.hasOwnProperty.call(row, "specImageGroupId")
+      ? { specImageGroupId: row.specImageGroupId || "" }
+      : {}),
     salePrice: row.salePrice ?? product?.salePrice ?? undefined,
     stockQuantity: row.stockQuantity ?? product?.stockQuantity ?? undefined,
     minOrderQuantity: Number(row.minOrderQuantity ?? product?.minOrderQuantity ?? 1),
@@ -2052,6 +2339,74 @@ function productSkuRows(item?: AnyRecord) {
     specValues: [],
     tierPrices: productTierRows(product)
   }];
+}
+
+function getSpecImageGroupId(rows: AnyRecord[]) {
+  const explicitRow = rows.find(row => Object.prototype.hasOwnProperty.call(row, "specImageGroupId"));
+  const explicitGroupId = String(explicitRow?.specImageGroupId || "");
+  if (explicitGroupId) return explicitGroupId;
+  for (const row of rows) {
+    const specValues = Array.isArray(row?.specValues) ? row.specValues : [];
+    const imageCell = specValues.find((cell: AnyRecord) => cell?.image && cell?.groupId);
+    if (imageCell?.groupId) return String(imageCell.groupId);
+  }
+  const legacySkuImageRow = rows.find(row => row?.skuImageUrl && Array.isArray(row?.specValues) && row.specValues[0]?.groupId);
+  if (legacySkuImageRow?.specValues?.[0]?.groupId) return String(legacySkuImageRow.specValues[0].groupId);
+  return "";
+}
+
+function specValueImageKey(cell: AnyRecord) {
+  return `${String(cell?.groupId || "")}:${String(cell?.valueId || cell?.value || "")}`;
+}
+
+function compactSkuListImages(rows: AnyRecord[]) {
+  const source = Array.isArray(rows) ? rows : [];
+  const imageGroupId = getSpecImageGroupId(source);
+  const emitted = new Set<string>();
+  return source.map(row => ({
+    ...row,
+    skuImageUrl: "",
+    specImageGroupId: imageGroupId,
+    specValues: Array.isArray(row?.specValues)
+      ? row.specValues.map((cell: AnyRecord) => {
+        const isImageCell = imageGroupId && String(cell?.groupId || "") === imageGroupId;
+        const image = String(cell?.image || (isImageCell ? row?.skuImageUrl : "") || "");
+        if (!isImageCell || !image) {
+          return { ...cell, image: "" };
+        }
+        const key = specValueImageKey(cell);
+        if (emitted.has(key)) return { ...cell, image: "" };
+        emitted.add(key);
+        return cell;
+      })
+      : []
+  }));
+}
+
+function collectSpecValueImagesFromSkuRows(rows: AnyRecord[]) {
+  const imageGroupId = getSpecImageGroupId(rows);
+  if (!imageGroupId) return [];
+  const imageMap = new Map<string, AnyRecord>();
+  for (const row of rows) {
+    const specValues = Array.isArray(row?.specValues) ? row.specValues : [];
+    for (const cell of specValues) {
+      if (String(cell?.groupId || "") !== imageGroupId) continue;
+      const key = specValueImageKey(cell);
+      const image = String(cell?.image || row?.skuImageUrl || "");
+      if (!image || imageMap.has(key)) continue;
+      imageMap.set(key, {
+        key,
+        groupName: cell.groupName || "",
+        value: cell.value || "",
+        image
+      });
+    }
+  }
+  return Array.from(imageMap.values());
+}
+
+function productSpecImages(item?: AnyRecord) {
+  return collectSpecValueImagesFromSkuRows(productSkuRows(item));
 }
 
 function normalizeSkuName(row: AnyRecord, fallback = "") {
@@ -2098,19 +2453,25 @@ function stripRichText(html: unknown) {
     .trim();
 }
 
-function productForm(ctx: Ctx, item?: AnyRecord) {
+function productForm(ctx: Ctx, item?: AnyRecord, draftValues?: AnyRecord) {
   ctx.setDrawer({
     title: item ? "编辑商品" : "新增商品",
     width: 1320,
     className: "product-form-drawer",
-    body: <ProductForm ctx={ctx} item={item} />
+    body: <ProductForm ctx={ctx} item={item} draftValues={draftValues} />
   });
 }
 
-function ProductForm({ ctx, item }: { ctx: Ctx; item?: AnyRecord }) {
+function ProductForm({ ctx, item, draftValues }: { ctx: Ctx; item?: AnyRecord; draftValues?: AnyRecord }) {
   const [form] = Form.useForm();
   const [previewImageUrl, setPreviewImageUrl] = useState("");
   const [product, setProduct] = useState<AnyRecord | undefined>(() => normalizeProductRecord(item));
+  const [customSaleUnits, setCustomSaleUnits] = useState<string[]>(() => readCustomSaleUnitValues());
+  const [creatingSaleUnit, setCreatingSaleUnit] = useState(false);
+  const [saleUnitInput, setSaleUnitInput] = useState("");
+  const [saleUnitInputError, setSaleUnitInputError] = useState("");
+  const [activeProductSection, setActiveProductSection] = useState("basic");
+  const productFormBodyRef = useRef<HTMLDivElement | null>(null);
   const quoteType = Form.useWatch("quoteType", form) || "INDEPENDENT_PRICE";
   const saleMode = Form.useWatch("saleMode", form) || "NORMAL";
   const saleUnit = Form.useWatch("saleUnit", form) || "";
@@ -2119,27 +2480,58 @@ function ProductForm({ ctx, item }: { ctx: Ctx; item?: AnyRecord }) {
   const isBatchSale = saleMode === "BATCH";
   const minOrderUnitLabel = isBatchSale && saleUnit ? saleUnit : baseUnit;
   const productId = product?.id;
-  const detail = parseDetailContent(product?.detailContent || "");
+  const detail = useMemo(
+    () => parseDetailContent(product?.detailContent || ""),
+    [product?.detailContent]
+  );
   const categories = (ctx.data.categories || []).filter((x: AnyRecord) => x.status === "ENABLED" || x.categoryName === product?.categoryName);
   const brands = (ctx.data.brands || []).filter((x: AnyRecord) => x.status === "ENABLED" || x.brandName === product?.brandName);
-  const initial = useMemo(() => ({
-    productName: product?.productName || "",
-    categoryName: product?.categoryName,
-    brandName: product?.brandName,
-    unit: product?.unit || "件",
-    saleStatus: product?.saleStatus || "ON_SALE",
-    quoteType: product?.quoteType || "INDEPENDENT_PRICE",
-    saleMode: product?.saleMode || "NORMAL",
-    saleUnit: product?.saleUnit || undefined,
-    saleUnitRatio: product?.saleUnitRatio ?? undefined,
-    mainImageUrl: product?.mainImageUrl || "",
-    detailText: detail.imageUrl && !String(detail.text || "").includes("<img")
-      ? `${detail.text || ""}<p><img src="${detail.imageUrl}" /></p>`
-      : detail.text,
-    detailImageUrl: detail.imageUrl,
-    skuList: productSkuRows(product),
-    tierPrices: productTierRows(product)
-  }), [detail.imageUrl, detail.text, product]);
+  const attributeTemplates = ctx.data.attributeTemplates || [];
+  const saleUnitOptions = useMemo(() => Array.from(new Set([
+    ...defaultSaleUnitValues,
+    ...customSaleUnits,
+    saleUnit
+  ].map(value => String(value || "").trim()).filter(Boolean))).map(value => ({ value, label: value })), [customSaleUnits, saleUnit]);
+  const initial = useMemo(() => {
+    const productImages = Array.from(new Set([
+      product?.mainImageUrl,
+      ...(detail.carouselImages || [])
+    ].map(url => String(url || "").trim()).filter(Boolean))).slice(0, 5);
+    const savedCustomAttributes = parseRows(product?.customAttributesJson);
+    const base = {
+      productName: product?.productName || "",
+      categoryName: product?.categoryName,
+      brandName: product?.brandName,
+      attributeTemplateId: product?.attributeTemplateId,
+      customAttributes: productAttributeRows(
+        product?.attributeTemplateId,
+        savedCustomAttributes.length ? savedCustomAttributes : product?.customAttributes,
+        attributeTemplates
+      ),
+      unit: product?.unit || "件",
+      saleStatus: product?.saleStatus || "ON_SALE",
+      quoteType: product?.quoteType || "INDEPENDENT_PRICE",
+      saleMode: product?.saleMode || "NORMAL",
+      saleUnit: product?.saleUnit || undefined,
+      saleUnitRatio: product?.saleUnitRatio ?? undefined,
+      mainImageUrl: productImages[0] || "",
+      detailText: detail.imageUrl && !String(detail.text || "").includes("<img")
+        ? `${detail.text || ""}<p><img src="${detail.imageUrl}" /></p>`
+        : detail.text,
+      detailImageUrl: detail.imageUrl,
+      carouselImages: productImages,
+      skuList: productSkuRows(product),
+      tierPrices: productTierRows(product)
+    };
+    if (!draftValues) return base;
+    return {
+      ...base,
+      ...draftValues,
+      carouselImages: parseRows(draftValues.carouselImages).length ? draftValues.carouselImages : base.carouselImages,
+      skuList: Array.isArray(draftValues.skuList) ? draftValues.skuList : base.skuList,
+      tierPrices: Array.isArray(draftValues.tierPrices) ? draftValues.tierPrices : base.tierPrices
+    };
+  }, [attributeTemplates, detail.carouselImages, detail.imageUrl, detail.text, product, draftValues]);
 
   useEffect(() => {
     setProduct(normalizeProductRecord(item));
@@ -2167,6 +2559,16 @@ function ProductForm({ ctx, item }: { ctx: Ctx; item?: AnyRecord }) {
     form.resetFields();
     form.setFieldsValue(initial);
   }, [form, initial]);
+
+  const applyAttributeTemplate = (templateId?: React.Key) => {
+    const template = attributeTemplates.find((item: AnyRecord) => String(item.id) === String(templateId));
+    form.setFieldsValue({
+      attributeTemplateId: templateId,
+      customAttributes: template
+        ? (template.fields || []).slice(0, 10).map((field: AnyRecord) => ({ fieldId: field.id, name: field.name, value: "" }))
+        : []
+    });
+  };
   const ImageUploadTile = ({ value, onChange, variant = "main" }: { value?: string; onChange: (url: string) => void; variant?: "main" | "sku" | "detail" }) => {
     const uploadProps = {
       beforeUpload: async (file: File) => {
@@ -2213,14 +2615,113 @@ function ProductForm({ ctx, item }: { ctx: Ctx; item?: AnyRecord }) {
     );
   };
 
-  const ImageUpload = ({ field }: { field: string }) => (
+  const ProductImagesUpload = () => (
     <Form.Item shouldUpdate noStyle>
       {() => {
-        const value = form.getFieldValue(field);
+        const currentImages = () => Array.from(new Set([
+          form.getFieldValue("mainImageUrl"),
+          ...parseRows(form.getFieldValue("carouselImages"))
+        ].map((url: any) => String(url || "").trim()).filter(Boolean))).slice(0, 5);
+        const value = currentImages();
+        const setImages = (nextImages: string[]) => {
+          const next = Array.from(new Set(nextImages.map(url => String(url || "").trim()).filter(Boolean))).slice(0, 5);
+          form.setFieldValue("mainImageUrl", next[0] || "");
+          form.setFieldValue("carouselImages", next);
+        };
+        const uploadProps = {
+          beforeUpload: async (file: File) => {
+            if (currentImages().length >= 5) {
+              ctx.message.warning("商品图片最多上传5张");
+              return false;
+            }
+            try {
+              const dataUrl = await imageToCompressedDataUrl(file, {
+                maxInputBytes: 5 * 1024 * 1024,
+                maxOutputBytes: 110 * 1024
+              });
+              setImages([...currentImages(), dataUrl]);
+            } catch (error: any) {
+              ctx.message.error(error.message);
+            }
+            return false;
+          },
+          showUploadList: false,
+          accept: "image/*",
+          multiple: true
+        };
+        const updateAt = (index: number, url: string) => {
+          const next = [...value];
+          next[index] = url;
+          setImages(next);
+        };
+        const removeAt = (index: number) => {
+          setImages(value.filter((_: string, idx: number) => idx !== index));
+        };
+        const moveAt = (fromIndex: number, toIndex: number) => {
+          if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0) return;
+          const next = [...value];
+          const [moved] = next.splice(fromIndex, 1);
+          next.splice(toIndex, 0, moved);
+          setImages(next);
+        };
         return (
-          <Space direction="vertical" style={{ width: "100%" }}>
-            <ImageUploadTile value={value} onChange={url => form.setFieldValue(field, url)} variant="main" />
-            <Typography.Text type="secondary">建议尺寸 700*700，图片大小不得超过 1MB。</Typography.Text>
+          <Space direction="vertical" style={{ width: "100%" }} size={8}>
+            <div className="product-carousel-upload-list">
+              {value.map((url: string, index: number) => (
+                <div
+                  className={`product-image-preview-tile is-carousel ${index === 0 ? "is-primary" : ""}`}
+                  key={`${url}-${index}`}
+                  draggable
+                  onDragStart={(event) => event.dataTransfer.setData("text/plain", String(index))}
+                  onDragOver={(event) => event.preventDefault()}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    moveAt(Number(event.dataTransfer.getData("text/plain")), index);
+                  }}
+                >
+                  <img src={url} alt="" />
+                  {index === 0 ? <span className="product-image-primary-badge">主图</span> : null}
+                  <div className="product-image-drag-handle"><HolderOutlined /></div>
+                  <div className="product-image-actions">
+                    <Tooltip title="删除">
+                      <Button type="text" icon={<DeleteOutlined />} onClick={() => removeAt(index)} />
+                    </Tooltip>
+                    <Tooltip title="预览">
+                      <Button type="text" icon={<ZoomInOutlined />} onClick={() => setPreviewImageUrl(url)} />
+                    </Tooltip>
+                    <Upload {...{
+                      ...uploadProps,
+                      beforeUpload: async (file: File) => {
+                        try {
+                          const dataUrl = await imageToCompressedDataUrl(file, {
+                            maxInputBytes: 5 * 1024 * 1024,
+                            maxOutputBytes: 110 * 1024
+                          });
+                          updateAt(index, dataUrl);
+                        } catch (error: any) {
+                          ctx.message.error(error.message);
+                        }
+                        return false;
+                      },
+                      multiple: false
+                    }}>
+                      <Tooltip title="更换">
+                        <Button type="text" icon={<EditOutlined />} />
+                      </Tooltip>
+                    </Upload>
+                  </div>
+                </div>
+              ))}
+              {value.length < 5 ? (
+                <Upload {...uploadProps}>
+                  <button type="button" className="product-image-add-tile is-carousel">
+                    <PlusOutlined className="product-image-add-icon" />
+                    <span className="product-image-add-label">添加图片</span>
+                  </button>
+                </Upload>
+              ) : null}
+            </div>
+            <Typography.Text type="secondary">最多上传5张，建议尺寸700*700，单张图片大小不得超过5MB。</Typography.Text>
           </Space>
         );
       }}
@@ -2273,9 +2774,8 @@ function ProductForm({ ctx, item }: { ctx: Ctx; item?: AnyRecord }) {
     { required: true, message: "请输入起订数量" },
     {
       validator: (_: unknown, value: unknown) => {
+        if (value === undefined || value === null || value === "") return Promise.resolve();
         const current = Number(value);
-        if (!Number.isInteger(current) || current <= 0) return Promise.reject(new Error("起订数量必须为正整数"));
-        if (current > maxMinOrderQuantity) return Promise.reject(new Error("起订数量不能超过100"));
         if (index > 0) {
           const prev = Number(form.getFieldValue(["tierPrices", index - 1, "minQty"]));
           if (Number.isFinite(prev) && current <= prev) return Promise.reject(new Error("起订数量须大于上一级"));
@@ -2288,6 +2788,7 @@ function ProductForm({ ctx, item }: { ctx: Ctx; item?: AnyRecord }) {
     { required: true, message: "请输入单价" },
     {
       validator: (_: unknown, value: unknown) => {
+        if (value === undefined || value === null || value === "") return Promise.resolve();
         const current = Number(value);
         if (!(current > 0)) return Promise.reject(new Error("单价必须大于0"));
         if (current > maxPrice) return Promise.reject(new Error("单价不能超过99999.99"));
@@ -2323,9 +2824,120 @@ function ProductForm({ ctx, item }: { ctx: Ctx; item?: AnyRecord }) {
     }
   ];
 
+  const confirmCreateSaleUnit = () => {
+    const text = saleUnitInput.trim();
+    if (!text) {
+      setSaleUnitInputError("请输入内容");
+      return;
+    }
+    if (saleUnitOptions.some(option => option.value === text)) {
+      setSaleUnitInputError("该销售单位已存在");
+      return;
+    }
+    const next = saveCustomSaleUnitValues([...customSaleUnits, text]);
+    setCustomSaleUnits(next);
+    form.setFieldValue("saleUnit", text);
+    setSaleUnitInput("");
+    setSaleUnitInputError("");
+    setCreatingSaleUnit(false);
+    ctx.message.success("销售单位已保存");
+  };
+
+  const cancelCreateSaleUnit = () => {
+    setCreatingSaleUnit(false);
+    setSaleUnitInput("");
+    setSaleUnitInputError("");
+  };
+
+  const renderSaleUnitDropdown = (menu: React.ReactNode) => (
+    <div className="product-sale-unit-dropdown">
+      {menu}
+      {creatingSaleUnit ? (
+        <div className="product-sale-unit-create" onMouseDown={event => event.stopPropagation()}>
+          <div className="product-sale-unit-create-row">
+            <Input
+              autoFocus
+              value={saleUnitInput}
+              status={saleUnitInputError ? "error" : undefined}
+              placeholder="请输入内容"
+              maxLength={maxUnitLength}
+              onChange={event => {
+                setSaleUnitInput(event.target.value);
+                if (saleUnitInputError) setSaleUnitInputError("");
+              }}
+              onPressEnter={confirmCreateSaleUnit}
+              onMouseDown={event => event.stopPropagation()}
+              onClick={event => event.stopPropagation()}
+              onKeyDown={event => event.stopPropagation()}
+            />
+            <button
+              type="button"
+              className="product-sale-unit-create-action is-confirm"
+              aria-label="确认创建销售单位"
+              title="确认"
+              onMouseDown={event => event.preventDefault()}
+              onClick={confirmCreateSaleUnit}
+            >
+              <CheckOutlined />
+            </button>
+            <button
+              type="button"
+              className="product-sale-unit-create-action is-cancel"
+              aria-label="取消创建销售单位"
+              title="取消"
+              onMouseDown={event => event.preventDefault()}
+              onClick={cancelCreateSaleUnit}
+            >
+              <CloseOutlined />
+            </button>
+          </div>
+          {saleUnitInputError ? <div className="product-sale-unit-create-error">{saleUnitInputError}</div> : null}
+        </div>
+      ) : (
+        <div className="product-sale-unit-create-entry" onMouseDown={event => event.preventDefault()}>
+          <span>没有合适的？</span>
+          <button
+            type="button"
+            onClick={() => {
+              setCreatingSaleUnit(true);
+              setSaleUnitInput("");
+              setSaleUnitInputError("");
+            }}
+          >
+            创建
+          </button>
+        </div>
+      )}
+    </div>
+  );
+
+  const openProductPreview = () => {
+    const draft = {
+      ...initial,
+      ...form.getFieldsValue(true)
+    };
+    const exitPreview = () => productForm(ctx, item, draft);
+    ctx.setDrawer({
+      title: "退出预览",
+      width: 1320,
+      className: "product-form-drawer product-preview-drawer",
+      onClose: exitPreview,
+      body: <ProductEditPreview values={draft} sourceProduct={product} onExit={exitPreview} />
+    });
+  };
+
+  const scrollToProductSection = (key: string) => {
+    setActiveProductSection(key);
+    const body = productFormBodyRef.current;
+    const target = body?.querySelector<HTMLElement>(`[data-product-section="${key}"]`);
+    if (!body || !target) return;
+    const top = body.scrollTop + target.getBoundingClientRect().top - body.getBoundingClientRect().top - 64;
+    body.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+  };
+
   return (
     <Form className="product-form-layout" form={form} layout="vertical" initialValues={initial} onFinish={async values => {
-        const skuRows = Array.isArray(values.skuList) ? values.skuList : [];
+        const skuRows = compactSkuListImages(Array.isArray(values.skuList) ? values.skuList : []);
         const enabledRows = skuRows.filter((row: AnyRecord) => row.skuStatus !== "DISABLED");
         const enabledSku = enabledRows[0];
         const tierPrices = values.quoteType === "TIER_PRICE"
@@ -2352,16 +2964,23 @@ function ProductForm({ ctx, item }: { ctx: Ctx; item?: AnyRecord }) {
           minOrderQuantity: Number(row.minOrderQuantity || 1)
         }));
         const normalizedSaleMode = values.saleMode === "BATCH" ? "BATCH" : "NORMAL";
+        const productImages = Array.from(new Set([
+          form.getFieldValue("mainImageUrl"),
+          ...parseRows(form.getFieldValue("carouselImages"))
+        ].map((url: any) => String(url || "").trim()).filter(Boolean))).slice(0, 5);
         const detailContent = JSON.stringify({
           html: values.detailText || "",
           plainText: stripRichText(values.detailText),
-          imageUrl: values.detailImageUrl || detail.imageUrl || ""
+          imageUrl: values.detailImageUrl || detail.imageUrl || "",
+          carouselImages: productImages.slice(1)
         });
+        const { carouselImages: _carouselImages, detailImageUrl: _detailImageUrl, detailText: _detailText, ...submitValues } = values;
         const data = {
-          ...values,
+          ...submitValues,
           saleMode: normalizedSaleMode,
           saleUnit: normalizedSaleMode === "BATCH" ? values.saleUnit || null : null,
           saleUnitRatio: normalizedSaleMode === "BATCH" ? Number(values.saleUnitRatio) : null,
+          mainImageUrl: productImages[0] || "",
           detailContent,
           skuCode: enabledSku.skuCode,
           skuBarcode: enabledSku.skuBarcode || "",
@@ -2372,16 +2991,24 @@ function ProductForm({ ctx, item }: { ctx: Ctx; item?: AnyRecord }) {
           skuList,
           tierPrices
         };
-        if (!data.mainImageUrl) return ctx.message.error("请选择商品主图");
-        if (JSON.stringify(data).length > 900 * 1024) return ctx.message.error("图片内容仍然过大，请更换更小的图片后提交");
+        if (!data.mainImageUrl) return ctx.message.error("请选择商品图片");
+        if (JSON.stringify(data).length > 1200 * 1024) return ctx.message.error("图片内容仍然过大，请更换更小的图片后提交");
         try {
-          const saved = unwrapProductResponse(
+          const savedFromResponse = unwrapProductResponse(
             await request(productId ? `/api/admin/products/${productId}` : "/api/admin/products", {
               method: productId ? "PUT" : "POST",
               data
             }),
             productId
-          ) || normalizeProductRecord({ ...product, ...data, id: productId });
+          );
+          const saved = normalizeProductRecord({
+            ...product,
+            ...data,
+            ...savedFromResponse,
+            mainImageUrl: productImages[0] || savedFromResponse?.mainImageUrl || data.mainImageUrl,
+            detailContent: savedFromResponse?.detailContent || detailContent,
+            id: savedFromResponse?.id || productId
+          });
           if (saved) {
             setProduct(saved);
             ctx.setData?.(prev => ({
@@ -2402,17 +3029,20 @@ function ProductForm({ ctx, item }: { ctx: Ctx; item?: AnyRecord }) {
             preview={{ visible: true, src: previewImageUrl, onVisibleChange: visible => !visible && setPreviewImageUrl("") }}
           />
         ) : null}
-        <div className="product-form-body">
+        <div className="product-form-body" ref={productFormBodyRef}>
           <Tabs
             className="product-form-tabs product-form-tabbar"
-            defaultActiveKey="basic"
+            activeKey={activeProductSection}
+            onChange={scrollToProductSection}
             items={[
-              {
-                key: "basic",
-                label: "基础资料",
-                children: (
-                  <div className="product-form-pane">
-                    <section className="product-form-section">
+              { key: "basic", label: "基础信息", children: null },
+              { key: "spec", label: "商品规格", children: null },
+              { key: "custom", label: "商品属性", children: null },
+              { key: "detail", label: "商品详情", children: null },
+            ]}
+          />
+          <div className="product-form-pane">
+                    <section className="product-form-section" data-product-section="basic">
                       <div className="product-form-section-title">基础信息</div>
                       <div className="product-form-basic-table">
                         <div className="product-form-basic-label is-required">商品名称</div>
@@ -2430,13 +3060,29 @@ function ProductForm({ ctx, item }: { ctx: Ctx; item?: AnyRecord }) {
                         <div className="product-form-basic-label is-required">商品分类</div>
                         <div className="product-form-basic-control">
                           <Form.Item name="categoryName" rules={[{ required: true, message: "请选择商品分类" }]}>
-                            <Select placeholder="请选择商品分类" options={categories.map((x: AnyRecord) => ({ value: x.categoryName, label: x.categoryName }))} />
+                            <Select
+                              showSearch
+                              optionFilterProp="label"
+                              placeholder="请选择商品分类"
+                              filterOption={(input, option) => String(option?.label || "")
+                                .toLocaleLowerCase()
+                                .includes(input.trim().toLocaleLowerCase())}
+                              options={categories.map((x: AnyRecord) => ({ value: x.categoryName, label: x.categoryName }))}
+                            />
                           </Form.Item>
                         </div>
                         <div className="product-form-basic-label is-required">商品品牌</div>
                         <div className="product-form-basic-control">
                           <Form.Item name="brandName" rules={[{ required: true, message: "请选择商品品牌" }]}>
-                            <Select placeholder="请选择商品品牌" options={brands.map((x: AnyRecord) => ({ value: x.brandName, label: x.brandName }))} />
+                            <Select
+                              showSearch
+                              optionFilterProp="label"
+                              placeholder="请选择商品品牌"
+                              filterOption={(input, option) => String(option?.label || "")
+                                .toLocaleLowerCase()
+                                .includes(input.trim().toLocaleLowerCase())}
+                              options={brands.map((x: AnyRecord) => ({ value: x.brandName, label: x.brandName }))}
+                            />
                           </Form.Item>
                         </div>
                         <div className="product-form-basic-label is-required">库存单位</div>
@@ -2482,7 +3128,13 @@ function ProductForm({ ctx, item }: { ctx: Ctx; item?: AnyRecord }) {
                                   <Select
                                     className="product-sale-unit-select"
                                     placeholder="请选择销售单位"
+                                    showSearch
+                                    optionFilterProp="label"
+                                    filterOption={(input, option) => String(option?.label || "")
+                                      .toLocaleLowerCase()
+                                      .includes(input.trim().toLocaleLowerCase())}
                                     options={saleUnitOptions}
+                                    popupRender={renderSaleUnitDropdown}
                                   />
                                 </Form.Item>
                                 {saleUnit ? (
@@ -2519,14 +3171,14 @@ function ProductForm({ ctx, item }: { ctx: Ctx; item?: AnyRecord }) {
                       </div>
                     </div>
                     <div className="product-form-main-image-field">
-                      <div className="product-form-basic-label is-required">商品主图</div>
+                      <div className="product-form-basic-label is-required">商品图片</div>
                       <div className="product-form-main-image-control">
-                          <Form.Item name="mainImageUrl" rules={[{ required: true, message: "请选择商品主图" }]} noStyle>
+                          <Form.Item name="mainImageUrl" rules={[{ required: true, message: "请选择商品图片" }]} noStyle>
                             <Input type="hidden" />
                           </Form.Item>
-                          <ImageUpload field="mainImageUrl" />
-                        </div>
+                          <ProductImagesUpload />
                       </div>
+                    </div>
                       {isTierPrice ? (
                         <div className="product-form-main-image-field product-form-tier-field">
                           <div className="product-form-basic-label is-required">阶梯报价</div>
@@ -2543,7 +3195,20 @@ function ProductForm({ ctx, item }: { ctx: Ctx; item?: AnyRecord }) {
                                         <React.Fragment key={field.key}>
                                           <div className="product-form-tier-cell">
                                             <Form.Item name={[field.name, "minQty"]} rules={tierMinQtyRules(index)}>
-                                              <InputNumber min={1} max={maxMinOrderQuantity} precision={0} placeholder="起订数量" />
+                                              <InputNumber
+                                                min={1}
+                                                max={maxMinOrderQuantity}
+                                                precision={0}
+                                                placeholder="起订数量"
+                                                parser={value => {
+                                                  const digits = String(value || "").replace(/\D/g, "");
+                                                  if (!digits) return "";
+                                                  return Math.min(maxMinOrderQuantity, Math.max(1, Number(digits)));
+                                                }}
+                                                onKeyDown={event => {
+                                                  if (["e", "E", "+", "-", "."].includes(event.key)) event.preventDefault();
+                                                }}
+                                              />
                                             </Form.Item>
                                           </div>
                                           <div className="product-form-tier-cell">
@@ -2577,16 +3242,53 @@ function ProductForm({ ctx, item }: { ctx: Ctx; item?: AnyRecord }) {
                         </div>
                     ) : null}
                   </section>
-                  <section className="product-form-section">
+                  <section className="product-form-section" data-product-section="spec">
                       <ProductSpecEditor
                         form={form}
                         initialSkuList={initial.skuList}
                         message={ctx.message}
                         onPreviewImage={setPreviewImageUrl}
                         minOrderUnitLabel={minOrderUnitLabel}
+                        showAutoSkuCodePlaceholder={!product?.id}
                       />
                   </section>
-                    <section className="product-form-section">
+                    <section className="product-form-section" data-product-section="custom">
+                      <div className="product-form-section-title">商品属性</div>
+                      <div className="product-custom-attribute-panel">
+                        <div className="product-custom-template-row">
+                          <div className="product-custom-template-label">属性模板</div>
+                          <Form.Item name="attributeTemplateId" noStyle>
+                            <Select
+                              allowClear
+                              showSearch
+                              optionFilterProp="label"
+                              placeholder="请选择属性模板"
+                              options={attributeTemplates.map((template: AnyRecord) => ({ value: template.id, label: template.templateName }))}
+                              filterOption={(input, option) => String(option?.label || "").toLocaleLowerCase().includes(input.trim().toLocaleLowerCase())}
+                              onChange={applyAttributeTemplate}
+                            />
+                          </Form.Item>
+                        </div>
+                        <Form.List name="customAttributes">
+                          {(fields, { remove }) => fields.length ? (
+                            <div className="product-custom-attribute-list">
+                              {fields.map(field => (
+                                <div className="product-custom-attribute-row" key={field.key}>
+                                  <Form.Item name={[field.name, "fieldId"]} hidden><Input /></Form.Item>
+                                  <Form.Item name={[field.name, "name"]} hidden><Input /></Form.Item>
+                                  <div className="product-custom-attribute-name">{form.getFieldValue(["customAttributes", field.name, "name"]) || "属性名称"}</div>
+                                  <Form.Item name={[field.name, "value"]} noStyle>
+                                    <Input maxLength={100} placeholder="请输入属性值" />
+                                  </Form.Item>
+                                  <Button type="text" danger icon={<DeleteOutlined />} aria-label="删除该商品属性" onClick={() => remove(field.name)} />
+                                </div>
+                              ))}
+                            </div>
+                          ) : <div className="product-form-empty-section">选择属性模板后展示属性字段</div>}
+                        </Form.List>
+                      </div>
+                    </section>
+                    <section className="product-form-section" data-product-section="detail">
                       <div className="product-form-section-title">商品详情</div>
                       <div className="product-detail-editor-row is-full">
                         <Form.Item name="detailText" noStyle>
@@ -2595,21 +3297,226 @@ function ProductForm({ ctx, item }: { ctx: Ctx; item?: AnyRecord }) {
                       </div>
                     </section>
                   </div>
-                )
-              },
-              { key: "packing", label: "多包装", children: null },
-              { key: "assist", label: "辅助信息", children: null },
-              { key: "custom", label: "自定义属性", children: null },
-            ]}
-          />
         </div>
         <div className="product-form-submit-bar">
           <Space>
             <Button onClick={() => ctx.setDrawer(null)}>取消</Button>
-            <Button type="primary" htmlType="submit">提交</Button>
+            <Button type="primary" htmlType="submit">保存</Button>
+          </Space>
+          <Space>
+            <Button onClick={openProductPreview}>预览</Button>
           </Space>
         </div>
     </Form>
+  );
+}
+
+function productPreviewModel(values: AnyRecord, sourceProduct?: AnyRecord) {
+  const source = normalizeProductRecord(sourceProduct) || {};
+  const productImages = Array.from(new Set([
+    values?.mainImageUrl,
+    ...parseRows(values?.carouselImages)
+  ].map((url: any) => String(url || "").trim()).filter(Boolean))).slice(0, 5);
+  const skuRows = compactSkuListImages(Array.isArray(values?.skuList) ? values.skuList : [])
+    .filter((row: AnyRecord) => row?.skuStatus !== "DISABLED");
+  const tierPrices = parseRows(values?.tierPrices)
+    .map((row: AnyRecord) => ({ minQty: Number(row.minQty || 0), price: Number(row.price || 0) }))
+    .filter((row: AnyRecord) => row.minQty > 0 && row.price > 0);
+  const firstSku = skuRows[0] || {};
+  const salePrice = values?.quoteType === "TIER_PRICE"
+    ? Number(tierPrices[0]?.price || source.salePrice || 0)
+    : Number(firstSku.salePrice || source.salePrice || 0);
+  const specGroupsMap = new Map<string, AnyRecord>();
+  skuRows.forEach((row: AnyRecord) => {
+    (Array.isArray(row.specValues) ? row.specValues : []).forEach((cell: AnyRecord) => {
+      const key = String(cell.groupId || cell.groupName || "");
+      if (!key) return;
+      if (!specGroupsMap.has(key)) {
+        specGroupsMap.set(key, { key, name: cell.groupName || "规格", values: [] });
+      }
+      const group = specGroupsMap.get(key);
+      const valueKey = String(cell.valueId || cell.value || "");
+      if (!valueKey || group.values.some((item: AnyRecord) => item.key === valueKey)) return;
+      group.values.push({ key: valueKey, value: cell.value || "", image: cell.image || "" });
+    });
+  });
+  const specGroups = Array.from(specGroupsMap.values());
+  return {
+    productName: values?.productName || source.productName || "未命名商品",
+    categoryName: values?.categoryName || source.categoryName || "",
+    brandName: values?.brandName || source.brandName || "",
+    unit: values?.unit || source.unit || "件",
+    quoteType: values?.quoteType || source.quoteType || "INDEPENDENT_PRICE",
+    saleMode: values?.saleMode || source.saleMode || "NORMAL",
+    saleUnit: values?.saleUnit || source.saleUnit || "",
+    images: productImages,
+    detailText: values?.detailText || "",
+    salePrice,
+    skuRows,
+    specGroups,
+    tierPrices
+  };
+}
+
+function ProductEditPreview({ values, sourceProduct, onExit }: { values: AnyRecord; sourceProduct?: AnyRecord; onExit: () => void }) {
+  const preview = useMemo(() => productPreviewModel(values, sourceProduct), [values, sourceProduct]);
+  const [activeImage, setActiveImage] = useState(preview.images[0] || "");
+  const [quantities, setQuantities] = useState<Record<number, number>>({});
+  const selectionGroups = preview.specGroups.length > 1 ? preview.specGroups.slice(0, -1) : [];
+  const lastGroup = preview.specGroups.length ? preview.specGroups[preview.specGroups.length - 1] : null;
+  const [selectedSpecValues, setSelectedSpecValues] = useState<AnyRecord>(() =>
+    Object.fromEntries(selectionGroups.map((group: AnyRecord) => [group.key, group.values[0]?.key]).filter(([, value]) => value))
+  );
+
+  useEffect(() => {
+    setActiveImage(preview.images[0] || "");
+  }, [preview.images[0]]);
+
+  useEffect(() => {
+    setSelectedSpecValues(Object.fromEntries(
+      selectionGroups.map((group: AnyRecord) => [group.key, group.values[0]?.key]).filter(([, value]) => value)
+    ));
+  }, [preview.productName, preview.skuRows.length]);
+
+  const changeQuantity = (index: number, delta: number, minOrderQuantity: number) => {
+    setQuantities(prev => {
+      const current = Number(prev[index] || 0);
+      const next = Math.max(0, current + delta);
+      if (next > 0 && next < minOrderQuantity) return { ...prev, [index]: minOrderQuantity };
+      return { ...prev, [index]: next };
+    });
+  };
+  const visibleRows = preview.skuRows
+    .map((row: AnyRecord, index: number) => ({ ...row, originalIndex: index }))
+    .filter((row: AnyRecord) => selectionGroups.every((group: AnyRecord) => {
+      const expected = selectedSpecValues[group.key];
+      if (!expected) return true;
+      return (Array.isArray(row.specValues) ? row.specValues : []).some((cell: AnyRecord) =>
+        String(cell.groupId || cell.groupName || "") === String(group.key)
+        && String(cell.valueId || cell.value || "") === String(expected)
+      );
+    }));
+  const selected = Object.entries(quantities).filter(([, qty]) => Number(qty) > 0);
+  const totalQty = selected.reduce((sum, [, qty]) => sum + Number(qty), 0);
+  const totalAmount = selected.reduce((sum, [idx, qty]) => {
+    const row = preview.skuRows[Number(idx)] || {};
+    const price = preview.quoteType === "TIER_PRICE" ? preview.salePrice : Number(row.salePrice || 0);
+    return sum + price * Number(qty);
+  }, 0);
+
+  return (
+    <div className="product-edit-preview">
+      <div className="product-edit-preview-toolbar">
+        <Typography.Text type="secondary">当前为商城端商品详情预览，数量可调整，下单与加入购物车已禁用。</Typography.Text>
+      </div>
+      <Card className="mall-detail-card">
+        <div className="mall-detail-layout">
+          <div className="mall-detail-gallery">
+            {activeImage ? <img src={activeImage} className="mall-detail-main-image" alt="" /> : <div className="mall-detail-image-placeholder">暂无图片</div>}
+            {preview.images.length ? (
+              <div className="mall-detail-thumbs">
+                {preview.images.map((url: string, index: number) => (
+                  <button key={`${url}-${index}`} type="button" className={`mall-detail-thumb ${activeImage === url ? "is-active" : ""}`} onClick={() => setActiveImage(url)}>
+                    <img src={url} alt="" />
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="mall-detail-buy">
+            <Typography.Title level={2} className="mall-detail-title">{preview.productName}</Typography.Title>
+            <div className="mall-detail-meta">
+              {preview.categoryName ? <span>{preview.categoryName}</span> : null}
+              {preview.brandName ? <span>{preview.brandName}</span> : null}
+            </div>
+            <div className="mall-detail-price-panel">
+              {preview.tierPrices.length ? preview.tierPrices.map((tier: AnyRecord, index: number) => (
+                <div className="mall-detail-price-tier" key={`${tier.minQty}-${index}`}>
+                  <div className="mall-detail-price">{money(tier.price)}</div>
+                  <div className="mall-detail-threshold">{Number(tier.minQty || 1) <= 1 ? `${Number(tier.minQty || 1)}${preview.unit}起批` : `≥${Number(tier.minQty)}${preview.unit}`}</div>
+                </div>
+              )) : (
+                <div className="mall-detail-price-tier">
+                  <div className="mall-detail-price">{money(preview.salePrice)}</div>
+                  <div className="mall-detail-threshold">{Math.max(1, Number(preview.skuRows[0]?.minOrderQuantity || 1))}{preview.unit}起批</div>
+                </div>
+              )}
+            </div>
+
+            <div className="mall-detail-spec-area">
+              {selectionGroups.map((group: AnyRecord, groupIndex: number) => (
+                <div className="mall-detail-spec-row" key={group.key}>
+                  <div className="mall-detail-spec-label">{group.name}</div>
+                  <div className="mall-detail-spec-options">
+                    {group.values.map((value: AnyRecord) => {
+                      const active = selectedSpecValues[group.key] === value.key;
+                      return (
+                        <button
+                          key={value.key}
+                          type="button"
+                          className={`mall-detail-spec-option ${active ? "is-active" : ""}`}
+                          onClick={() => setSelectedSpecValues((old: AnyRecord) => ({ ...old, [group.key]: value.key }))}
+                        >
+                          {groupIndex === 0 && value.image ? <img src={value.image} alt="" /> : null}
+                          <span>{value.value}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+              <div className="mall-detail-sku-box is-plain">
+                <div className="mall-detail-sku-top">
+                  <div className="mall-detail-sku-group-name">{lastGroup?.name || "规格"}</div>
+                </div>
+                <div className="mall-detail-sku-list">
+                  {visibleRows.length ? visibleRows.map((row: AnyRecord) => {
+                    const index = Number(row.originalIndex);
+                    const qty = Number(quantities[index] || 0);
+                    const stock = Number(row.stockQuantity || 0);
+                    const soldOut = row.skuStatus === "DISABLED" || stock <= 0;
+                    const minOrderQuantity = Number(row.minOrderQuantity || 1);
+                    const price = preview.quoteType === "TIER_PRICE" ? preview.salePrice : Number(row.salePrice || 0);
+                    return (
+                      <div className={`mall-detail-sku-row ${soldOut ? "is-sold-out" : ""}`} key={`${row.skuCode || index}-${index}`}>
+                        <div className="mall-detail-sku-name">
+                          <span>{normalizeSkuName(row, row.skuName || "默认规格") || "默认规格"}</span>
+                          <em>规格ID:{row.skuCode || "保存后生成"}</em>
+                        </div>
+                        <div className="mall-detail-sku-price">{money(price)}</div>
+                        <div className="mall-detail-sku-stock">{stock} {preview.unit}</div>
+                        <div className="mall-detail-stepper">
+                          <Button disabled={qty <= 0} onClick={() => changeQuantity(index, -1, minOrderQuantity)}>-</Button>
+                          <InputNumber min={0} max={stock} step={1} controls={false} precision={0} value={qty} disabled={soldOut} onChange={value => setQuantities(old => ({ ...old, [index]: Number(value || 0) }))} />
+                          <Button disabled={soldOut || qty + 1 > stock} onClick={() => changeQuantity(index, 1, minOrderQuantity)}>+</Button>
+                        </div>
+                      </div>
+                    );
+                  }) : <div className="product-edit-preview-empty">当前规格暂无可购 SKU</div>}
+                </div>
+              </div>
+            </div>
+
+            <div className="mall-detail-summary">
+              <span>已选 <b>{selected.length}</b> 款 <b>{totalQty}</b> {preview.unit}</span>
+              <span>商品金额：<b>{money(totalAmount)}</b></span>
+              <span>运费：待确认</span>
+            </div>
+
+            <div className="mall-detail-actions">
+              <Button className="mall-detail-primary-action" size="large" disabled>立即下单</Button>
+              <Button className="mall-detail-secondary-action" size="large" disabled>加入购物车</Button>
+            </div>
+          </div>
+        </div>
+      </Card>
+      <Card title="商品详情">
+        {String(preview.detailText || "").trim()
+          ? <div className="product-detail-render" dangerouslySetInnerHTML={{ __html: preview.detailText }} />
+          : <div className="product-edit-preview-empty">暂无详情</div>}
+      </Card>
+    </div>
   );
 }
 
@@ -2625,6 +3532,7 @@ async function productSale(ctx: Ctx, item: AnyRecord) {
 
 function productDetail(ctx: Ctx, item: AnyRecord) {
   const detail = parseDetailContent(item.detailContent);
+  const specImages = productSpecImages(item);
   ctx.setDrawer({
     title: `商品详情 ${item.productName || ""}`,
     body: (
@@ -2639,6 +3547,20 @@ function productDetail(ctx: Ctx, item: AnyRecord) {
           { key: "status", label: "状态", children: tag(item.saleStatus) }
         ]} />
         {item.mainImageUrl?.startsWith("data:") ? <Image src={item.mainImageUrl} className="detail-image" /> : null}
+        {specImages.length ? (
+          <Card title="规格图片">
+            <div className="product-detail-spec-images">
+              {specImages.map((spec: AnyRecord) => (
+                <div className="product-detail-spec-image-item" key={spec.key}>
+                  <Image src={spec.image} className="product-detail-spec-image" />
+                  <div className="product-detail-spec-image-label">
+                    {spec.groupName ? `${spec.groupName}：` : ""}{spec.value || "-"}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+        ) : null}
         <Card title="图文详情"><div className="product-detail-render" dangerouslySetInnerHTML={{ __html: detail.text || "-" }} /></Card>
         {detail.imageUrl ? <Image src={detail.imageUrl} className="detail-image" /> : null}
       </Space>
@@ -2667,7 +3589,7 @@ function CategoryPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
     return inTreeSelection && inSearch;
   }), [rows, searchKeyword, selectedCategoryNames]);
   return (
-    <div className="product-archive-page management-board-page category-management-page">
+    <div className="product-archive-page management-board-page management-tree-page category-management-page">
       <aside className="product-archive-sidebar management-board-sidebar">
         <Input
           className="product-archive-sidebar-search"
@@ -2701,8 +3623,8 @@ function CategoryPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
           <div className="management-board-title">分类列表</div>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => categoryForm(ctx)}>新增分类</Button>
         </div>
-        <div className="management-board-table product-archive-table category-list-table">
-          <AdminTable loading={loading} rowKey="id" dataSource={filteredRows} pagination={{ className: "product-archive-pagination", hideOnSinglePage: false }} scroll={{ x: "max-content", y: "var(--management-list-table-body-height)" }} columns={[
+        <div className="management-board-table product-archive-table anchored-pagination-table category-list-table">
+          <AdminTable loading={loading} rowKey="id" dataSource={filteredRows} pagination={{ className: "product-archive-pagination" }} scroll={{ x: "max-content", y: "100%" }} columns={[
             { title: "分类名称", dataIndex: "categoryName" },
             { title: "上级分类", dataIndex: "parentName", render: v => v || "-" },
             { title: "排序", dataIndex: "sortNo" },
@@ -2761,7 +3683,7 @@ function BrandPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
     return inSelection && inSearch;
   }), [rows, searchKeyword, selectedBrandKey]);
   return (
-    <div className="product-archive-page management-board-page brand-management-page">
+    <div className="product-archive-page management-board-page management-tree-page brand-management-page">
       <aside className="product-archive-sidebar management-board-sidebar">
         <Input
           className="product-archive-sidebar-search"
@@ -2786,8 +3708,8 @@ function BrandPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
           <div className="management-board-title">品牌列表</div>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => brandForm(ctx)}>新增品牌</Button>
         </div>
-        <div className="management-board-table product-archive-table brand-list-table">
-          <AdminTable loading={loading} rowKey="id" dataSource={filteredRows} pagination={{ className: "product-archive-pagination", hideOnSinglePage: false }} scroll={{ x: "max-content", y: "var(--management-list-table-body-height)" }} columns={[
+        <div className="management-board-table product-archive-table anchored-pagination-table brand-list-table">
+          <AdminTable loading={loading} rowKey="id" dataSource={filteredRows} pagination={{ className: "product-archive-pagination" }} scroll={{ x: "max-content", y: "100%" }} columns={[
             { title: "品牌名称", dataIndex: "brandName" },
             { title: "排序", dataIndex: "sortNo" },
             { title: "状态", dataIndex: "status", render: tag },
@@ -2818,36 +3740,155 @@ function brandForm(ctx: Ctx, item?: AnyRecord) {
   ], item ? `/api/admin/product-brands/${item.id}` : "/api/admin/product-brands", item ? "PUT" : "POST");
 }
 
+function AttributeTemplatePage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
+  const [form] = Form.useForm();
+  const rows = ctx.data.attributeTemplates || [];
+  const [keyword, setKeyword] = useState("");
+  const [selectedKey, setSelectedKey] = useState<React.Key>("template:__all__");
+  const [editing, setEditing] = useState<AnyRecord | null>(null);
+  const [modalOpen, setModalOpen] = useState(false);
+  const searchKeyword = keyword.trim().toLocaleLowerCase();
+  const treeData = useMemo(() => [{
+    key: "template:__all__",
+    title: "全部模板",
+    children: rows
+      .filter((item: AnyRecord) => !searchKeyword || String(item.templateName || "").toLocaleLowerCase().includes(searchKeyword))
+      .map((item: AnyRecord) => ({ key: `template:${item.id}`, title: item.templateName }))
+  }], [rows, searchKeyword]);
+  const filteredRows = useMemo(() => rows.filter((item: AnyRecord) => {
+    const inSelection = selectedKey === "template:__all__" || String(selectedKey) === `template:${item.id}`;
+    return inSelection && (!searchKeyword || String(item.templateName || "").toLocaleLowerCase().includes(searchKeyword));
+  }), [rows, searchKeyword, selectedKey]);
+  const openForm = (item?: AnyRecord) => {
+    setEditing(item || null);
+    setModalOpen(true);
+    form.setFieldsValue({
+      templateName: item?.templateName || "",
+      fields: item?.fields?.length ? item.fields : [{ id: "", name: "" }]
+    });
+  };
+  const closeForm = () => {
+    setModalOpen(false);
+    setEditing(null);
+    form.resetFields();
+  };
+  const saveTemplate = async () => {
+    try {
+      const values = await form.validateFields();
+      await request(editing ? `/api/admin/product-attribute-templates/${editing.id}` : "/api/admin/product-attribute-templates", {
+        method: editing ? "PUT" : "POST",
+        data: values
+      });
+      ctx.message.success("保存成功");
+      closeForm();
+      await ctx.loadKeys(["attributeTemplates"]);
+    } catch (error: any) {
+      if (error?.errorFields) return;
+      ctx.message.error(error.message);
+    }
+  };
+  return (
+    <div className="product-archive-page management-board-page management-tree-page attribute-template-page">
+      <aside className="product-archive-sidebar management-board-sidebar">
+        <Input className="product-archive-sidebar-search" value={keyword} allowClear placeholder="请输入模板名称" onChange={event => setKeyword(event.target.value)} />
+        <div className="product-category-tree">
+          <Tree
+            blockNode
+            defaultExpandedKeys={["template:__all__"]}
+            selectedKeys={[selectedKey]}
+            switcherIcon={({ expanded }) => <DownOutlined rotate={expanded ? 0 : -90} />}
+            treeData={treeData}
+            onSelect={keys => setSelectedKey(keys[0] || "template:__all__")}
+          />
+        </div>
+      </aside>
+      <section className="product-archive-main management-board-main attribute-template-list-panel">
+        <div className="management-board-header">
+          <div className="management-board-title">属性模板列表</div>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => openForm()}>新增模板</Button>
+        </div>
+        <div className="management-board-table product-archive-table anchored-pagination-table attribute-template-list-table">
+          <AdminTable loading={loading} rowKey="id" dataSource={filteredRows} pagination={{ className: "product-archive-pagination" }} scroll={{ x: "max-content", y: "100%" }} columns={[
+            { title: "模板名称", dataIndex: "templateName", width: 220 },
+            { title: "关联商品数", dataIndex: "productCount", width: 160, render: value => Number(value || 0) },
+            { title: "属性", dataIndex: "fields", render: fields => (fields || []).length ? <Space size={[6, 6]} wrap>{fields.map((field: AnyRecord) => <Tag key={field.id}>{field.name}</Tag>)}</Space> : "-" },
+            {
+              title: "操作",
+              width: 180,
+              render: (_, item) => (
+                <Space>
+                  <Button type="link" icon={<EditOutlined />} onClick={() => openForm(item)}>编辑</Button>
+                  <Popconfirm title="确认删除该属性模板？" description={Number(item.productCount || 0) ? "已关联商品的模板不能删除" : undefined} onConfirm={() => deleteRow(ctx, `/api/admin/product-attribute-templates/${item.id}`)}>
+                    <Button type="link" danger icon={<DeleteOutlined />}>删除</Button>
+                  </Popconfirm>
+                </Space>
+              )
+            }
+          ]} />
+        </div>
+      </section>
+      <Modal title={editing ? "编辑属性模板" : "新增属性模板"} open={modalOpen} width={620} onCancel={closeForm} onOk={saveTemplate} okText="保存" cancelText="取消" destroyOnClose>
+        <Form form={form} layout="vertical" initialValues={{ fields: [{ id: "", name: "" }] }}>
+          <Form.Item name="templateName" label="模板名称" rules={[{ required: true, message: "请输入模板名称" }, { max: 60, message: "模板名称不能超过60个字符" }]}>
+            <Input placeholder="请输入模板名称" maxLength={60} />
+          </Form.Item>
+          <Form.Item label="模板字段" required className="attribute-template-fields-form-item">
+            <Form.List name="fields">
+              {(fields, { add, remove }) => (
+                <div className="attribute-template-field-list">
+                  {fields.map(field => (
+                    <div className="attribute-template-field-row" key={field.key}>
+                      <HolderOutlined className="attribute-template-field-drag" />
+                      <Form.Item name={[field.name, "id"]} hidden><Input /></Form.Item>
+                      <Form.Item name={[field.name, "name"]} rules={[{ required: true, message: "请输入属性名称" }, { max: 30, message: "属性名称不能超过30个字符" }]}>
+                        <Input placeholder="请输入属性名称" maxLength={30} />
+                      </Form.Item>
+                      <Button type="text" danger icon={<DeleteOutlined />} disabled={fields.length <= 1} aria-label="删除属性字段" onClick={() => remove(field.name)} />
+                    </div>
+                  ))}
+                  <Button type="dashed" icon={<PlusOutlined />} disabled={fields.length >= 10} onClick={() => add({ id: "", name: "" })}>
+                    新增字段{fields.length ? `（${fields.length}/10）` : ""}
+                  </Button>
+                </div>
+              )}
+            </Form.List>
+          </Form.Item>
+        </Form>
+      </Modal>
+    </div>
+  );
+}
+
 function SupplierPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
   const rows = ctx.data.suppliers || [];
-  const [supplierNameInput, setSupplierNameInput] = useState("");
+  const [supplierInfoInput, setSupplierInfoInput] = useState("");
   const [contactNameInput, setContactNameInput] = useState("");
   const [contactPhoneInput, setContactPhoneInput] = useState("");
-  const [supplierName, setSupplierName] = useState("");
+  const [supplierInfo, setSupplierInfo] = useState("");
   const [contactName, setContactName] = useState("");
   const [contactPhone, setContactPhone] = useState("");
   const normalizeSearch = (value: any) => String(value || "").trim().toLowerCase();
   const matchesSearch = (value: any, search: string) => !search || normalizeSearch(value).includes(search);
   const filteredRows = useMemo(() => {
-    const supplierNameSearch = normalizeSearch(supplierName);
+    const supplierInfoSearch = normalizeSearch(supplierInfo);
     const contactNameSearch = normalizeSearch(contactName);
     const contactPhoneSearch = normalizeSearch(contactPhone);
     return rows.filter((item: AnyRecord) => (
-      matchesSearch(item.supplierName, supplierNameSearch)
+      (matchesSearch(item.supplierNo, supplierInfoSearch) || matchesSearch(item.supplierName, supplierInfoSearch))
       && matchesSearch(item.contactName, contactNameSearch)
       && matchesSearch(item.contactPhone, contactPhoneSearch)
     ));
-  }, [rows, supplierName, contactName, contactPhone]);
+  }, [rows, supplierInfo, contactName, contactPhone]);
   const applyFilters = () => {
-    setSupplierName(supplierNameInput.trim());
+    setSupplierInfo(supplierInfoInput.trim());
     setContactName(contactNameInput.trim());
     setContactPhone(contactPhoneInput.trim());
   };
   const resetFilters = () => {
-    setSupplierNameInput("");
+    setSupplierInfoInput("");
     setContactNameInput("");
     setContactPhoneInput("");
-    setSupplierName("");
+    setSupplierInfo("");
     setContactName("");
     setContactPhone("");
   };
@@ -2856,8 +3897,8 @@ function SupplierPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
       <section className="product-archive-main supplier-management-main">
         <div className="product-archive-filters supplier-management-filters">
           <label>
-            <span>供应商名称</span>
-            <Input allowClear placeholder="请输入供应商名称" value={supplierNameInput} onChange={event => setSupplierNameInput(event.target.value)} />
+            <span>供应商信息</span>
+            <Input allowClear placeholder="请输入供应商编码、名称" value={supplierInfoInput} onChange={event => setSupplierInfoInput(event.target.value)} />
           </label>
           <label>
             <span>联系人</span>
@@ -2875,14 +3916,15 @@ function SupplierPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
         <div className="product-archive-toolbar supplier-management-toolbar">
           <Button type="primary" icon={<PlusOutlined />} onClick={() => supplierForm(ctx)}>新增供应商</Button>
         </div>
-        <div className="product-archive-table supplier-list-table">
+        <div className="management-board-table product-archive-table anchored-pagination-table supplier-list-table">
           <AdminTable
             loading={loading}
             rowKey="id"
             dataSource={filteredRows}
             pagination={{ className: "product-archive-pagination" }}
-            scroll={{ x: "max-content", y: "max(300px, calc(100vh - 365px))" }}
+            scroll={{ x: "max-content", y: "100%" }}
             columns={[
+              { title: "供应商编码", dataIndex: "supplierNo", width: 140 },
               { title: "供应商名称", dataIndex: "supplierName", width: 220 },
               { title: "联系人", dataIndex: "contactName", width: 140 },
               { title: "电话", dataIndex: "contactPhone", width: 160 },
@@ -2910,6 +3952,12 @@ function SupplierPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
 
 function supplierForm(ctx: Ctx, item?: AnyRecord) {
   genericForm(ctx, item ? "编辑供应商" : "新增供应商", item, [
+    {
+      name: "supplierNo",
+      label: "供应商编码",
+      disabled: true,
+      placeholder: item ? undefined : "保存后由系统自动生成"
+    },
     { name: "supplierName", label: "供应商名称", required: true },
     { name: "contactName", label: "联系人", required: true },
     { name: "contactPhone", label: "联系电话", required: true },
@@ -2992,7 +4040,11 @@ function genericForm(ctx: Ctx, title: string, item: AnyRecord | undefined, field
               ) : field.type === "textarea" ? (
                 <Input.TextArea rows={3} maxLength={255} />
               ) : (
-                <Input maxLength={isPhone ? 11 : undefined} />
+                <Input
+                  disabled={field.disabled}
+                  placeholder={field.placeholder}
+                  maxLength={isPhone ? 11 : undefined}
+                />
               )}
             </Form.Item>
           );

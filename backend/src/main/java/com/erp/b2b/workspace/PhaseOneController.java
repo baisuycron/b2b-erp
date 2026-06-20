@@ -1,5 +1,6 @@
 package com.erp.b2b.workspace;
 
+import com.erp.b2b.auth.AuthTokenService;
 import com.erp.b2b.common.ApiException;
 import com.erp.b2b.inventory.InventoryRepository;
 import com.erp.b2b.order.OrderService;
@@ -18,6 +19,7 @@ import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -27,6 +29,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -50,6 +53,7 @@ public class PhaseOneController {
     private final ImageSearchService imageSearchService;
     private final InventoryRepository inventoryRepository;
     private final OrderService orderService;
+    private final AuthTokenService authTokenService;
     private final List<Map<String, Object>> buyerCartItems = new ArrayList<>();
     private final List<Map<String, Object>> buyerAddresses = new ArrayList<>();
     private final AtomicLong cartItemSequence = new AtomicLong(1000);
@@ -57,12 +61,13 @@ public class PhaseOneController {
     private static final String SUPER_ADMIN_ROLE = "超级管理员";
     private static final String DASHBOARD_PERMISSION_KEY = "dashboard";
 
-    public PhaseOneController(JdbcClient jdbcClient, ProductRepository productRepository, ImageSearchService imageSearchService, InventoryRepository inventoryRepository, OrderService orderService) {
+    public PhaseOneController(JdbcClient jdbcClient, ProductRepository productRepository, ImageSearchService imageSearchService, InventoryRepository inventoryRepository, OrderService orderService, AuthTokenService authTokenService) {
         this.jdbcClient = jdbcClient;
         this.productRepository = productRepository;
         this.imageSearchService = imageSearchService;
         this.inventoryRepository = inventoryRepository;
         this.orderService = orderService;
+        this.authTokenService = authTokenService;
         buyerAddresses.add(row("id", addressSequence.incrementAndGet(), "receiverName", "李经理", "receiverPhone", "13888888888", "region", "浙江省 杭州市 西湖区", "detailAddress", "文三路188号3号楼1201室", "isDefault", true));
         buyerAddresses.add(row("id", addressSequence.incrementAndGet(), "receiverName", "王采购", "receiverPhone", "13666666666", "region", "浙江省 杭州市 余杭区", "detailAddress", "未来科技城88号", "isDefault", false));
     }
@@ -71,13 +76,37 @@ public class PhaseOneController {
     public Map<String, Object> adminSummary() {
         var products = productRepository.findAll();
         var orders = orderService.listOrders();
+        LocalDateTime todayStart = LocalDate.now().atStartOfDay();
+        long todayOrders = orders.stream()
+            .filter(order -> order.createdAt() != null && !order.createdAt().isBefore(todayStart))
+            .count();
+        BigDecimal todayPaymentAmount = orders.stream()
+            .filter(order -> "PAID".equals(order.paymentStatus()))
+            .filter(order -> order.updatedAt() != null && !order.updatedAt().isBefore(todayStart))
+            .map(order -> order.totalAmount() == null ? BigDecimal.ZERO : order.totalAmount())
+            .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal todayRefundAmount = jdbcClient.sql("""
+            SELECT COALESCE(SUM(refund_amount), 0)
+            FROM after_sale_orders
+            WHERE refund_status = 'SUCCESS'
+              AND updated_at >= :todayStart
+            """)
+            .param("todayStart", todayStart)
+            .query(BigDecimal.class)
+            .single();
+        long todayNewBuyers = count("""
+            SELECT COUNT(*)
+            FROM customers
+            WHERE created_at >= :todayStart
+            """, "todayStart", todayStart);
         long pendingAfterSale = count("SELECT COUNT(*) FROM after_sale_orders WHERE after_sale_status NOT IN ('COMPLETED','REJECTED')");
         long pendingInvoice = count("SELECT COUNT(*) FROM invoice_applies WHERE invoice_status = 'WAIT_INVOICE'");
         return row(
-            "todayOrders", orders.size(),
-            "todayPaymentAmount", payments().stream().map(item -> new BigDecimal(String.valueOf(item.get("amount")))).reduce(BigDecimal.ZERO, BigDecimal::add),
-            "saleableSkus", products.stream().filter(product -> "ON_SALE".equals(product.saleStatus())).count(),
-            "stockWarning", products.stream().filter(product -> product.stockQuantity() <= stockWarningThreshold()).count(),
+            "todayOrders", todayOrders,
+            "todayOrderCount", todayOrders,
+            "todayPaymentAmount", todayPaymentAmount,
+            "todayRefundAmount", todayRefundAmount == null ? BigDecimal.ZERO : todayRefundAmount,
+            "todayNewBuyers", todayNewBuyers,
             "pendingAfterSale", pendingAfterSale,
             "pendingInvoice", pendingInvoice,
             "todoCards", List.of(
@@ -122,8 +151,11 @@ public class PhaseOneController {
         String realName = string(account.get("realName"));
         List<String> roleNames = roleNames(account.get("roleName"));
         boolean isSuperAdmin = roleNames.contains(SUPER_ADMIN_ROLE);
+        AuthTokenService.IssuedToken token = authTokenService.issue("ADMIN", username);
         return row(
-            "token", "admin-token-" + username,
+            "token", token.value(),
+            "expiresAt", token.expiresAt().toString(),
+            "expiresInSeconds", token.expiresInSeconds(),
             "username", username,
             "accountName", realName,
             "realName", realName,
@@ -297,7 +329,7 @@ public class PhaseOneController {
     public List<Map<String, Object>> permissionTree() {
         return List.of(
             permissionModule(DASHBOARD_PERMISSION_KEY, "首页工作台", List.of()),
-            permissionModule("goods", "商品管理", List.of(row("key", "goods:product-list", "title", "商品档案"), row("key", "goods:product-category", "title", "商品分类"), row("key", "goods:product-brand", "title", "商品品牌"))),
+            permissionModule("goods", "商品管理", List.of(row("key", "goods:product-list", "title", "商品档案"), row("key", "goods:product-category", "title", "商品分类"), row("key", "goods:product-brand", "title", "商品品牌"), row("key", "goods:product-attribute-template", "title", "商品属性模板"))),
             permissionModule("purchase", "采购管理", List.of(row("key", "purchase:supplier", "title", "供应商管理"), row("key", "purchase:purchase-order", "title", "采购订单"), row("key", "purchase:purchase-inbound", "title", "采购入库记录"))),
             permissionModule("stock", "库存管理", List.of(row("key", "stock:stock-overview", "title", "库存总览"), row("key", "stock:stock-flow", "title", "库存流水"))),
             permissionModule("order", "订单管理", List.of()),
@@ -314,6 +346,16 @@ public class PhaseOneController {
         return rows("""
             SELECT id, category_name, parent_name, sort_no, category_status AS status, created_at, updated_at
             FROM product_categories
+            ORDER BY sort_no, id
+            """);
+    }
+
+    @GetMapping("/mall/product-categories")
+    public List<Map<String, Object>> mallProductCategories() {
+        return rows("""
+            SELECT id, category_name, parent_name, sort_no, category_status AS status
+            FROM product_categories
+            WHERE category_status = 'ENABLED'
             ORDER BY sort_no, id
             """);
     }
@@ -433,6 +475,62 @@ public class PhaseOneController {
         return one("SELECT * FROM product_brands WHERE id = :id", "id", brandId);
     }
 
+    @GetMapping("/admin/product-attribute-templates")
+    public List<Map<String, Object>> productAttributeTemplates() {
+        List<Map<String, Object>> templates = rows("""
+            SELECT t.id, t.template_name, t.fields_json,
+                   (SELECT COUNT(*) FROM products p WHERE p.attribute_template_id = t.id) AS product_count,
+                   t.created_at, t.updated_at
+            FROM product_attribute_templates t
+            ORDER BY t.id DESC
+            """);
+        templates.forEach(this::expandAttributeTemplateFields);
+        return templates;
+    }
+
+    @PostMapping("/admin/product-attribute-templates")
+    public Map<String, Object> createProductAttributeTemplate(@RequestBody Map<String, Object> request) {
+        String templateName = requiredString(request, "templateName");
+        String fieldsJson = attributeFieldsJson(request);
+        jdbcClient.sql("INSERT INTO product_attribute_templates (template_name, fields_json) VALUES (:templateName, :fieldsJson)")
+            .param("templateName", templateName)
+            .param("fieldsJson", fieldsJson)
+            .update();
+        log("商品管理", "新增商品属性模板", templateName, "新增商品属性模板");
+        return productAttributeTemplateByName(templateName);
+    }
+
+    @PutMapping("/admin/product-attribute-templates/{templateId}")
+    public Map<String, Object> updateProductAttributeTemplate(@PathVariable Long templateId, @RequestBody Map<String, Object> request) {
+        one("SELECT id FROM product_attribute_templates WHERE id = :id", "id", templateId);
+        String templateName = requiredString(request, "templateName");
+        String fieldsJson = attributeFieldsJson(request);
+        jdbcClient.sql("UPDATE product_attribute_templates SET template_name = :templateName, fields_json = :fieldsJson WHERE id = :id")
+            .param("templateName", templateName)
+            .param("fieldsJson", fieldsJson)
+            .param("id", templateId)
+            .update();
+        log("商品管理", "编辑商品属性模板", String.valueOf(templateId), "编辑商品属性模板");
+        return productAttributeTemplateById(templateId);
+    }
+
+    @DeleteMapping("/admin/product-attribute-templates/{templateId}")
+    public Map<String, Object> deleteProductAttributeTemplate(@PathVariable Long templateId) {
+        Map<String, Object> current = one("SELECT id, template_name FROM product_attribute_templates WHERE id = :id", "id", templateId);
+        Integer productCount = jdbcClient.sql("SELECT COUNT(*) FROM products WHERE attribute_template_id = :id")
+            .param("id", templateId)
+            .query(Integer.class)
+            .single();
+        if (productCount != null && productCount > 0) {
+            throw new ApiException(HttpStatus.CONFLICT, "该模板已关联商品，无法删除");
+        }
+        jdbcClient.sql("DELETE FROM product_attribute_templates WHERE id = :id")
+            .param("id", templateId)
+            .update();
+        log("商品管理", "删除商品属性模板", String.valueOf(templateId), "删除商品属性模板 " + current.get("templateName"));
+        return row("deleted", true, "id", templateId);
+    }
+
     @GetMapping("/admin/products")
     public List<Product> adminProducts() {
         return productRepository.findAll();
@@ -447,7 +545,7 @@ public class PhaseOneController {
     @PostMapping("/admin/products")
     public Product createAdminProduct(@Valid @RequestBody CreateProductRequest request) {
         long suffix = System.currentTimeMillis();
-        Product product = productRepository.create(request, "P-" + suffix, "SKU-" + suffix);
+        Product product = productRepository.create(request, "P-" + suffix, "SKU" + suffix);
         imageSearchService.syncProductImages(product);
         log("商品管理", "新增商品", product.productCode(), "新增商品 " + product.productName());
         return product;
@@ -459,6 +557,73 @@ public class PhaseOneController {
         imageSearchService.syncProductImages(product);
         log("商品管理", "编辑商品", product.productCode(), "编辑商品 " + product.productName());
         return product;
+    }
+
+    @PostMapping("/admin/products/batch-delete/check")
+    public Map<String, Object> checkProductsBeforeBatchDelete(@RequestBody Map<String, Object> request) {
+        List<Long> productIds = requiredProductIds(request);
+        List<Map<String, Object>> blocked = new ArrayList<>();
+        List<Map<String, Object>> deletable = new ArrayList<>();
+
+        for (Long productId : productIds) {
+            Product product = productRepository.findById(productId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "商品不存在或已被删除"));
+            boolean hasInboundRecord = count("SELECT COUNT(*) FROM inventory_movements WHERE product_id = :productId AND quantity_delta > 0", "productId", productId) > 0;
+            boolean hasSalesRecord = count("SELECT COUNT(*) FROM sales_order_items WHERE product_id = :productId", "productId", productId) > 0;
+            List<String> recordTypes = new ArrayList<>();
+            if (hasInboundRecord) recordTypes.add("入库记录");
+            if (hasSalesRecord) recordTypes.add("销售记录");
+
+            Map<String, Object> result = row(
+                "id", product.id(),
+                "productCode", product.productCode(),
+                "skuCode", product.skuCode(),
+                "productName", product.productName(),
+                "hasInboundRecord", hasInboundRecord,
+                "hasSalesRecord", hasSalesRecord,
+                "reason", recordTypes.isEmpty() ? "可删除" : String.join("、", recordTypes) + "，无法删除"
+            );
+            (recordTypes.isEmpty() ? deletable : blocked).add(result);
+        }
+
+        return row(
+            "selectedCount", productIds.size(),
+            "deletable", deletable,
+            "blocked", blocked
+        );
+    }
+
+    @PostMapping("/admin/products/batch-delete")
+    @Transactional
+    public Map<String, Object> batchDeleteProducts(@RequestBody Map<String, Object> request) {
+        List<Long> productIds = requiredProductIds(request);
+        for (Long productId : productIds) {
+            jdbcClient.sql("SELECT id FROM products WHERE id = :productId FOR UPDATE")
+                .param("productId", productId)
+                .query(Long.class)
+                .optional()
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "商品不存在或已被删除"));
+        }
+        Map<String, Object> checkResult = checkProductsBeforeBatchDelete(request);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> blocked = (List<Map<String, Object>>) checkResult.get("blocked");
+        if (!blocked.isEmpty()) {
+            return row("deletedCount", 0, "blocked", blocked);
+        }
+
+        int deletedCount = 0;
+        for (Long productId : productIds) {
+            Product product = productRepository.findById(productId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "商品不存在或已被删除"));
+            jdbcClient.sql("DELETE FROM product_image_vectors WHERE product_id = :productId")
+                .param("productId", productId)
+                .update();
+            deletedCount += jdbcClient.sql("DELETE FROM products WHERE id = :productId")
+                .param("productId", productId)
+                .update();
+            log("商品管理", "批量删除商品", product.productCode(), "删除商品 " + product.productName());
+        }
+        return row("deletedCount", deletedCount, "blocked", List.of());
     }
 
     @PutMapping("/admin/products/{productId}/on-sale")
@@ -526,8 +691,11 @@ public class PhaseOneController {
         if ("DISABLED".equals(customer.get("auditStatus"))) {
             throw new ApiException(HttpStatus.FORBIDDEN, "\u5f53\u524d\u8d26\u53f7\u5df2\u88ab\u505c\u7528\uff0c\u8bf7\u8054\u7cfb\u5546\u5bb6");
         }
+        AuthTokenService.IssuedToken token = authTokenService.issue("BUYER", string(customer.get("id")));
         return row(
-            "token", "buyer-token-" + customer.get("id"),
+            "token", token.value(),
+            "expiresAt", token.expiresAt().toString(),
+            "expiresInSeconds", token.expiresInSeconds(),
             "phone", customer.get("contactPhone"),
             "buyerName", customer.get("contactName"),
             "companyName", customer.get("companyName"),
@@ -676,7 +844,7 @@ public class PhaseOneController {
     @GetMapping("/admin/suppliers")
     public List<Map<String, Object>> suppliers() {
         return rows("""
-            SELECT id, supplier_no, supplier_name, contact_name, contact_phone AS phone, address, supplier_status AS status, purchase_count, purchase_amount, created_at, updated_at
+            SELECT id, supplier_no, supplier_name, contact_name, contact_phone, address, supplier_status AS status, purchase_count, purchase_amount, created_at, updated_at
             FROM suppliers
             ORDER BY id
             """);
@@ -688,11 +856,22 @@ public class PhaseOneController {
     }
 
     @PostMapping("/admin/suppliers")
-    public Map<String, Object> createSupplier(@RequestBody Map<String, Object> request) {
+    @Transactional
+    public synchronized Map<String, Object> createSupplier(@RequestBody Map<String, Object> request) {
         String supplierName = requiredString(request, "supplierName");
         String contactName = requiredString(request, "contactName");
         String contactPhone = requiredString(request, "contactPhone");
-        String supplierNo = "SUP" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + System.currentTimeMillis() % 100000;
+        int nextSupplierNumber = jdbcClient.sql("""
+            SELECT COALESCE(MAX(CAST(supplier_no AS UNSIGNED)), 0) + 1
+            FROM suppliers
+            WHERE supplier_no REGEXP '^[0-9]{5}$'
+            """)
+            .query(Integer.class)
+            .single();
+        if (nextSupplierNumber > 99999) {
+            throw new ApiException(HttpStatus.CONFLICT, "供应商编码已达到上限");
+        }
+        String supplierNo = String.format("%05d", nextSupplierNumber);
         jdbcClient.sql("""
             INSERT INTO suppliers (supplier_no, supplier_name, contact_name, contact_phone, address, supplier_status)
             VALUES (:supplierNo, :supplierName, :contactName, :contactPhone, :address, 'ENABLED')
@@ -1466,12 +1645,41 @@ public class PhaseOneController {
             .single();
     }
 
+    private List<Long> requiredProductIds(Map<String, Object> request) {
+        Object rawIds = request.get("productIds");
+        if (!(rawIds instanceof List<?> values) || values.isEmpty()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "请至少选择一个商品");
+        }
+        if (values.size() > 100) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "单次最多删除100个商品");
+        }
+        Set<Long> productIds = new LinkedHashSet<>();
+        for (Object value : values) {
+            try {
+                long productId = Long.parseLong(String.valueOf(value));
+                if (productId <= 0) throw new NumberFormatException();
+                productIds.add(productId);
+            } catch (NumberFormatException exception) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, "商品ID格式不正确");
+            }
+        }
+        return List.copyOf(productIds);
+    }
+
     private int stockWarningThreshold() {
         return Integer.parseInt(String.valueOf(systemParameters().getOrDefault("stockWarningThreshold", "50")));
     }
 
     private long count(String sql) {
         return jdbcClient.sql(sql).query(Long.class).single();
+    }
+
+    private long count(String sql, String paramName, Object value) {
+        Long result = jdbcClient.sql(sql)
+            .param(paramName, value)
+            .query(Long.class)
+            .single();
+        return result == null ? 0 : result;
     }
 
     private void requireEnabledRole(String roleName) {
@@ -1628,6 +1836,78 @@ public class PhaseOneController {
     private void ensureDefaultAddress() {
         if (!buyerAddresses.isEmpty() && buyerAddresses.stream().noneMatch(item -> Boolean.parseBoolean(String.valueOf(item.getOrDefault("isDefault", false))))) {
             buyerAddresses.get(0).put("isDefault", true);
+        }
+    }
+
+    private String attributeFieldsJson(Map<String, Object> request) {
+        Object rawFields = request.getOrDefault("fields", List.of());
+        if (!(rawFields instanceof List<?> values) || values.isEmpty()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "请至少添加一个属性字段");
+        }
+        if (values.size() > 10) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "属性字段最多添加10个");
+        }
+        List<Map<String, Object>> fields = new ArrayList<>();
+        Set<String> names = new LinkedHashSet<>();
+        for (Object value : values) {
+            if (!(value instanceof Map<?, ?> field)) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, "属性字段格式不正确");
+            }
+            String name = string(field.get("name")).trim();
+            if (name.isBlank()) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, "属性名称不能为空");
+            }
+            if (name.length() > 30) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, "属性名称不能超过30个字符");
+            }
+            if (!names.add(name)) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, "属性名称不能重复");
+            }
+            String id = string(field.get("id")).trim();
+            fields.add(row("id", id.isBlank() ? UUID.randomUUID().toString() : id, "name", name));
+        }
+        try {
+            return objectMapper.writeValueAsString(fields);
+        } catch (JsonProcessingException exception) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "属性字段格式不正确");
+        }
+    }
+
+    private Map<String, Object> productAttributeTemplateById(Long templateId) {
+        List<Map<String, Object>> templates = rows("""
+            SELECT t.id, t.template_name, t.fields_json,
+                   (SELECT COUNT(*) FROM products p WHERE p.attribute_template_id = t.id) AS product_count,
+                   t.created_at, t.updated_at
+            FROM product_attribute_templates t
+            WHERE t.id = :id
+            """, "id", templateId);
+        if (templates.isEmpty()) throw new ApiException(HttpStatus.NOT_FOUND, "商品属性模板不存在");
+        Map<String, Object> template = templates.get(0);
+        expandAttributeTemplateFields(template);
+        return template;
+    }
+
+    private Map<String, Object> productAttributeTemplateByName(String templateName) {
+        List<Map<String, Object>> templates = rows("""
+            SELECT t.id, t.template_name, t.fields_json,
+                   (SELECT COUNT(*) FROM products p WHERE p.attribute_template_id = t.id) AS product_count,
+                   t.created_at, t.updated_at
+            FROM product_attribute_templates t
+            WHERE t.template_name = :templateName
+            """, "templateName", templateName);
+        if (templates.isEmpty()) throw new ApiException(HttpStatus.NOT_FOUND, "商品属性模板不存在");
+        Map<String, Object> template = templates.get(0);
+        expandAttributeTemplateFields(template);
+        return template;
+    }
+
+    private void expandAttributeTemplateFields(Map<String, Object> template) {
+        String raw = string(template.remove("fieldsJson"));
+        try {
+            Object parsed = objectMapper.readValue(raw, Object.class);
+            template.put("fields", parsed instanceof List<?> ? parsed : List.of());
+        } catch (JsonProcessingException exception) {
+            template.put("fields", List.of());
         }
     }
 

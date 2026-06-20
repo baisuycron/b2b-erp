@@ -6,6 +6,7 @@ import {
   Badge,
   Button,
   Card,
+  Carousel,
   Checkbox,
   ConfigProvider,
   Descriptions,
@@ -45,6 +46,7 @@ import {
 import "antd/dist/reset.css";
 import zhCN from "antd/locale/zh_CN";
 import "../shared/styles.css";
+import GlobalLoadingMask from "../shared/GlobalLoadingMask";
 import { AnyRecord, buyerAccountKey, buyerTokenKey, dateText, money, parseDetailContent, parseRows, request, statusText } from "../shared/api";
 
 const phonePattern = /^1[3-9]\d{9}$/;
@@ -63,6 +65,8 @@ const formValidateMessages = {
 const mallImageSearchTypes = ["image/png", "image/jpeg", "image/jpg", "image/webp", "image/bmp"];
 const mallImageSearchMaxSize = 5 * 1024 * 1024;
 const mallListPageSize = 10;
+const mallPageSnapshotKey = "b2b-erp-mall-page-snapshot";
+const mallPageSnapshotMaxAge = 10 * 60 * 1000;
 
 function phoneRules(label = "手机号") {
   return [
@@ -104,12 +108,31 @@ function pageFromView(value: string | null): Page {
   const map: Record<string, Page> = {
     login: "login",
     register: "register",
+    list: "list",
     cart: "cart",
     orders: "orders",
+    orderDetail: "orderDetail",
     account: "profile",
-    profile: "profile"
+    profile: "profile",
+    addresses: "addresses",
+    invoiceTitles: "invoiceTitles",
+    confirm: "confirm",
+    pay: "pay"
   };
   return map[String(value || "")] || "home";
+}
+
+function pageFromInitialUrl(): Page {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("productId")) return "detail";
+  const viewPage = pageFromView(params.get("view"));
+  if (viewPage !== "home") return viewPage;
+  const hasListQuery = ["keyword", "brandName", "brandId", "minPrice", "maxPrice", "searchType", "imageSearchId"].some(key => Boolean(params.get(key)))
+    || params.get("inStock") === "true"
+    || Number(params.get("page") || 1) > 1
+    || Boolean(params.get("order"))
+    || (Boolean(params.get("sort")) && params.get("sort") !== "comprehensive");
+  return hasListQuery ? "list" : "home";
 }
 
 function authPath(type: "login" | "register", redirect = "") {
@@ -185,36 +208,120 @@ function cleanQueryParams(query: AnyRecord) {
   return params;
 }
 
+function defaultMallListQuery(patch: AnyRecord = {}) {
+  return {
+    keyword: "",
+    brandName: "",
+    brandId: "",
+    minPrice: "",
+    maxPrice: "",
+    sort: "comprehensive",
+    order: "",
+    inStock: false,
+    page: 1,
+    pageSize: mallListPageSize,
+    searchType: "",
+    imageSearchId: "",
+    categoryId: "",
+    categoryName: "",
+    ...patch
+  };
+}
+
+function hasExplicitMallRoute() {
+  const params = new URLSearchParams(window.location.search);
+  return Boolean(params.get("productId") || params.get("view") || params.toString());
+}
+
+function snapshotDetailProduct(snapshot: AnyRecord | null | undefined) {
+  const product = snapshot?.selectedProduct;
+  if (!product) return null;
+  const productId = product.id || product.apiId;
+  return productId ? { product, productId } : null;
+}
+
+function snapshotHasRecoverableContent(snapshot: AnyRecord | null | undefined) {
+  if (!snapshot) return false;
+  if (snapshot.page === "detail") return Boolean(snapshotDetailProduct(snapshot));
+  if (Array.isArray(snapshot.products) && snapshot.products.length > 0) return true;
+  return snapshot.hydrated === true;
+}
+
+function readMallPageSnapshot(urlPage: Page): AnyRecord | null {
+  try {
+    const raw = sessionStorage.getItem(mallPageSnapshotKey);
+    if (!raw) return null;
+    const snapshot = JSON.parse(raw);
+    if (!snapshot || Date.now() - Number(snapshot.savedAt || 0) > mallPageSnapshotMaxAge) return null;
+    if (snapshot.path && snapshot.path !== window.location.pathname) return null;
+    if (!snapshotHasRecoverableContent(snapshot)) return null;
+    if (snapshot.page === "detail" && !snapshotDetailProduct(snapshot)) return null;
+
+    const productId = new URLSearchParams(window.location.search).get("productId") || "";
+    if (productId) {
+      const detail = snapshotDetailProduct(snapshot);
+      return detail && String(detail.productId) === String(productId) ? { ...snapshot, page: "detail" } : null;
+    }
+
+    if (!hasExplicitMallRoute()) return snapshot;
+    return snapshot.page === urlPage ? snapshot : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeMallPageSnapshot(snapshot: AnyRecord) {
+  try {
+    sessionStorage.setItem(mallPageSnapshotKey, JSON.stringify({
+      ...snapshot,
+      hydrated: true,
+      path: window.location.pathname,
+      search: window.location.search,
+      savedAt: Date.now()
+    }));
+  } catch {
+    // ignore storage quota/private mode errors
+  }
+}
+
 function MallRoot() {
   const { message } = AntApp.useApp();
-  const initialView = pageFromView(new URLSearchParams(window.location.search).get("view"));
+  const urlInitialView = pageFromInitialUrl();
+  const initialSnapshot = readMallPageSnapshot(urlInitialView);
+  const initialView = (initialSnapshot?.page || urlInitialView) as Page;
+  const initialListQuery = initialSnapshot?.listQuery || listQueryFromUrl();
   const [page, setPage] = useState<Page>(initialView);
   const [loading, setLoading] = useState(false);
   const [buyerToken, setBuyerToken] = useState(() => initialBuyerToken());
   const [loginRedirect, setLoginRedirect] = useState(() => getRedirectParam());
   const [showLoginGuide, setShowLoginGuide] = useState(true);
-  const [products, setProducts] = useState<AnyRecord[]>([]);
-  const [categories, setCategories] = useState<string[]>([]);
-  const [categoryRows, setCategoryRows] = useState<AnyRecord[]>([]);
-  const [brands, setBrands] = useState<string[]>([]);
-  const [cart, setCart] = useState<AnyRecord[]>([]);
-  const [orders, setOrders] = useState<AnyRecord[]>([]);
-  const [addresses, setAddresses] = useState<AnyRecord[]>([]);
-  const [invoiceTitles, setInvoiceTitles] = useState<AnyRecord[]>([]);
-  const [profile, setProfile] = useState<AnyRecord>({});
-  const [selectedProduct, setSelectedProduct] = useState<AnyRecord | null>(null);
-  const [detailQty, setDetailQty] = useState<Record<number, number>>({});
+  const [products, setProducts] = useState<AnyRecord[]>(() => Array.isArray(initialSnapshot?.products) ? initialSnapshot.products : []);
+  const [categories, setCategories] = useState<string[]>(() => Array.isArray(initialSnapshot?.categories) ? initialSnapshot.categories : []);
+  const [categoryRows, setCategoryRows] = useState<AnyRecord[]>(() => Array.isArray(initialSnapshot?.categoryRows) ? initialSnapshot.categoryRows : []);
+  const [brands, setBrands] = useState<string[]>(() => Array.isArray(initialSnapshot?.brands) ? initialSnapshot.brands : []);
+  const [cart, setCart] = useState<AnyRecord[]>(() => Array.isArray(initialSnapshot?.cart) ? initialSnapshot.cart : []);
+  const [orders, setOrders] = useState<AnyRecord[]>(() => Array.isArray(initialSnapshot?.orders) ? initialSnapshot.orders : []);
+  const [addresses, setAddresses] = useState<AnyRecord[]>(() => Array.isArray(initialSnapshot?.addresses) ? initialSnapshot.addresses : []);
+  const [invoiceTitles, setInvoiceTitles] = useState<AnyRecord[]>(() => Array.isArray(initialSnapshot?.invoiceTitles) ? initialSnapshot.invoiceTitles : []);
+  const [profile, setProfile] = useState<AnyRecord>(() => initialSnapshot?.profile || {});
+  const [selectedProduct, setSelectedProduct] = useState<AnyRecord | null>(() => initialSnapshot?.selectedProduct || null);
+  const [detailQty, setDetailQty] = useState<Record<number, number>>(() => initialSnapshot?.detailQty || {});
   const [checkoutItems, setCheckoutItems] = useState<AnyRecord[] | null>(null);
   const [currentOrder, setCurrentOrder] = useState<AnyRecord | null>(null);
   const [payMethod, setPayMethod] = useState("wechat");
-  const [filters, setFilters] = useState({ category: "全部分类", brand: "全部品牌" });
-  const [listQuery, setListQuery] = useState<AnyRecord>(() => listQueryFromUrl());
-  const [searchText, setSearchText] = useState(() => listQueryFromUrl().keyword || "");
-  const [searchSummary, setSearchSummary] = useState<AnyRecord>({ type: "all", count: 0 });
+  const [filters, setFilters] = useState(() => initialSnapshot?.filters || { category: "全部分类", brand: "全部品牌" });
+  const [listQuery, setListQuery] = useState<AnyRecord>(() => initialListQuery);
+  const [searchText, setSearchText] = useState(() => initialSnapshot?.searchText || initialListQuery.keyword || "");
+  const [searchSummary, setSearchSummary] = useState<AnyRecord>(() => initialSnapshot?.searchSummary || { type: "all", count: 0 });
   const [imageSearchLoading, setImageSearchLoading] = useState(false);
   const [aiAssistantOpen, setAiAssistantOpen] = useState(false);
   const [aiAssistantPosition, setAiAssistantPosition] = useState<AnyRecord>({ left: 16, top: 90 });
   const aiButtonRef = useRef<HTMLButtonElement | null>(null);
+  const productCacheRef = useRef<Map<string, AnyRecord[]>>(new Map());
+  const productDetailCacheRef = useRef<Map<string, AnyRecord>>(new Map());
+  const detailRequestSeqRef = useRef(0);
+  const imageSearchRequestRef = useRef(false);
+  const snapshotWriteReadyRef = useRef(Boolean(initialSnapshot));
   const isLoggedIn = Boolean(buyerToken);
 
   const syncAiAssistantPosition = () => {
@@ -242,13 +349,43 @@ function MallRoot() {
     };
   }, [aiAssistantOpen]);
 
+  useEffect(() => {
+    if (Array.isArray(initialSnapshot?.products) && initialSnapshot.products.length) {
+      productCacheRef.current.set("all", initialSnapshot.products);
+    }
+    if (initialSnapshot?.selectedProduct?.id) {
+      productDetailCacheRef.current.set(String(initialSnapshot.selectedProduct.id), initialSnapshot.selectedProduct);
+    }
+  }, []);
+
+  useEffect(() => {
+    const handleBuyerAuthExpired = () => {
+      setBuyerToken("");
+      setCart([]);
+      setOrders([]);
+      setAddresses([]);
+      setInvoiceTitles([]);
+      setProfile({});
+      if (protectedPages.includes(page)) {
+        setLoginRedirect(redirectForPage(page));
+        setPage("login");
+        window.history.replaceState({}, "", authPath("login", redirectForPage(page)));
+      }
+    };
+    window.addEventListener("b2b-erp-buyer-auth-expired", handleBuyerAuthExpired);
+    return () => window.removeEventListener("b2b-erp-buyer-auth-expired", handleBuyerAuthExpired);
+  }, [page]);
+
   const apiGuard = async (fn: () => Promise<void>) => {
     setLoading(true);
     try {
       await fn();
+      return true;
     } catch (error: any) {
       message.error(error.message);
+      return false;
     } finally {
+      snapshotWriteReadyRef.current = true;
       setLoading(false);
     }
   };
@@ -258,31 +395,70 @@ function MallRoot() {
     const initialKeyword = initialQuery.keyword || "";
     const initialCategoryId = initialQuery.categoryId || "";
     const initialCategoryName = initialQuery.categoryName || "";
-    const initialProductId = new URLSearchParams(window.location.search).get("productId") || "";
+    const initialProductId = new URLSearchParams(window.location.search).get("productId")
+      || (page === "detail" && selectedProduct?.id ? String(selectedProduct.id) : "");
     const productQuery = new URLSearchParams();
     if (initialKeyword) productQuery.set("keyword", initialKeyword);
     if (initialCategoryId) productQuery.set("categoryId", initialCategoryId);
     if (initialCategoryName) productQuery.set("categoryName", initialCategoryName);
     const [categoryRows, brandRows, productRows] = await Promise.all([
-      request<AnyRecord[]>("/api/admin/product-categories").catch(() => []),
+      request<AnyRecord[]>("/api/mall/product-categories").catch(() => []),
       request<AnyRecord[]>("/api/admin/product-brands").catch(() => []),
       request<AnyRecord[]>(`/api/mall/products${productQuery.toString() ? `?${productQuery}` : ""}`)
     ]);
     const enabledCategories = categoryRows.filter(x => x.status === "ENABLED");
-    setCategoryRows(enabledCategories);
-    setCategories(enabledCategories.map(x => x.categoryName));
+    const productCategories = Array.from(new Set(productRows
+      .map((row: AnyRecord) => String(row.categoryName || row.category || "").trim())
+      .filter(Boolean)))
+      .map((categoryName, index) => ({
+        id: `product-category-${index}`,
+        categoryName,
+        parentName: "-",
+        sortNo: index,
+        status: "ENABLED"
+      }));
+    const availableCategories = enabledCategories.length ? enabledCategories : productCategories;
+    setCategoryRows(availableCategories);
+    setCategories(availableCategories.map(x => x.categoryName));
     setBrands(brandRows.filter(x => x.status === "ENABLED").map(x => x.brandName));
-    const mapped = productRows.map(productFromApi);
+    let mapped = productRows.map(productFromApi);
+    if (!initialKeyword && !initialProductId && (initialCategoryId || initialCategoryName)) {
+      const flatCategory = availableCategories.find(x => String(x.id) === String(initialCategoryId)) || { categoryName: initialCategoryName };
+      const selectedCategoryNode = findCategoryNodeInTree(
+        buildCategoryTree(availableCategories),
+        flatCategory.categoryName || initialCategoryName
+      );
+      const descendantNames = collectCategoryNames(selectedCategoryNode || flatCategory);
+      if (descendantNames.length > 1) {
+        const allRows = await request<AnyRecord[]>("/api/mall/products");
+        mapped = allRows
+          .map(productFromApi)
+          .filter((product: AnyRecord) => descendantNames.includes(product.category));
+      }
+    }
     setProducts(mapped);
+    if (!initialKeyword && !initialCategoryId && !initialCategoryName && !initialProductId) {
+      productCacheRef.current.set("all", mapped);
+    }
     setListQuery(initialQuery);
     setSearchText(initialKeyword);
     if (initialProductId) {
       const product = mapped.find(item => String(item.id) === String(initialProductId));
-      if (product && localStorage.getItem(buyerTokenKey)) {
-        setSelectedProduct(product);
-        setDetailQty(Object.fromEntries((product.specs || []).map((_: AnyRecord, idx: number) => [idx, 0])));
+      if (localStorage.getItem(buyerTokenKey)) {
+        let detailProduct = product || null;
+        try {
+          detailProduct = productFromApi(await request<AnyRecord>(`/api/mall/products/${initialProductId}`));
+        } catch {
+          detailProduct = product || null;
+        }
+        if (!detailProduct) {
+          setSearchSummary({ type: "all", count: mapped.length });
+          return;
+        }
+        setSelectedProduct(detailProduct);
+        setDetailQty(Object.fromEntries((detailProduct.specs || []).map((_: AnyRecord, idx: number) => [idx, 0])));
         setPage("detail");
-      } else if (product) {
+      } else {
         setLoginRedirect(`/product/${initialProductId}`);
         setPage("login");
         window.history.replaceState({}, "", authPath("login", `/product/${initialProductId}`));
@@ -291,10 +467,10 @@ function MallRoot() {
       setSearchSummary({ type: "text", keyword: initialKeyword, count: mapped.length });
       setPage("list");
     } else if (initialCategoryId || initialCategoryName) {
-      const category = enabledCategories.find(x => String(x.id) === String(initialCategoryId)) || { categoryName: initialCategoryName };
+      const category = availableCategories.find(x => String(x.id) === String(initialCategoryId)) || { categoryName: initialCategoryName };
       setSearchSummary({ type: "category", categoryName: category.categoryName || initialCategoryName, count: mapped.length });
       setFilters({ category: category.categoryName || initialCategoryName || "全部分类", brand: "全部品牌" });
-      setPage("list");
+      setPage("home");
     } else {
       setSearchSummary({ type: "all", count: mapped.length });
     }
@@ -338,27 +514,77 @@ function MallRoot() {
 
   const hydrateAll = () => apiGuard(async () => {
     await hydrateProducts();
-    await hydratePrivateData();
+    hydratePrivateData().catch((error: any) => {
+      console.warn("mall private data hydrate failed", error);
+    });
   });
 
   useEffect(() => {
     if (protectedPages.includes(initialView) && !localStorage.getItem(buyerTokenKey)) {
-      setLoginRedirect(redirectForPage(initialView));
+      const initialProductId = new URLSearchParams(window.location.search).get("productId")
+        || (initialView === "detail" && selectedProduct?.id ? String(selectedProduct.id) : "");
+      const redirect = initialView === "detail" && initialProductId ? `/product/${initialProductId}` : redirectForPage(initialView);
+      setLoginRedirect(redirect);
       setPage("login");
-      window.history.replaceState({}, "", authPath("login", redirectForPage(initialView)));
+      window.history.replaceState({}, "", authPath("login", redirect));
       hydrateProducts();
       return;
     }
     hydrateAll();
   }, []);
 
-  const pushViewUrl = (next: Page, redirect = "") => {
+  useEffect(() => {
+    if (authPages.includes(page)) return;
+    if (!snapshotWriteReadyRef.current || loading) return;
+    if (page === "detail" && !selectedProduct?.id && !selectedProduct?.apiId) return;
+    if ((page === "home" || page === "list") && !products.length) return;
+    writeMallPageSnapshot({
+      page,
+      products,
+      categories,
+      categoryRows,
+      brands,
+      cart,
+      orders,
+      addresses,
+      invoiceTitles,
+      profile,
+      selectedProduct,
+      detailQty,
+      filters,
+      listQuery,
+      searchText,
+      searchSummary
+    });
+  }, [
+    page,
+    products,
+    categories,
+    categoryRows,
+    brands,
+    cart,
+    orders,
+    addresses,
+    invoiceTitles,
+    profile,
+    selectedProduct,
+    detailQty,
+    filters,
+    listQuery,
+    searchText,
+    searchSummary,
+    loading
+  ]);
+
+  const pushViewUrl = (next: Page, redirect = "", productId = "") => {
     const auth = authPages.includes(next);
-    const params = new URLSearchParams(window.location.search);
-    params.delete("view");
-    params.delete("redirect");
+    const params = new URLSearchParams();
     if (auth) params.set("view", next);
     if (auth && redirect) params.set("redirect", redirect);
+    if (next === "detail" && productId) params.set("productId", String(productId));
+    if (!auth && next !== "home" && next !== "detail") {
+      params.set("view", next === "profile" ? "account" : next);
+    }
     const query = params.toString();
     window.history.pushState({}, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
   };
@@ -439,23 +665,69 @@ function MallRoot() {
       requireLogin(redirect);
       return;
     }
-    if (next === "detail" && payload) {
-      setSelectedProduct(payload);
-      setDetailQty(Object.fromEntries((payload.specs || []).map((_: AnyRecord, idx: number) => [idx, 0])));
+    if (next === "detail" && payload?.id) {
+      const productKey = String(payload.id);
+      const requestSeq = ++detailRequestSeqRef.current;
+      const cachedDetail = productDetailCacheRef.current.get(productKey);
+      if (payload?.raw?.detailContent) productDetailCacheRef.current.set(productKey, payload);
+      const readyDetail = cachedDetail || (payload?.raw?.detailContent ? payload : null);
+      if (readyDetail) {
+        setSelectedProduct(readyDetail);
+        setDetailQty(Object.fromEntries((readyDetail.specs || []).map((_: AnyRecord, idx: number) => [idx, 0])));
+        setPage("detail");
+        if (!options.skipUrl) pushViewUrl("detail", "", productKey);
+        window.scrollTo({ top: 0, behavior: "smooth" });
+        return;
+      }
+      setLoading(true);
+      try {
+        const detailPayload = productFromApi(await request<AnyRecord>(`/api/mall/products/${payload.id}`));
+        productDetailCacheRef.current.set(productKey, detailPayload);
+        if (detailRequestSeqRef.current !== requestSeq) return;
+        setSelectedProduct(detailPayload);
+        setDetailQty(Object.fromEntries((detailPayload.specs || []).map((_: AnyRecord, idx: number) => [idx, 0])));
+      } catch {
+        if (detailRequestSeqRef.current === requestSeq) {
+          message.error("商品详情加载失败，请稍后重试");
+        }
+        return;
+      } finally {
+        snapshotWriteReadyRef.current = true;
+        setLoading(false);
+      }
+      if (detailRequestSeqRef.current !== requestSeq) return;
+      setPage("detail");
+      if (!options.skipUrl) pushViewUrl("detail", "", productKey);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    detailRequestSeqRef.current += 1;
+    let detailPayload = payload;
+    if (next === "detail" && payload?.id && !payload?.raw?.detailContent) {
+      try {
+        detailPayload = productFromApi(await request<AnyRecord>(`/api/mall/products/${payload.id}`));
+      } catch (error: any) {
+        message.error(error?.message || "商品详情加载失败，请稍后重试");
+      }
+    }
+    if (next === "detail" && detailPayload) {
+      setSelectedProduct(detailPayload);
+      setDetailQty(Object.fromEntries((detailPayload.specs || []).map((_: AnyRecord, idx: number) => [idx, 0])));
     }
     if (isLoggedIn || options.skipAuth) {
-      if (next === "orders") await apiGuard(hydrateOrders);
-      if (next === "cart") await apiGuard(hydrateCart);
-      if (next === "addresses") await apiGuard(hydrateAddresses);
-      if (next === "invoiceTitles") await apiGuard(hydrateInvoiceTitles);
+      if (next === "orders" && !(await apiGuard(hydrateOrders))) return;
+      if (next === "cart" && !(await apiGuard(hydrateCart))) return;
+      if (next === "addresses" && !(await apiGuard(hydrateAddresses))) return;
+      if (next === "invoiceTitles" && !(await apiGuard(hydrateInvoiceTitles))) return;
     }
     setPage(next);
-    if (!options.skipUrl) pushViewUrl(next);
+    if (!options.skipUrl) pushViewUrl(next, "", next === "detail" ? String(detailPayload?.id || payload?.id || "") : "");
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
-  const replaceMallQuery = (params: AnyRecord) => {
+  const replaceMallQuery = (params: AnyRecord, nextPage: Page = "list") => {
     const query = cleanQueryParams(params);
+    if (nextPage === "list") query.set("view", "list");
     const nextUrl = `${window.location.pathname}${query.toString() ? `?${query}` : ""}`;
     window.history.replaceState({}, "", nextUrl);
   };
@@ -474,44 +746,86 @@ function MallRoot() {
       const nextQuery = { ...listQuery, keyword: text, searchType: "", imageSearchId: "", page: 1 };
       setListQuery(nextQuery);
       setSearchSummary({ type: "text", keyword: text, count: mapped.length });
-      replaceMallQuery(nextQuery);
+      replaceMallQuery(nextQuery, "list");
       setPage("list");
+    });
+  };
+
+  const loadProductsByCategory = async (category: AnyRecord, targetPage: Page) => {
+    const categoryId = category?.id;
+    const categoryName = category?.categoryName || category?.name || "";
+    const descendantNames = collectCategoryNames(category);
+    const shouldIncludeChildren = descendantNames.length > 1;
+    const nextQuery = defaultMallListQuery({ categoryId: categoryId || "", categoryName: categoryId ? "" : categoryName });
+    const cacheKey = shouldIncludeChildren
+      ? `category-tree:${descendantNames.join("|")}`
+      : `category:${categoryId || categoryName}`;
+    const applyProducts = (mapped: AnyRecord[]) => {
+      setProducts(mapped);
+      setFilters({ category: categoryName || "全部分类", brand: "全部品牌" });
+      setListQuery(nextQuery);
+      setSearchText("");
+      setSearchSummary({ type: "category", categoryName, count: mapped.length });
+      replaceMallQuery(nextQuery, targetPage);
+      setPage(targetPage);
+    };
+    const cached = productCacheRef.current.get(cacheKey);
+    if (cached) {
+      applyProducts(cached);
+      return;
+    }
+    await apiGuard(async () => {
+      const query = categoryId ? `categoryId=${encodeURIComponent(categoryId)}` : `categoryName=${encodeURIComponent(categoryName)}`;
+      const rows = shouldIncludeChildren
+        ? await request<AnyRecord[]>("/api/mall/products")
+        : await request<AnyRecord[]>(`/api/mall/products?${query}`);
+      const mapped = rows
+        .map(productFromApi)
+        .filter((product: AnyRecord) => !shouldIncludeChildren || descendantNames.includes(product.category));
+      productCacheRef.current.set(cacheKey, mapped);
+      applyProducts(mapped);
     });
   };
 
   const searchByCategory = async (category: AnyRecord) => {
-    await apiGuard(async () => {
-      const categoryId = category?.id;
-      const categoryName = category?.categoryName || category?.name || "";
-      const query = categoryId ? `categoryId=${encodeURIComponent(categoryId)}` : `categoryName=${encodeURIComponent(categoryName)}`;
-      const rows = await request<AnyRecord[]>(`/api/mall/products?${query}`);
-      const mapped = rows.map(productFromApi);
-      setProducts(mapped);
-      setFilters({ category: categoryName || "全部分类", brand: "全部品牌" });
-      const nextQuery = { ...listQuery, categoryId: categoryId || "", categoryName: categoryId ? "" : categoryName, page: 1 };
-      setListQuery(nextQuery);
-      setSearchSummary({ type: "category", categoryName, count: mapped.length });
-      replaceMallQuery(nextQuery);
-      setPage("list");
-    });
+    await loadProductsByCategory(category, "list");
   };
 
-  const browseAllProducts = async () => {
+  const browseHomeProductsByCategory = async (category: AnyRecord) => {
+    await loadProductsByCategory(category, "home");
+  };
+
+  const browseAllProducts = async (targetPage: Page = "list") => {
+    const applyProducts = (mapped: AnyRecord[]) => {
+      setProducts(mapped);
+      const nextQuery = defaultMallListQuery();
+      setListQuery(nextQuery);
+      setSearchText("");
+      setFilters({ category: "全部分类", brand: "全部品牌" });
+      setSearchSummary({ type: "all", count: mapped.length });
+      replaceMallQuery(nextQuery);
+      setPage(targetPage);
+    };
+    const cached = productCacheRef.current.get("all");
+    if (cached) {
+      applyProducts(cached);
+      return;
+    }
     await apiGuard(async () => {
       const rows = await request<AnyRecord[]>("/api/mall/products");
       const mapped = rows.map(productFromApi);
-      setProducts(mapped);
-      const nextQuery = { keyword: "", brandName: "", brandId: "", minPrice: "", maxPrice: "", sort: "comprehensive", order: "", inStock: false, page: 1, pageSize: mallListPageSize, searchType: "", imageSearchId: "", categoryId: "", categoryName: "" };
-      setListQuery(nextQuery);
-      setSearchText("");
-      setSearchSummary({ type: "all", count: mapped.length });
-      replaceMallQuery(nextQuery);
-      setPage("list");
+      productCacheRef.current.set("all", mapped);
+      applyProducts(mapped);
     });
   };
 
+  const browseHomeAllProducts = async () => {
+    await browseAllProducts("home");
+  };
+
   const searchProductsByImage = async (file: File) => {
-    if (!file) return;
+    if (!file || imageSearchRequestRef.current) return;
+    imageSearchRequestRef.current = true;
     const formData = new FormData();
     formData.append("file", file);
     formData.append("topK", "20");
@@ -529,15 +843,18 @@ function MallRoot() {
       setSearchSummary({ type: "image", count: mapped.length });
       replaceMallQuery(nextQuery);
       setPage("list");
-      if (!mapped.length) message.warning("未找到相似商品，请更换图片后重试");
+      if (!mapped.length) {
+        message.open({ type: "warning", content: "未找到相似商品，请更换图片后重试", key: "mall-image-search-result", duration: 2 });
+      }
     } catch (error: any) {
       const text = String(error?.message || "");
       if (/404|501|暂未接入|not implemented/i.test(text)) {
-        message.warning("图片搜索能力暂未接入，请联系管理员配置图片搜索服务");
+        message.open({ type: "warning", content: "图片搜索能力暂未接入，请联系管理员配置图片搜索服务", key: "mall-image-search-error", duration: 2 });
       } else {
-        message.error(text || "图片搜索失败，请稍后重试");
+        message.open({ type: "error", content: text || "图片搜索失败，请稍后重试", key: "mall-image-search-error", duration: 2 });
       }
     } finally {
+      imageSearchRequestRef.current = false;
       setImageSearchLoading(false);
     }
   };
@@ -590,7 +907,9 @@ function MallRoot() {
     searchProducts,
     searchProductsByImage,
     searchByCategory,
+    browseHomeProductsByCategory,
     browseAllProducts,
+    browseHomeAllProducts,
     go,
     hydrateCart,
     hydrateOrders,
@@ -610,7 +929,7 @@ function MallRoot() {
         <div className="mall-auth-header">
           <button type="button" className="mall-auth-logo" onClick={() => go("home", undefined, { skipAuth: true })}>
             <div className="admin-logo" style={{ width: 40, height: 40, fontSize: 16 }}>B</div>
-            <span>B2B 网页商城</span>
+            <span>夏至商城</span>
           </button>
         </div>
         <AuthPage ctx={ctx} type={page} />
@@ -625,36 +944,37 @@ function MallRoot() {
           {isLoggedIn ? (
             <span className="mall-welcome-text">您好，{ctx.buyerName || "采购用户"} <button type="button" onClick={logout}>退出登录</button></span>
           ) : (
-            <span className="mall-welcome-text">您好，欢迎来到 B2B 网页商城！ <button type="button" onClick={() => requireLogin("/mall")}>请登录</button><span className="mall-welcome-separator">或</span><button type="button" onClick={() => { setLoginRedirect(""); setPage("register"); window.history.pushState({}, "", authPath("register")); }}>免费注册</button></span>
+            <span className="mall-welcome-text">您好，欢迎来到夏至商城！ <button type="button" onClick={() => requireLogin("/mall")}>请登录</button><span className="mall-welcome-separator">或</span><button type="button" onClick={() => { setLoginRedirect(""); setPage("register"); window.history.pushState({}, "", authPath("register")); }}>免费注册</button></span>
           )}
           <div className="mall-top-links">
-            <Badge count={cartCount} size="small">
-              <button type="button" onClick={() => go("cart")}><ShoppingCartOutlined />购物车</button>
-            </Badge>
+            <button type="button" onClick={() => go("cart")}><ShoppingCartOutlined />购物车（{cartCount}）</button>
             <button type="button" onClick={() => go("orders")}><ProfileOutlined />订单</button>
             <button type="button" onClick={() => go("profile")}><UserOutlined />账户</button>
           </div>
         </div>
       </div>
       <div className="mall-header">
-        <div className="mall-logo" onClick={() => go("home")}><div className="admin-logo" style={{ width: 36, height: 36, fontSize: 16 }}>B</div>B2B 网页商城</div>
+        <div className="mall-logo" onClick={() => go("home")}><div className="admin-logo" style={{ width: 36, height: 36, fontSize: 16 }}>B</div>夏至商城</div>
         <MallSearchBar ctx={ctx} />
         <Button ref={aiButtonRef} className="mall-ai-header-button" type="primary" icon={<RobotOutlined />} onClick={openAiAssistant}>AI助手</Button>
       </div>
       <main className="mall-main">
-        {page === "home" && <HomePage ctx={ctx} loading={loading} />}
-        {page === "list" && <ListPage ctx={ctx} loading={loading} />}
-        {page === "detail" && <DetailPage ctx={ctx} />}
-        {page === "cart" && <CartPage ctx={ctx} loading={loading} />}
-        {page === "confirm" && <ConfirmPage ctx={ctx} />}
-        {page === "pay" && <PayPage ctx={ctx} />}
-        {page === "orders" && <OrdersPage ctx={ctx} loading={loading} />}
-        {page === "orderDetail" && <OrderDetailPage ctx={ctx} />}
-        {page === "addresses" && <AddressPage ctx={ctx} loading={loading} />}
-        {page === "invoiceTitles" && <InvoiceTitlePage ctx={ctx} loading={loading} />}
-        {page === "profile" && <ProfilePage ctx={ctx} />}
-        {page === "login" && <AuthPage ctx={ctx} type="login" />}
-        {page === "register" && <AuthPage ctx={ctx} type="register" />}
+        <div className="mall-live-content">
+          {page === "home" && <HomePage ctx={ctx} loading={false} />}
+          {page === "list" && <ListPage ctx={ctx} loading={false} />}
+          {page === "detail" && <DetailPage ctx={ctx} />}
+          {page === "cart" && <CartPage ctx={ctx} loading={false} />}
+          {page === "confirm" && <ConfirmPage ctx={ctx} />}
+          {page === "pay" && <PayPage ctx={ctx} />}
+          {page === "orders" && <OrdersPage ctx={ctx} loading={false} />}
+          {page === "orderDetail" && <OrderDetailPage ctx={ctx} />}
+          {page === "addresses" && <AddressPage ctx={ctx} loading={false} />}
+          {page === "invoiceTitles" && <InvoiceTitlePage ctx={ctx} loading={false} />}
+          {page === "profile" && <ProfilePage ctx={ctx} />}
+          {page === "login" && <AuthPage ctx={ctx} type="login" />}
+          {page === "register" && <AuthPage ctx={ctx} type="register" />}
+        </div>
+        <GlobalLoadingMask visible={loading} />
       </main>
       <MallFloatingToolbar ctx={ctx} />
       <MallAiAssistant ctx={ctx} />
@@ -692,11 +1012,9 @@ function productFromApi(item: AnyRecord) {
   }];
   const detail = parseDetailContent(item.detailContent || "");
   const tierPrices = parseRows(item.tierPricesJson || item.tierPrices);
-  const gallery = uniqueTruthy([
-    item.mainImageUrl,
-    ...specs.map((spec: AnyRecord) => spec.image),
-    detail.imageUrl
-  ]);
+  const customAttributes = productCustomAttributes(item.customAttributes || item.customAttributesJson);
+  const carouselImages = uniqueTruthy([item.mainImageUrl, ...(detail.carouselImages || [])]).slice(0, 5);
+  const gallery = carouselImages.length ? carouselImages : uniqueTruthy([item.mainImageUrl]);
   return {
     id: Number(item.id),
     apiId: Number(item.id),
@@ -717,14 +1035,26 @@ function productFromApi(item: AnyRecord) {
     skuCode: item.skuCode || "",
     barCode: item.barCode || item.skuBarcode || "",
     similarity: Number(item.similarity || 0) || null,
+    carouselImages,
     gallery,
     detailText: detail.text,
     detailImageUrl: detail.imageUrl,
+    customAttributes,
     tierPrices,
     specs,
     specGroups: buildMallSpecGroups(specs),
     raw: item
   };
+}
+
+function productCustomAttributes(value: any) {
+  return parseRows(value)
+    .map((row: AnyRecord, index: number) => ({
+      key: String(row.fieldId || row.id || row.name || `attribute-${index}`),
+      name: String(row.name || row.attributeName || row.fieldName || "").trim(),
+      value: String(row.value ?? row.attributeValue ?? row.fieldValue ?? "").trim()
+    }))
+    .filter((row: AnyRecord) => row.name && row.value);
 }
 
 function imageSearchProductToApi(row: AnyRecord) {
@@ -992,14 +1322,13 @@ function MallCategoryBreadcrumb({ ctx, product }: any) {
   return (
     <div className="mall-category-breadcrumb">
       <span className="mall-category-breadcrumb-label">商品分类：</span>
-      <button type="button" onClick={ctx.browseAllProducts}>全部商品</button>
+      <button type="button" onClick={() => ctx.browseHomeAllProducts()}>全部商品</button>
       {path.map((item: AnyRecord, index: number) => {
         const name = item.categoryName || item.name;
-        const last = index === path.length - 1;
         return (
           <React.Fragment key={`${name}-${index}`}>
             <span className="mall-category-separator">/</span>
-            {last ? <span>{name}</span> : <button type="button" onClick={() => ctx.searchByCategory(item)}>{name}</button>}
+            <button type="button" onClick={() => ctx.browseHomeProductsByCategory(item)}>{name}</button>
           </React.Fragment>
         );
       })}
@@ -1007,34 +1336,52 @@ function MallCategoryBreadcrumb({ ctx, product }: any) {
   );
 }
 
-function HomeCategoryNav({ rows, onChoose, onAll }: any) {
+function categoryNodeContainsName(node: AnyRecord, name: string) {
+  if (!name) return false;
+  if ((node.categoryName || node.name) === name) return true;
+  return (node.children || []).some((child: AnyRecord) => categoryNodeContainsName(child, name));
+}
+
+function collectCategoryNames(category: AnyRecord) {
+  if (!category) return [];
+  return Array.from(new Set([
+    category.categoryName || category.name,
+    ...((category.children || []).flatMap((child: AnyRecord) => collectCategoryNames(child)))
+  ].map(name => String(name || "").trim()).filter(Boolean)));
+}
+
+function categoryNodeName(node: AnyRecord) {
+  return node?.categoryName || node?.name || "";
+}
+
+function findCategoryNodeInTree(nodes: AnyRecord[], name: string): AnyRecord | null {
+  if (!name) return null;
+  for (const node of nodes || []) {
+    if (categoryNodeName(node) === name) return node;
+    const child = findCategoryNodeInTree(node.children || [], name);
+    if (child) return child;
+  }
+  return null;
+}
+
+function homeSubcategoryState(rows: AnyRecord[], selectedCategoryName: string) {
   const tree = buildCategoryTree(rows || []);
-  const [active, setActive] = useState<AnyRecord | null>(null);
-  const [open, setOpen] = useState(false);
-  const closeTimer = useRef<any>(null);
+  const selected = findCategoryNodeInTree(tree, selectedCategoryName);
+  if (!selected) return { root: null, selected: null, children: [] };
+  const path = findCategoryPath(rows || [], selectedCategoryName);
+  const rootName = categoryNodeName(path[0] || selected);
+  const root = findCategoryNodeInTree(tree, rootName) || selected;
+  return { root, selected, children: root.children || [] };
+}
 
-  useEffect(() => {
-    if (!rows?.length) setActive(null);
-  }, [rows?.length]);
-
-  const keepOpen = () => {
-    if (closeTimer.current) clearTimeout(closeTimer.current);
-    setOpen(true);
-  };
-  const scheduleClose = () => {
-    if (closeTimer.current) clearTimeout(closeTimer.current);
-    closeTimer.current = setTimeout(() => setOpen(false), 160);
-  };
+function HomeCategoryNav({ rows, onChoose, onAll, selectedCategoryName }: any) {
+  const tree = buildCategoryTree(rows || []);
 
   return (
-    <aside className="mall-category-sidebar" onMouseEnter={keepOpen} onMouseLeave={scheduleClose}>
+    <aside className="mall-category-sidebar">
       <button
         type="button"
-        className={`mall-category-title ${active ? "" : "is-active"}`}
-        onMouseEnter={() => {
-          setActive(null);
-          setOpen(false);
-        }}
+        className={`mall-category-title ${!selectedCategoryName ? "is-active" : ""}`}
         onClick={onAll}
       >
         <AppstoreOutlined />全部分类
@@ -1043,40 +1390,69 @@ function HomeCategoryNav({ rows, onChoose, onAll }: any) {
         <button
           type="button"
           key={item.id || item.name}
-          className={`mall-category-root ${active?.name === item.name ? "is-active" : ""}`}
-          onMouseEnter={() => {
-            setActive(item);
-            keepOpen();
-          }}
+          className={`mall-category-root ${categoryNodeContainsName(item, selectedCategoryName) ? "is-active" : ""}`}
           onClick={() => onChoose(item)}
         >
           <span>{item.name}</span>
         </button>
       )) : <div className="mall-category-empty">暂无分类</div>}
-      {open && active?.children?.length ? (
-        <div className="mall-category-flyout" onMouseEnter={keepOpen} onMouseLeave={scheduleClose}>
-          {active.children.map((group: AnyRecord) => (
-            <div className="mall-category-group" key={group.id || group.name}>
-              <button type="button" className="mall-category-second" onClick={() => onChoose(group)}>{group.name}</button>
-              <div className="mall-category-third-list">
-                {(group.children || []).length ? group.children.map((child: AnyRecord) => (
-                  <button type="button" key={child.id || child.name} onClick={() => onChoose(child)}>{child.name}</button>
-                )) : <button type="button" onClick={() => onChoose(group)}>查看全部</button>}
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : null}
     </aside>
   );
 }
 
+function HomeSubcategoryTabs({ rows, selectedCategoryName, onChoose }: any) {
+  const { root, selected, children } = homeSubcategoryState(rows || [], selectedCategoryName);
+  if (!root || !children.length) return null;
+  const rootName = categoryNodeName(root);
+  const selectedName = categoryNodeName(selected);
+  return (
+    <div className="mall-home-subcategory-bar">
+      <button
+        type="button"
+        className={selectedName === rootName ? "is-active" : ""}
+        onClick={() => onChoose(root)}
+      >
+        全部
+      </button>
+      {children.map((child: AnyRecord) => {
+        const childName = categoryNodeName(child);
+        return (
+          <button
+            type="button"
+            key={child.id || childName}
+            className={selectedName === childName ? "is-active" : ""}
+            onClick={() => onChoose(child)}
+          >
+            {childName}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function HomePage({ ctx, loading }: any) {
+  const selectedCategoryName = ctx.filters?.category && ctx.filters.category !== "全部分类" ? ctx.filters.category : "";
+  const subcategoryState = homeSubcategoryState(ctx.categoryRows || [], selectedCategoryName);
+  const sectionTitle = subcategoryState.root ? categoryNodeName(subcategoryState.root) : selectedCategoryName || "全部商品";
+  const clearCategory = selectedCategoryName ? (
+    <Button type="link" className="mall-home-clear-category" onClick={ctx.browseHomeAllProducts}>清空分类</Button>
+  ) : null;
   return (
     <div className="mall-home-layout">
-      <HomeCategoryNav rows={ctx.categoryRows} onChoose={ctx.searchByCategory} onAll={ctx.browseAllProducts} />
+      <HomeCategoryNav
+        rows={ctx.categoryRows}
+        selectedCategoryName={selectedCategoryName}
+        onChoose={ctx.browseHomeProductsByCategory}
+        onAll={ctx.browseHomeAllProducts}
+      />
       <main className="mall-home-content">
-        <Section title="全部商品">
+        <Section title={sectionTitle} extra={clearCategory}>
+          <HomeSubcategoryTabs
+            rows={ctx.categoryRows}
+            selectedCategoryName={selectedCategoryName}
+            onChoose={ctx.browseHomeProductsByCategory}
+          />
           <ProductGrid products={ctx.products} ctx={ctx} loading={loading} />
         </Section>
       </main>
@@ -1090,8 +1466,6 @@ function Section({ title, extra, children }: any) {
 
 function ProductGrid({ products, ctx, loading }: any) {
   const [addingProductIds, setAddingProductIds] = useState<Set<string>>(new Set());
-  if (loading) return <Typography.Text>加载中...</Typography.Text>;
-  if (!products.length) return <Empty description="暂无匹配商品，请调整搜索关键词或筛选条件" />;
   const addToCart = async (event: any, product: AnyRecord) => {
     event.stopPropagation();
     if (!ctx.isLoggedIn) {
@@ -1105,9 +1479,9 @@ function ProductGrid({ products, ctx, loading }: any) {
       const qty = Math.max(1, Number(product.specs?.[0]?.min || product.raw?.minOrderQuantity || 1));
       await request("/api/mall/cart/items", { method: "POST", data: { productId: product.id, quantity: qty, specIndex: 0 } });
       await ctx.hydrateCart();
-      ctx.message.open({ type: "success", content: "已加入采购车", key: "mall-cart-add", duration: 1.2 });
+      ctx.message.open({ type: "success", content: "已加入购物车", key: "mall-cart-add", duration: 1.2 });
     } catch (error: any) {
-      ctx.message.open({ type: "error", content: error?.message || "加入采购车失败", key: "mall-cart-add", duration: 2 });
+      ctx.message.open({ type: "error", content: error?.message || "加入购物车失败", key: "mall-cart-add", duration: 2 });
     } finally {
       setAddingProductIds(prev => {
         const next = new Set(prev);
@@ -1117,41 +1491,47 @@ function ProductGrid({ products, ctx, loading }: any) {
     }
   };
   return (
-    <div className="product-grid">
-      {products.map((p: AnyRecord) => {
-        const isAdding = addingProductIds.has(String(p.id));
-        return (
-          <Card
-            key={p.id}
-            className="mall-product-card"
-            hoverable
-            onClick={() => ctx.isLoggedIn ? ctx.go("detail", p) : ctx.requireLogin(`/product/${p.id}`)}
-            cover={p.image ? <img className="product-card-img" src={p.image} /> : <div className="product-card-img" style={{ display: "grid", placeItems: "center", fontWeight: 800, color: "#4e7cff" }}>{p.brand?.[0] || "商"}</div>}
-          >
-            <div className="mall-product-card-body">
-              <div className="mall-product-card-title" title={p.name}>{p.name}</div>
-              {p.similarity ? <Tag color="blue" className="mall-product-similarity">相似度 {Math.round(Number(p.similarity) * 100)}%</Tag> : null}
-              <div className="mall-product-card-price">{money(firstPrice(p))}<span> / {stockUnitForProduct(p)}</span></div>
-              <div className="mall-product-card-foot">
-                <div>
-                  <span>库存：{productStockText(p)}</span>
+    <div className="product-grid-shell" aria-busy={loading}>
+      {!products.length ? (
+        <Empty description="暂无匹配商品，请调整搜索关键词或筛选条件" />
+      ) : (
+        <div className="product-grid">
+          {products.map((p: AnyRecord) => {
+          const isAdding = addingProductIds.has(String(p.id));
+          return (
+            <Card
+              key={p.id}
+              className="mall-product-card"
+              hoverable
+              onClick={() => ctx.isLoggedIn ? ctx.go("detail", p) : ctx.requireLogin(`/product/${p.id}`)}
+              cover={p.image ? <img className="product-card-img" src={p.image} loading="lazy" decoding="async" /> : <div className="product-card-img" style={{ display: "grid", placeItems: "center", fontWeight: 800, color: "#4e7cff" }}>{p.brand?.[0] || "商"}</div>}
+            >
+              <div className="mall-product-card-body">
+                <div className="mall-product-card-title" title={p.name}>{p.name}</div>
+                {p.similarity ? <Tag color="blue" className="mall-product-similarity">相似度 {Math.round(Number(p.similarity) * 100)}%</Tag> : null}
+                <div className="mall-product-card-price">{money(firstPrice(p))}<span> / {stockUnitForProduct(p)}</span></div>
+                <div className="mall-product-card-foot">
+                  <div>
+                    <span>库存：{productStockText(p)}</span>
+                  </div>
+                  <Button
+                    type="primary"
+                    size="small"
+                    className="mall-product-cart-icon"
+                    icon={<ShoppingCartOutlined />}
+                    loading={isAdding}
+                    aria-busy={isAdding}
+                    aria-label="加入购物车"
+                    title="加入购物车"
+                    onClick={(event) => addToCart(event, p)}
+                  />
                 </div>
-                <Button
-                  type="primary"
-                  size="small"
-                  className="mall-product-cart-icon"
-                  icon={<ShoppingCartOutlined />}
-                  loading={isAdding}
-                  disabled={isAdding}
-                  aria-label="加入采购车"
-                  title="加入采购车"
-                  onClick={(event) => addToCart(event, p)}
-                />
               </div>
-            </div>
-          </Card>
-        );
-      })}
+            </Card>
+          );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -1326,7 +1706,7 @@ function ListPage({ ctx, loading }: any) {
           current={currentPage}
           pageSize={pageSize}
           total={filteredRows.length}
-          showSizeChanger
+          showSizeChanger={{ showSearch: false }}
           pageSizeOptions={["10", "20", "50", "100"]}
           showTotal={(total) => `共 ${total} 条`}
           onChange={(page, nextPageSize) => updateListQuery({ page, pageSize: nextPageSize })}
@@ -1340,6 +1720,7 @@ function DetailPage({ ctx }: any) {
   const p = ctx.selectedProduct;
   const [selectedSpecValues, setSelectedSpecValues] = useState<AnyRecord>({});
   const [activeImage, setActiveImage] = useState("");
+  const carouselRef = useRef<any>(null);
 
   useEffect(() => {
     if (!p) return;
@@ -1347,7 +1728,7 @@ function DetailPage({ ctx }: any) {
     setSelectedSpecValues(defaultSpecSelection(p));
   }, [p?.id]);
 
-  if (!p) return <Empty description="请选择商品" />;
+  if (!p) return <Card className="mall-detail-card"><Empty description="商品详情加载中..." /></Card>;
   const selected = Object.entries(ctx.detailQty).filter(([, qty]) => Number(qty) > 0);
   const totalQty = selected.reduce((sum, [, qty]) => sum + Number(qty), 0);
   const totalAmount = selected.reduce((sum, [idx, qty]) => sum + detailUnitPrice(p, Number(idx), totalQty) * Number(qty), 0);
@@ -1357,6 +1738,7 @@ function DetailPage({ ctx }: any) {
   const batchSaleTip = batchSaleTipForProduct(p);
   const selectionGroups = selectionGroupsFor(p);
   const lastGroup = lastSkuGroupFor(p);
+  const useCarouselImages = (p.gallery || []).length > 1;
   const visibleSpecs = p.specs
     .map((spec: AnyRecord, index: number) => ({ ...spec, originalIndex: index }))
     .filter((spec: AnyRecord) => specMatchesSelection(spec, selectedSpecValues, selectionGroups, p));
@@ -1393,7 +1775,7 @@ function DetailPage({ ctx }: any) {
         await request("/api/mall/cart/items", { method: "POST", data: { productId: p.id, quantity: row.qty, specIndex: row.specIndex } });
       }
       await ctx.hydrateCart();
-      ctx.message.open({ type: "success", content: "已加入采购车", key: "mall-cart-add", duration: 1.2 });
+      ctx.message.open({ type: "success", content: "已加入购物车", key: "mall-cart-add", duration: 1.2 });
       if (jump) ctx.go("cart");
     });
   };
@@ -1417,11 +1799,29 @@ function DetailPage({ ctx }: any) {
       <Card className="mall-detail-card">
         <div className="mall-detail-layout">
           <div className="mall-detail-gallery">
-            {activeImage ? <Image src={activeImage} className="mall-detail-main-image" /> : <div className="mall-detail-image-placeholder">暂无图片</div>}
+            {useCarouselImages ? (
+              <Carousel
+                ref={carouselRef}
+                autoplay
+                autoplaySpeed={3000}
+                dots={false}
+                afterChange={(index) => setActiveImage(p.gallery?.[index] || "")}
+                className="mall-detail-carousel"
+              >
+                {p.gallery.map((url: string) => (
+                  <div key={url}>
+                    <img src={url} className="mall-detail-main-image" alt="" />
+                  </div>
+                ))}
+              </Carousel>
+            ) : activeImage ? <Image src={activeImage} className="mall-detail-main-image" /> : <div className="mall-detail-image-placeholder">暂无图片</div>}
             {p.gallery?.length ? (
               <div className="mall-detail-thumbs">
-                {p.gallery.map((url: string) => (
-                  <button key={url} type="button" className={`mall-detail-thumb ${activeImage === url ? "is-active" : ""}`} onClick={() => setActiveImage(url)}>
+                {p.gallery.map((url: string, index: number) => (
+                  <button key={url} type="button" className={`mall-detail-thumb ${activeImage === url ? "is-active" : ""}`} onClick={() => {
+                    setActiveImage(url);
+                    if (useCarouselImages) carouselRef.current?.goTo?.(index);
+                  }}>
                     <img src={url} alt="" />
                   </button>
                 ))}
@@ -1477,7 +1877,7 @@ function DetailPage({ ctx }: any) {
                 </div>
               ))}
 
-              <div className="mall-detail-sku-box">
+              <div className={`mall-detail-sku-box ${batchSaleTip ? "" : "is-plain"}`}>
                 <div className="mall-detail-sku-top">
                   <div className="mall-detail-sku-group-name">{lastGroup?.name || "规格"}</div>
                   {batchSaleTip ? (
@@ -1521,16 +1921,40 @@ function DetailPage({ ctx }: any) {
 
             <div className="mall-detail-actions">
               <Button className="mall-detail-primary-action" size="large" onClick={buyNow}>立即下单</Button>
-              <Button className="mall-detail-secondary-action" size="large" onClick={() => submitCart(false)}>加入采购车</Button>
+              <Button className="mall-detail-secondary-action" size="large" onClick={() => submitCart(false)}>加入购物车</Button>
             </div>
           </div>
         </div>
       </Card>
+      <ProductAttributeCard attributes={p.customAttributes || []} />
       <Card title="商品详情">
         <div className="product-detail-render" dangerouslySetInnerHTML={{ __html: p.detailText || "暂无详情" }} />
         {p.detailImageUrl ? <Image src={p.detailImageUrl} className="detail-image" /> : null}
       </Card>
     </Space>
+  );
+}
+
+function ProductAttributeCard({ attributes }: { attributes: AnyRecord[] }) {
+  const rows = Array.isArray(attributes) ? attributes.filter(item => item?.name && String(item?.value ?? "").trim()) : [];
+  if (!rows.length) return null;
+  return (
+    <Card title="商品属性" className="mall-product-attributes-card">
+      <div className="mall-product-attributes-table">
+        {rows.map((item: AnyRecord) => (
+          <React.Fragment key={item.key || item.name}>
+            <div className="mall-product-attribute-name">{item.name}</div>
+            <div className="mall-product-attribute-value" title={String(item.value || "-")}>{item.value || "-"}</div>
+          </React.Fragment>
+        ))}
+        {rows.length % 2 ? (
+          <>
+            <div className="mall-product-attribute-name is-empty" />
+            <div className="mall-product-attribute-value is-empty" />
+          </>
+        ) : null}
+      </div>
+    </Card>
   );
 }
 
@@ -1969,7 +2393,7 @@ function deleteTitle(ctx: any, item: AnyRecord) {
 function MallLoginGuide({ ctx }: any) {
   return (
     <div className="mall-login-guide">
-      <span>欢迎访问 B2B 网页商城，请登录后浏览，推荐商品更精确哦~</span>
+      <span>欢迎访问夏至商城，请登录后浏览，推荐商品更精确哦~</span>
       <Button className="mall-login-guide-action" type="primary" onClick={() => ctx.requireLogin("/mall")}>立即登录</Button>
       <button className="mall-login-guide-close" type="button" aria-label="关闭登录引导" onClick={() => ctx.setShowLoginGuide(false)}><CloseOutlined /></button>
     </div>
@@ -1999,7 +2423,7 @@ function MallFloatingToolbar({ ctx }: any) {
 }
 
 function MallAiAssistant({ ctx }: any) {
-  const questions = ["帮我找办公室采购的饮用水", "怎么加入采购车？", "怎么申请发票？", "起批量是什么意思？", "如何注册账号？"];
+  const questions = ["帮我找办公室采购的饮用水", "怎么加入购物车？", "怎么申请发票？", "起批量是什么意思？", "如何注册账号？"];
   const [messages, setMessages] = useState<AnyRecord[]>([
     { role: "assistant", answer: "你好，我是 AI采购助手。可以帮你找商品、问采购规则、了解下单流程。" }
   ]);
@@ -2080,7 +2504,7 @@ function MallAiAssistant({ ctx }: any) {
       const quantity = Math.max(1, Number(product.specs?.[0]?.min || product.raw?.minOrderQuantity || 1));
       await request("/api/mall/cart/items", { method: "POST", data: { productId: Number(id), quantity, specIndex: 0 } });
       await ctx.hydrateCart();
-      ctx.message.success("已加入采购车");
+      ctx.message.success("已加入购物车");
     });
   };
 
@@ -2235,7 +2659,7 @@ function AuthPage({ ctx, type }: any) {
             )}
             {!isLogin ? (
               <Form.Item name="phone" rules={phoneRules()}>
-                <Input maxLength={11} placeholder="输入手机号" />
+                <Input maxLength={11} placeholder="手机号" />
               </Form.Item>
             ) : null}
             <Form.Item name="password" rules={passwordRules()}>

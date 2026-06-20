@@ -2,6 +2,7 @@ package com.erp.b2b.order;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -121,6 +122,25 @@ public class OrderRepository {
             .param("paymentStatus", paymentStatus)
             .param("fulfillmentStatus", fulfillmentStatus)
             .update();
+    }
+
+    public List<SalesOrder> findExpiredUnpaidOrders(LocalDateTime expireBefore) {
+        return jdbcClient.sql("""
+            SELECT id, order_no, customer_id, customer_name, order_status, payment_status, fulfillment_status,
+                   payment_method, total_amount, receiver_name, receiver_phone, receiver_address, remark, created_at, updated_at
+            FROM sales_orders
+            WHERE order_status = 'WAIT_PAY'
+              AND payment_status = 'UNPAID'
+              AND fulfillment_status = 'UNSHIPPED'
+              AND created_at <= :expireBefore
+            ORDER BY id
+            """)
+            .param("expireBefore", expireBefore)
+            .query(this::mapOrderWithoutItems)
+            .list()
+            .stream()
+            .map(order -> orderWithItems(order, findItems(order.id())))
+            .toList();
     }
 
     public int markItemsShipped(Long orderId) {

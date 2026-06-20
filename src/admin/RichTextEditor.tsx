@@ -28,6 +28,7 @@ function textLength(element: HTMLElement | null) {
 
 export default function RichTextEditor({ value = "", onChange, maxLength = 5000, placeholder = "请输入内容...", onError }: RichTextEditorProps) {
   const editorRef = useRef<HTMLDivElement>(null);
+  const imageUploadQueueRef = useRef<Promise<void>>(Promise.resolve());
   const [count, setCount] = useState(0);
 
   const sync = () => {
@@ -54,18 +55,28 @@ export default function RichTextEditor({ value = "", onChange, maxLength = 5000,
     sync();
   };
 
-  const uploadProps = {
-    beforeUpload: async (file: File) => {
+  const queueImageInsert = (file: File) => {
+    imageUploadQueueRef.current = imageUploadQueueRef.current.then(async () => {
       try {
-        const dataUrl = await imageToCompressedDataUrl(file);
+        const dataUrl = await imageToCompressedDataUrl(file, {
+          maxInputBytes: 5 * 1024 * 1024,
+          maxOutputBytes: 420 * 1024
+        });
         runCommand("insertImage", dataUrl);
       } catch (error: any) {
         onError?.(error.message);
       }
+    });
+  };
+
+  const uploadProps = {
+    beforeUpload: (file: File) => {
+      queueImageInsert(file);
       return false;
     },
     showUploadList: false,
-    accept: "image/*"
+    accept: "image/*",
+    multiple: true
   };
 
   return (

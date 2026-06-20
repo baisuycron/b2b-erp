@@ -61,13 +61,13 @@ public class AiChatService {
             );
         }
         if (containsAny(message, "注册")) {
-            return answer("点击页面顶部的【免费注册】，填写账号、密码、手机号后即可注册。注册成功后可以浏览商品详情、加入采购车和下单。");
+            return answer("点击页面顶部的【免费注册】，填写账号、密码、手机号后即可注册。注册成功后可以浏览商品详情、加入购物车和下单。");
         }
         if (containsAny(message, "登录", "登陆")) {
             return answer("点击页面顶部的【请登录】，输入账号和密码后即可登录。未登录时可以浏览商城首页，但点击商品、购物车、订单等入口会跳转登录页。");
         }
         if (containsAny(message, "采购车", "购物车")) {
-            return answer("找到商品后，进入商品详情页或商品卡片，点击【加入采购车】即可。未登录用户需要先登录。");
+            return answer("找到商品后，进入商品详情页或商品卡片，点击【加入购物车】即可。未登录用户需要先登录。");
         }
         if (containsAny(message, "下单", "购买")) {
             return answer("选择商品规格和采购数量后，点击【立即下单】进入确认订单页。提交订单前请确认收货信息、商品金额和发票信息。");
@@ -101,7 +101,7 @@ public class AiChatService {
             );
         }
 
-        return answer("我可以帮你找商品、说明采购流程、注册登录、发票和售后规则。你可以试试问：帮我找饮用水、怎么加入采购车、怎么申请发票。");
+        return answer("我可以帮你找商品、说明采购流程、注册登录、发票和售后规则。你可以试试问：帮我找饮用水、怎么加入购物车、怎么申请发票。");
     }
 
     private List<Map<String, Object>> searchProducts(List<String> terms) {
@@ -141,7 +141,7 @@ public class AiChatService {
         if (containsAny(message, "可口可乐", "可乐")) {
             return "我为你找到了可口可乐相关商品，可以查看详情后选择规格和数量。";
         }
-        return "我为你找到了相关办公采购商品，可以查看商品详情后加入采购车。";
+        return "我为你找到了相关办公采购商品，可以查看商品详情后加入购物车。";
     }
 
     private Map<String, Object> productMap(Product product) {
