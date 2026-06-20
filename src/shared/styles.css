@@ -4363,7 +4363,7 @@ body,
 .product-card-img {
   width: 100%;
   aspect-ratio: 1.2;
-  object-fit: cover;
+  object-fit: contain;
   border-radius: 8px;
   background: #f0f3f8;
 }

@@ -1573,23 +1573,34 @@ function unwrapProductResponse(payload: AnyRecord, productId?: React.Key) {
   return normalizeProductRecord(payload);
 }
 
+const productDetailRequests = new Map<string, Promise<AnyRecord>>();
+
 async function requestProductDetail(item?: AnyRecord) {
   const normalizedItem = normalizeProductRecord(item);
   if (!normalizedItem?.id) return normalizedItem;
+  const requestKey = String(normalizedItem.id);
+  const existing = productDetailRequests.get(requestKey);
+  if (existing) return existing;
 
-  const urls = [`/api/admin/products/${normalizedItem.id}`, `/api/products/${normalizedItem.id}`];
-  let lastError: unknown;
-  for (const url of urls) {
-    try {
-      const response = await request(url);
-      const detail = unwrapProductResponse(response, normalizedItem.id);
-      if (detail) return { ...normalizedItem, ...detail };
-    } catch (error) {
-      lastError = error;
-      continue;
+  const detailRequest = (async () => {
+    const urls = [`/api/admin/products/${normalizedItem.id}`, `/api/products/${normalizedItem.id}`];
+    let lastError: unknown;
+    for (const url of urls) {
+      try {
+        const response = await request(url);
+        const detail = unwrapProductResponse(response, normalizedItem.id);
+        if (detail) return { ...normalizedItem, ...detail };
+      } catch (error) {
+        lastError = error;
+        continue;
+      }
     }
-  }
-  throw lastError || new Error("商品详情加载失败");
+    throw lastError || new Error("商品详情加载失败");
+  })().finally(() => {
+    productDetailRequests.delete(requestKey);
+  });
+  productDetailRequests.set(requestKey, detailRequest);
+  return detailRequest;
 }
 
 function buildProductUpdatePayload(item: AnyRecord, patch: AnyRecord = {}) {
@@ -2486,6 +2497,7 @@ function ProductForm({ ctx, item, draftValues }: { ctx: Ctx; item?: AnyRecord; d
   const [saleUnitInput, setSaleUnitInput] = useState("");
   const [saleUnitInputError, setSaleUnitInputError] = useState("");
   const [activeProductSection, setActiveProductSection] = useState("basic");
+  const [visitedProductSections, setVisitedProductSections] = useState<Set<string>>(() => new Set(["basic"]));
   const productFormBodyRef = useRef<HTMLDivElement | null>(null);
   const quoteType = Form.useWatch("quoteType", form) || "INDEPENDENT_PRICE";
   const saleMode = Form.useWatch("saleMode", form) || "NORMAL";
@@ -2553,24 +2565,6 @@ function ProductForm({ ctx, item, draftValues }: { ctx: Ctx; item?: AnyRecord; d
   }, [item?.id, item?.updatedAt, item?.skuListJson, item?.tierPricesJson]);
 
   useEffect(() => {
-    let cancelled = false;
-    if (!item?.id) return () => {
-      cancelled = true;
-    };
-
-    void requestProductDetail(item)
-      .then(nextProduct => {
-        if (cancelled || !nextProduct) return;
-        setProduct(nextProduct);
-      })
-      .catch(() => {});
-
-    return () => {
-      cancelled = true;
-    };
-  }, [item?.id]);
-
-  useEffect(() => {
     form.resetFields();
     form.setFieldsValue(initial);
   }, [form, initial]);
@@ -2612,7 +2606,7 @@ function ProductForm({ ctx, item, draftValues }: { ctx: Ctx; item?: AnyRecord; d
 
     return (
       <div className={`product-image-preview-tile is-${variant}`}>
-        <img src={value} alt="" />
+        <img src={value} alt="" loading="lazy" decoding="async" />
         <div className="product-image-actions">
           <Tooltip title="删除">
             <Button type="text" icon={<DeleteOutlined />} onClick={() => onChange("")} />
@@ -2694,7 +2688,7 @@ function ProductForm({ ctx, item, draftValues }: { ctx: Ctx; item?: AnyRecord; d
                     moveAt(Number(event.dataTransfer.getData("text/plain")), index);
                   }}
                 >
-                  <img src={url} alt="" />
+                  <img src={url} alt="" loading="lazy" decoding="async" />
                   {index === 0 ? <span className="product-image-primary-badge">主图</span> : null}
                   <div className="product-image-drag-handle"><HolderOutlined /></div>
                   <div className="product-image-actions">
@@ -2941,13 +2935,30 @@ function ProductForm({ ctx, item, draftValues }: { ctx: Ctx; item?: AnyRecord; d
     });
   };
 
+  const renderedProductSections = useMemo(() => {
+    const sections = new Set([...visitedProductSections, activeProductSection]);
+    return {
+      spec: sections.has("spec"),
+      custom: sections.has("custom"),
+      detail: sections.has("detail")
+    };
+  }, [activeProductSection, visitedProductSections]);
+
   const scrollToProductSection = (key: string) => {
     setActiveProductSection(key);
-    const body = productFormBodyRef.current;
-    const target = body?.querySelector<HTMLElement>(`[data-product-section="${key}"]`);
-    if (!body || !target) return;
-    const top = body.scrollTop + target.getBoundingClientRect().top - body.getBoundingClientRect().top - 64;
-    body.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+    setVisitedProductSections(previous => {
+      if (previous.has(key)) return previous;
+      const next = new Set(previous);
+      next.add(key);
+      return next;
+    });
+    window.setTimeout(() => {
+      const body = productFormBodyRef.current;
+      const target = body?.querySelector<HTMLElement>(`[data-product-section="${key}"]`);
+      if (!body || !target) return;
+      const top = body.scrollTop + target.getBoundingClientRect().top - body.getBoundingClientRect().top - 64;
+      body.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+    }, 0);
   };
 
   return (
@@ -3254,6 +3265,7 @@ function ProductForm({ ctx, item, draftValues }: { ctx: Ctx; item?: AnyRecord; d
                         </div>
                     ) : null}
                   </section>
+                  {renderedProductSections.spec ? (
                   <section className="product-form-section" data-product-section="spec">
                       <ProductSpecEditor
                         form={form}
@@ -3264,6 +3276,8 @@ function ProductForm({ ctx, item, draftValues }: { ctx: Ctx; item?: AnyRecord; d
                         showAutoSkuCodePlaceholder={!product?.id}
                       />
                   </section>
+                  ) : null}
+                  {renderedProductSections.custom ? (
                     <section className="product-form-section" data-product-section="custom">
                       <div className="product-form-section-title">商品属性</div>
                       <div className="product-custom-attribute-panel">
@@ -3300,6 +3314,8 @@ function ProductForm({ ctx, item, draftValues }: { ctx: Ctx; item?: AnyRecord; d
                         </Form.List>
                       </div>
                     </section>
+                  ) : null}
+                  {renderedProductSections.detail ? (
                     <section className="product-form-section" data-product-section="detail">
                       <div className="product-form-section-title">商品详情</div>
                       <div className="product-detail-editor-row is-full">
@@ -3308,6 +3324,7 @@ function ProductForm({ ctx, item, draftValues }: { ctx: Ctx; item?: AnyRecord; d
                         </Form.Item>
                       </div>
                     </section>
+                  ) : null}
                   </div>
         </div>
         <div className="product-form-submit-bar">
@@ -3424,12 +3441,12 @@ function ProductEditPreview({ values, sourceProduct, onExit }: { values: AnyReco
       <Card className="mall-detail-card">
         <div className="mall-detail-layout">
           <div className="mall-detail-gallery">
-            {activeImage ? <img src={activeImage} className="mall-detail-main-image" alt="" /> : <div className="mall-detail-image-placeholder">暂无图片</div>}
+            {activeImage ? <img src={activeImage} className="mall-detail-main-image" alt="" loading="lazy" decoding="async" /> : <div className="mall-detail-image-placeholder">暂无图片</div>}
             {preview.images.length ? (
               <div className="mall-detail-thumbs">
                 {preview.images.map((url: string, index: number) => (
                   <button key={`${url}-${index}`} type="button" className={`mall-detail-thumb ${activeImage === url ? "is-active" : ""}`} onClick={() => setActiveImage(url)}>
-                    <img src={url} alt="" />
+                    <img src={url} alt="" loading="lazy" decoding="async" />
                   </button>
                 ))}
               </div>
@@ -3470,7 +3487,7 @@ function ProductEditPreview({ values, sourceProduct, onExit }: { values: AnyReco
                           className={`mall-detail-spec-option ${active ? "is-active" : ""}`}
                           onClick={() => setSelectedSpecValues((old: AnyRecord) => ({ ...old, [group.key]: value.key }))}
                         >
-                          {groupIndex === 0 && value.image ? <img src={value.image} alt="" /> : null}
+                          {groupIndex === 0 && value.image ? <img src={value.image} alt="" loading="lazy" decoding="async" /> : null}
                           <span>{value.value}</span>
                         </button>
                       );

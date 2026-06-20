@@ -5,10 +5,12 @@ import com.erp.b2b.common.ApiException;
 import com.erp.b2b.inventory.InventoryRepository;
 import com.erp.b2b.order.OrderService;
 import com.erp.b2b.product.CreateProductRequest;
+import com.erp.b2b.product.MallProductListItem;
 import com.erp.b2b.product.Product;
 import com.erp.b2b.product.ProductListItem;
 import com.erp.b2b.product.ProductRepository;
 import com.erp.b2b.product.ProductThumbnailService;
+import com.erp.b2b.product.ProductImageUrlService;
 import com.erp.b2b.product.search.ImageSearchService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -53,6 +55,7 @@ public class PhaseOneController {
     private final JdbcClient jdbcClient;
     private final ProductRepository productRepository;
     private final ProductThumbnailService productThumbnailService;
+    private final ProductImageUrlService productImageUrlService;
     private final ImageSearchService imageSearchService;
     private final InventoryRepository inventoryRepository;
     private final OrderService orderService;
@@ -64,10 +67,11 @@ public class PhaseOneController {
     private static final String SUPER_ADMIN_ROLE = "超级管理员";
     private static final String DASHBOARD_PERMISSION_KEY = "dashboard";
 
-    public PhaseOneController(JdbcClient jdbcClient, ProductRepository productRepository, ProductThumbnailService productThumbnailService, ImageSearchService imageSearchService, InventoryRepository inventoryRepository, OrderService orderService, AuthTokenService authTokenService) {
+    public PhaseOneController(JdbcClient jdbcClient, ProductRepository productRepository, ProductThumbnailService productThumbnailService, ProductImageUrlService productImageUrlService, ImageSearchService imageSearchService, InventoryRepository inventoryRepository, OrderService orderService, AuthTokenService authTokenService) {
         this.jdbcClient = jdbcClient;
         this.productRepository = productRepository;
         this.productThumbnailService = productThumbnailService;
+        this.productImageUrlService = productImageUrlService;
         this.imageSearchService = imageSearchService;
         this.inventoryRepository = inventoryRepository;
         this.orderService = orderService;
@@ -541,9 +545,11 @@ public class PhaseOneController {
     }
 
     @GetMapping("/admin/products/{productId}")
-    public Product adminProductDetail(@PathVariable Long productId) {
-        return productRepository.findById(productId)
+    public Map<String, Object> adminProductDetail(@PathVariable Long productId) {
+        Product product = productRepository.findById(productId)
             .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
+        String thumbnailUrl = productRepository.findMainImageThumbnailUrl(productId);
+        return productImageUrlService.toDetailResponse(product, thumbnailUrl);
     }
 
     @PostMapping("/admin/products")
@@ -649,20 +655,22 @@ public class PhaseOneController {
     }
 
     @GetMapping({"/mall/home/products", "/mall/products"})
-    public List<Product> mallProducts(
+    public List<MallProductListItem> mallProducts(
         @RequestParam(required = false) String keyword,
         @RequestParam(required = false) Long categoryId,
         @RequestParam(required = false) String categoryName,
         @RequestParam(required = false) Long brandId,
         @RequestParam(required = false) String brandName
     ) {
-        return productRepository.findMallProducts(keyword, categoryId, categoryName, brandId, brandName);
+        return productRepository.findMallProductList(keyword, categoryId, categoryName, brandId, brandName);
     }
 
     @GetMapping("/mall/products/{productId}")
-    public Product mallProductDetail(@PathVariable Long productId) {
-        return productRepository.findById(productId)
+    public Map<String, Object> mallProductDetail(@PathVariable Long productId) {
+        Product product = productRepository.findById(productId)
             .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
+        String thumbnailUrl = productRepository.findMainImageThumbnailUrl(productId);
+        return productImageUrlService.toDetailResponse(product, thumbnailUrl);
     }
 
     @PostMapping("/buyer/register")

@@ -645,7 +645,7 @@ export default function ProductSpecEditor({ form, initialSkuList, message, onPre
 
     return (
       <div className={`product-image-preview-tile is-${variant}`}>
-        <img src={value} alt="" />
+        <img src={value} alt="" loading="lazy" decoding="async" />
         <div className="product-image-actions">
           <Tooltip title="删除">
             <Button type="text" icon={<DeleteOutlined />} onClick={() => onChange("")} />

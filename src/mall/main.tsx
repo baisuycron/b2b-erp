@@ -984,6 +984,8 @@ function MallRoot() {
 }
 
 function productFromApi(item: AnyRecord) {
+  const cardImage = mallProductCardImageSrc(item);
+  const mainImage = String(item.mainImageUrl || item.mainImageCardUrl || item.mainImageThumbnailUrl || item.thumbnailUrl || "").trim();
   const saleMode = item.saleMode === "BATCH" ? "BATCH" : "NORMAL";
   const saleUnit = String(item.saleUnit || "").trim();
   const baseUnit = item.unit || "件";
@@ -992,7 +994,7 @@ function productFromApi(item: AnyRecord) {
   const specs = skuRows.length ? skuRows.map((row, index) => ({
     code: row.skuCode || item.skuCode || `${item.id}-${index}`,
     name: row.skuName || item.skuName || "默认规格",
-    image: row.skuImageUrl || row.imageUrl || item.mainImageUrl,
+    image: row.skuImageUrl || row.imageUrl || mainImage,
     price: Number(row.salePrice ?? item.salePrice ?? 0),
     stock: Number(row.stockQuantity ?? item.stockQuantity ?? 0),
     min: Number(row.minOrderQuantity ?? item.minOrderQuantity ?? 1),
@@ -1002,7 +1004,7 @@ function productFromApi(item: AnyRecord) {
   })) : [{
     code: item.skuCode,
     name: item.skuName || "默认规格",
-    image: item.mainImageUrl,
+    image: mainImage,
     price: Number(item.salePrice || 0),
     stock: Number(item.stockQuantity || 0),
     min: Number(item.minOrderQuantity || 1),
@@ -1013,8 +1015,8 @@ function productFromApi(item: AnyRecord) {
   const detail = parseDetailContent(item.detailContent || "");
   const tierPrices = parseRows(item.tierPricesJson || item.tierPrices);
   const customAttributes = productCustomAttributes(item.customAttributes || item.customAttributesJson);
-  const carouselImages = uniqueTruthy([item.mainImageUrl, ...(detail.carouselImages || [])]).slice(0, 5);
-  const gallery = carouselImages.length ? carouselImages : uniqueTruthy([item.mainImageUrl]);
+  const carouselImages = uniqueTruthy([mainImage, ...(detail.carouselImages || [])]).slice(0, 5);
+  const gallery = carouselImages.length ? carouselImages : uniqueTruthy([mainImage]);
   return {
     id: Number(item.id),
     apiId: Number(item.id),
@@ -1028,7 +1030,8 @@ function productFromApi(item: AnyRecord) {
     saleUnitRatio: Number(item.saleUnitRatio || 0) || null,
     rawQuoteType: item.quoteType,
     quoteType: item.quoteType === "TIER_PRICE" ? "阶梯报价" : "规格独立报价",
-    image: item.mainImageUrl,
+    image: mainImage,
+    cardImage,
     pinyinCode: item.pinyinCode || "",
     pinyinFull: item.pinyinFull || "",
     initialCode: item.initialCode || item.mnemonicCode || "",
@@ -1047,6 +1050,22 @@ function productFromApi(item: AnyRecord) {
   };
 }
 
+function mallProductCardImageSrc(item: AnyRecord) {
+  const src = String(item?.mainImageCardUrl || item?.cardImage || item?.mainImageThumbnailUrl || item?.thumbnailUrl || item?.mainImageUrl || item?.image || "").trim();
+  if (!src) return "";
+  if (src.toLowerCase().startsWith("data:image")) return "";
+  return src;
+}
+
+function MallProductCardCover({ product }: { product: AnyRecord }) {
+  const [failed, setFailed] = useState(false);
+  const src = failed ? "" : mallProductCardImageSrc(product);
+  if (!src) {
+    return <div className="product-card-img" style={{ display: "grid", placeItems: "center", fontWeight: 800, color: "#4e7cff" }}>{product?.brand?.[0] || "商"}</div>;
+  }
+  return <img className="product-card-img" src={src} loading="lazy" decoding="async" alt={product?.name || ""} onError={() => setFailed(true)} />;
+}
+
 function productCustomAttributes(value: any) {
   return parseRows(value)
     .map((row: AnyRecord, index: number) => ({
@@ -1063,6 +1082,8 @@ function imageSearchProductToApi(row: AnyRecord) {
     productName: row.productName || row.name,
     categoryName: row.categoryName,
     brandName: row.brandName,
+    mainImageCardUrl: row.mainImageCardUrl || row.cardUrl,
+    mainImageThumbnailUrl: row.mainImageThumbnailUrl || row.thumbnailUrl,
     mainImageUrl: row.imageUrl || row.image || row.mainImageUrl,
     salePrice: row.price || row.salePrice || 0,
     stockQuantity: row.stockQuantity || 0,
@@ -1504,7 +1525,7 @@ function ProductGrid({ products, ctx, loading }: any) {
               className="mall-product-card"
               hoverable
               onClick={() => ctx.isLoggedIn ? ctx.go("detail", p) : ctx.requireLogin(`/product/${p.id}`)}
-              cover={p.image ? <img className="product-card-img" src={p.image} loading="lazy" decoding="async" /> : <div className="product-card-img" style={{ display: "grid", placeItems: "center", fontWeight: 800, color: "#4e7cff" }}>{p.brand?.[0] || "商"}</div>}
+              cover={<MallProductCardCover product={p} />}
             >
               <div className="mall-product-card-body">
                 <div className="mall-product-card-title" title={p.name}>{p.name}</div>

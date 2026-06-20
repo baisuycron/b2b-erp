@@ -28,6 +28,7 @@ import org.springframework.stereotype.Service;
 public class ProductThumbnailService {
     private static final Logger LOGGER = LoggerFactory.getLogger(ProductThumbnailService.class);
     private static final int THUMBNAIL_SIZE = 120;
+    private static final int CARD_SIZE = 400;
     private static final int MAX_IMAGE_BYTES = 12 * 1024 * 1024;
     private static final String DATA_IMAGE_PREFIX = "data:image";
 
@@ -55,7 +56,8 @@ public class ProductThumbnailService {
         List<ImageSource> sources = jdbcClient.sql("""
             SELECT id, main_image_url
             FROM products
-            WHERE COALESCE(main_image_thumbnail_url, '') = ''
+            WHERE (COALESCE(main_image_thumbnail_url, '') = ''
+                OR COALESCE(main_image_card_url, '') = '')
               AND COALESCE(main_image_url, '') <> ''
             """)
             .query(this::mapImageSource)
@@ -69,20 +71,22 @@ public class ProductThumbnailService {
     }
 
     public Path resolveThumbnail(String filename) {
-        if (filename == null || !filename.matches("[0-9]+-[0-9a-f]{16}\\.jpg")) return null;
+        if (filename == null || !filename.matches("[0-9]+-[0-9a-f]{16}(?:-(?:thumb|card))?\\.jpg")) return null;
         Path resolved = thumbnailDirectory.resolve(filename).normalize();
         return resolved.startsWith(thumbnailDirectory) ? resolved : null;
     }
 
     private void safelyRefreshAndStore(ImageSource source) {
         try {
-            String thumbnailUrl = createThumbnailUrl(source);
+            GeneratedImages images = createImageUrls(source);
             jdbcClient.sql("""
                 UPDATE products
-                SET main_image_thumbnail_url = :thumbnailUrl
+                SET main_image_thumbnail_url = :thumbnailUrl,
+                    main_image_card_url = :cardUrl
                 WHERE id = :id
                 """)
-                .param("thumbnailUrl", thumbnailUrl)
+                .param("thumbnailUrl", images.thumbnailUrl())
+                .param("cardUrl", images.cardUrl())
                 .param("id", source.id())
                 .update();
         } catch (RuntimeException exception) {
@@ -90,60 +94,75 @@ public class ProductThumbnailService {
         }
     }
 
-    private String createThumbnailUrl(ImageSource source) {
+    private GeneratedImages createImageUrls(ImageSource source) {
         String imageUrl = source.mainImageUrl() == null ? "" : source.mainImageUrl().trim();
-        if (imageUrl.isBlank()) return "";
+        if (imageUrl.isBlank()) return new GeneratedImages("", "");
         if (!imageUrl.toLowerCase(Locale.ROOT).startsWith(DATA_IMAGE_PREFIX)) {
-            return isThumbnailUrl(imageUrl) ? imageUrl : "";
+            String safeUrl = isGeneratedImageUrl(imageUrl) ? imageUrl : "";
+            return new GeneratedImages(safeUrl, isCardUrl(imageUrl) ? imageUrl : "");
         }
 
         int commaIndex = imageUrl.indexOf(',');
         if (commaIndex < 0 || !imageUrl.substring(0, commaIndex).toLowerCase(Locale.ROOT).contains(";base64")) {
-            return "";
+            return new GeneratedImages("", "");
         }
 
         try {
             byte[] sourceBytes = Base64.getDecoder().decode(imageUrl.substring(commaIndex + 1).replaceAll("\\s+", ""));
-            if (sourceBytes.length == 0 || sourceBytes.length > MAX_IMAGE_BYTES) return "";
+            if (sourceBytes.length == 0 || sourceBytes.length > MAX_IMAGE_BYTES) return new GeneratedImages("", "");
             BufferedImage sourceImage = ImageIO.read(new ByteArrayInputStream(sourceBytes));
-            if (sourceImage == null) return "";
-
-            int sourceWidth = Math.max(1, sourceImage.getWidth());
-            int sourceHeight = Math.max(1, sourceImage.getHeight());
-            double scale = Math.min((double) THUMBNAIL_SIZE / sourceWidth, (double) THUMBNAIL_SIZE / sourceHeight);
-            int width = Math.max(1, (int) Math.round(sourceWidth * scale));
-            int height = Math.max(1, (int) Math.round(sourceHeight * scale));
-            int x = (THUMBNAIL_SIZE - width) / 2;
-            int y = (THUMBNAIL_SIZE - height) / 2;
-
-            BufferedImage thumbnail = new BufferedImage(THUMBNAIL_SIZE, THUMBNAIL_SIZE, BufferedImage.TYPE_INT_RGB);
-            Graphics2D graphics = thumbnail.createGraphics();
-            try {
-                graphics.setColor(Color.WHITE);
-                graphics.fillRect(0, 0, THUMBNAIL_SIZE, THUMBNAIL_SIZE);
-                graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
-                graphics.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
-                graphics.drawImage(sourceImage, x, y, width, height, null);
-            } finally {
-                graphics.dispose();
-            }
+            if (sourceImage == null) return new GeneratedImages("", "");
 
             Files.createDirectories(thumbnailDirectory);
-            String filename = source.id() + "-" + contentHash(sourceBytes) + ".jpg";
-            Path target = thumbnailDirectory.resolve(filename).normalize();
-            if (!target.startsWith(thumbnailDirectory)) return "";
-            if (!Files.exists(target)) ImageIO.write(thumbnail, "jpg", target.toFile());
-            return thumbnailUrlPrefix + "/" + filename;
+            String hash = contentHash(sourceBytes);
+            String thumbnailUrl = writeSizedImage(source.id(), hash, "thumb", THUMBNAIL_SIZE, sourceImage);
+            String cardUrl = writeSizedImage(source.id(), hash, "card", CARD_SIZE, sourceImage);
+            return new GeneratedImages(thumbnailUrl, cardUrl);
         } catch (IllegalArgumentException | IOException exception) {
-            return "";
+            return new GeneratedImages("", "");
         }
     }
 
-    private boolean isThumbnailUrl(String imageUrl) {
+    private String writeSizedImage(Long productId, String hash, String role, int size, BufferedImage sourceImage) throws IOException {
+        int sourceWidth = Math.max(1, sourceImage.getWidth());
+        int sourceHeight = Math.max(1, sourceImage.getHeight());
+        double scale = Math.min((double) size / sourceWidth, (double) size / sourceHeight);
+        int width = Math.max(1, (int) Math.round(sourceWidth * scale));
+        int height = Math.max(1, (int) Math.round(sourceHeight * scale));
+        int x = (size - width) / 2;
+        int y = (size - height) / 2;
+
+        BufferedImage image = new BufferedImage(size, size, BufferedImage.TYPE_INT_RGB);
+        Graphics2D graphics = image.createGraphics();
+        try {
+            graphics.setColor(Color.WHITE);
+            graphics.fillRect(0, 0, size, size);
+            graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+            graphics.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+            graphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            graphics.drawImage(sourceImage, x, y, width, height, null);
+        } finally {
+            graphics.dispose();
+        }
+
+        String filename = productId + "-" + hash + "-" + role + ".jpg";
+        Path target = thumbnailDirectory.resolve(filename).normalize();
+        if (!target.startsWith(thumbnailDirectory)) return "";
+        if (!Files.exists(target)) ImageIO.write(image, "jpg", target.toFile());
+        return thumbnailUrlPrefix + "/" + filename;
+    }
+
+    private boolean isGeneratedImageUrl(String imageUrl) {
         String normalized = imageUrl.toLowerCase(Locale.ROOT);
         return normalized.startsWith(thumbnailUrlPrefix.toLowerCase(Locale.ROOT) + "/")
             || normalized.contains("/thumb/")
             || normalized.contains("/thumbnail/");
+    }
+
+    private boolean isCardUrl(String imageUrl) {
+        String normalized = imageUrl.toLowerCase(Locale.ROOT);
+        return normalized.startsWith(thumbnailUrlPrefix.toLowerCase(Locale.ROOT) + "/")
+            && normalized.contains("-card.");
     }
 
     private String contentHash(byte[] bytes) {
@@ -165,5 +184,8 @@ public class ProductThumbnailService {
     }
 
     private record ImageSource(Long id, String mainImageUrl) {
+    }
+
+    private record GeneratedImages(String thumbnailUrl, String cardUrl) {
     }
 }

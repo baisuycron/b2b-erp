@@ -94,6 +94,18 @@ public class ProductRepository {
             .optional();
     }
 
+    public String findMainImageThumbnailUrl(Long id) {
+        return jdbcClient.sql("""
+            SELECT COALESCE(main_image_thumbnail_url, '')
+            FROM products
+            WHERE id = :id
+            """)
+            .param("id", id)
+            .query(String.class)
+            .optional()
+            .orElse("");
+    }
+
     public List<Product> findMallProducts(String keyword, Long categoryId, String categoryName, Long brandId, String brandName) {
         String resolvedCategoryName = clean(categoryName, "");
         if (categoryId != null) {
@@ -149,6 +161,94 @@ public class ProductRepository {
             .param("keyword", text)
             .param("likeKeyword", likeKeyword)
             .query(this::mapProduct)
+            .list();
+    }
+
+    public List<MallProductListItem> findMallProductList(String keyword, Long categoryId, String categoryName, Long brandId, String brandName) {
+        String resolvedCategoryName = clean(categoryName, "");
+        if (categoryId != null) {
+            resolvedCategoryName = jdbcClient.sql("""
+                SELECT category_name
+                FROM product_categories
+                WHERE id = :categoryId
+                  AND category_status = 'ENABLED'
+                """)
+                .param("categoryId", categoryId)
+                .query(String.class)
+                .optional()
+                .orElse(resolvedCategoryName);
+        }
+        String resolvedBrandName = clean(brandName, "");
+        if (brandId != null) {
+            resolvedBrandName = jdbcClient.sql("""
+                SELECT brand_name
+                FROM product_brands
+                WHERE id = :brandId
+                  AND brand_status = 'ENABLED'
+                """)
+                .param("brandId", brandId)
+                .query(String.class)
+                .optional()
+                .orElse(resolvedBrandName);
+        }
+
+        String text = clean(keyword, "").toLowerCase();
+        String likeKeyword = "%" + text + "%";
+        return jdbcClient.sql("""
+            SELECT id, product_code, sku_code, sku_barcode, product_name, category_name, brand_name,
+                   sku_name, unit, quote_type, sale_mode, sale_unit, sale_unit_ratio, sale_price,
+                   stock_quantity, min_order_quantity, sale_status,
+                   CASE
+                     WHEN LOWER(COALESCE(main_image_card_url, '')) LIKE 'data:image%' THEN ''
+                     ELSE COALESCE(main_image_card_url, '')
+                   END AS main_image_card_url,
+                   CASE
+                     WHEN LOWER(COALESCE(main_image_thumbnail_url, '')) LIKE 'data:image%' THEN ''
+                     ELSE COALESCE(main_image_thumbnail_url, '')
+                   END AS main_image_thumbnail_url,
+                   updated_at
+            FROM products
+            WHERE sale_status = 'ON_SALE'
+              AND (:categoryName = '' OR category_name = :categoryName)
+              AND (:brandName = '' OR brand_name = :brandName)
+              AND (
+                :keyword = ''
+                OR LOWER(product_name) LIKE :likeKeyword
+                OR LOWER(COALESCE(pinyin_code, '')) LIKE :likeKeyword
+                OR LOWER(COALESCE(pinyin_full, '')) LIKE :likeKeyword
+                OR LOWER(COALESCE(initial_code, '')) LIKE :likeKeyword
+                OR LOWER(COALESCE(sku_code, '')) LIKE :likeKeyword
+                OR LOWER(COALESCE(sku_barcode, '')) LIKE :likeKeyword
+                OR LOWER(COALESCE(sku_list_json, '')) LIKE :likeKeyword
+              )
+            ORDER BY id DESC
+            """)
+            .param("categoryName", resolvedCategoryName)
+            .param("brandName", resolvedBrandName)
+            .param("keyword", text)
+            .param("likeKeyword", likeKeyword)
+            .query((rs, rowNum) -> new MallProductListItem(
+                rs.getLong("id"),
+                rs.getString("product_code"),
+                rs.getString("sku_code"),
+                rs.getString("sku_barcode"),
+                rs.getString("product_name"),
+                rs.getString("category_name"),
+                rs.getString("brand_name"),
+                rs.getString("sku_name"),
+                rs.getString("unit"),
+                rs.getString("quote_type"),
+                rs.getString("sale_mode"),
+                rs.getString("sale_unit"),
+                rs.getObject("sale_unit_ratio", Integer.class),
+                rs.getBigDecimal("sale_price"),
+                rs.getObject("stock_quantity", Integer.class),
+                rs.getObject("min_order_quantity", Integer.class),
+                rs.getString("sale_status"),
+                rs.getString("main_image_card_url"),
+                rs.getString("main_image_thumbnail_url"),
+                rs.getTimestamp("updated_at") == null ? null : rs.getTimestamp("updated_at").toLocalDateTime()
+            ))
             .list();
     }
 

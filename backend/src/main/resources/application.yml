@@ -24,6 +24,9 @@ b2b:
   product-thumbnail:
     directory: ${PRODUCT_THUMBNAIL_DIR:./uploads/products/thumb}
     url-prefix: /api/public/product-thumbnails
+  product-image:
+    directory: ${PRODUCT_IMAGE_DIR:./uploads/products/images}
+    url-prefix: /api/public/product-images
   auth:
     token-ttl: ${B2B_AUTH_TOKEN_TTL:PT24H}
     token-secret: ${B2B_AUTH_TOKEN_SECRET:b2b-erp-production-token-signing-key-2026}
