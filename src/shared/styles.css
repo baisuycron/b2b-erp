@@ -1564,6 +1564,39 @@ body,
   background: #1677ff;
 }
 
+.product-form-anchorbar {
+  display: flex;
+  gap: 34px;
+  margin: 0 0 14px;
+  border-bottom: 1px solid #e8edf4;
+}
+
+.product-form-anchor {
+  position: relative;
+  padding: 0 0 13px;
+  border: 0;
+  background: transparent;
+  color: #1f2937;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.product-form-anchor.is-active {
+  color: #1677ff;
+}
+
+.product-form-anchor.is-active::after {
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 3px;
+  background: #1677ff;
+  content: "";
+}
+
 .product-form-pane {
   display: grid;
   gap: 10px;

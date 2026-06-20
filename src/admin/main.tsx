@@ -1470,6 +1470,47 @@ function firstPresent<T>(...values: T[]) {
   return values.find(value => value !== undefined && value !== null);
 }
 
+function productStringArray(...values: any[]) {
+  const result: string[] = [];
+  values.forEach(value => {
+    if (value === undefined || value === null || value === "") return;
+    if (Array.isArray(value)) {
+      value.forEach(item => {
+        const text = typeof item === "string"
+          ? item.trim()
+          : String(item?.url || item?.src || item?.imageUrl || item?.image || "").trim();
+        if (text) result.push(text);
+      });
+      return;
+    }
+    const parsedRows = parseRows(value);
+    if (parsedRows.length) {
+      parsedRows.forEach(item => {
+        const text = typeof item === "string"
+          ? item.trim()
+          : String(item?.url || item?.src || item?.imageUrl || item?.image || "").trim();
+        if (text) result.push(text);
+      });
+      return;
+    }
+    const text = String(value || "").trim();
+    if (text) result.push(text);
+  });
+  return result;
+}
+
+function uniqueProductImageUrls(...values: any[]) {
+  return Array.from(new Set(productStringArray(...values)));
+}
+
+function appendMissingDetailImages(html: string, images: string[]) {
+  const current = String(html || "");
+  const additions = uniqueProductImageUrls(images)
+    .filter(url => !current.includes(url))
+    .map(url => `<p><img src="${url}" /></p>`);
+  return [current, ...additions].filter(Boolean).join("");
+}
+
 function normalizeProductSaleMode(item?: AnyRecord) {
   const raw = firstPresent(
     item?.saleMode,
@@ -1515,8 +1556,12 @@ function normalizeProductRecord(item?: AnyRecord) {
     saleUnit: firstPresent(item.saleUnit, item.sale_unit, item.sellingUnit),
     saleUnitRatio: normalizeProductSaleUnitRatio(item),
     mainImageUrl: firstPresent(item.mainImageUrl, item.main_image_url, item.imageUrl, item.image_url),
-    mainImageThumbnailUrl: firstPresent(item.mainImageThumbnailUrl, item.main_image_thumbnail_url, item.thumbnailUrl),
+    mainImageCardUrl: firstPresent(item.mainImageCardUrl, item.main_image_card_url, item.cardUrl),
+    mainImageThumbnailUrl: firstPresent(item.mainImageThumbnailUrl, item.main_image_thumbnail_url, item.mainImageThumbUrl, item.main_image_thumb_url, item.thumbnailUrl),
     detailContent: firstPresent(item.detailContent, item.detail_content),
+    carouselImages: firstPresent(item.carouselImages, item.carousel_images),
+    detailImages: firstPresent(item.detailImages, item.detail_images),
+    specImages: firstPresent(item.specImages, item.spec_images),
     salePrice: firstPresent(item.salePrice, item.sale_price),
     stockQuantity: firstPresent(item.stockQuantity, item.stock_quantity),
     minOrderQuantity: firstPresent(item.minOrderQuantity, item.min_order_quantity),
@@ -2497,7 +2542,6 @@ function ProductForm({ ctx, item, draftValues }: { ctx: Ctx; item?: AnyRecord; d
   const [saleUnitInput, setSaleUnitInput] = useState("");
   const [saleUnitInputError, setSaleUnitInputError] = useState("");
   const [activeProductSection, setActiveProductSection] = useState("basic");
-  const [visitedProductSections, setVisitedProductSections] = useState<Set<string>>(() => new Set(["basic"]));
   const productFormBodyRef = useRef<HTMLDivElement | null>(null);
   const quoteType = Form.useWatch("quoteType", form) || "INDEPENDENT_PRICE";
   const saleMode = Form.useWatch("saleMode", form) || "NORMAL";
@@ -2522,8 +2566,11 @@ function ProductForm({ ctx, item, draftValues }: { ctx: Ctx; item?: AnyRecord; d
   const initial = useMemo(() => {
     const productImages = Array.from(new Set([
       product?.mainImageUrl,
+      ...(uniqueProductImageUrls(product?.carouselImages)),
       ...(detail.carouselImages || [])
     ].map(url => String(url || "").trim()).filter(Boolean))).slice(0, 5);
+    const detailImageUrls = uniqueProductImageUrls(product?.detailImages, detail.imageUrl);
+    const detailText = appendMissingDetailImages(detail.text || "", detailImageUrls);
     const savedCustomAttributes = parseRows(product?.customAttributesJson);
     const base = {
       productName: product?.productName || "",
@@ -2542,10 +2589,8 @@ function ProductForm({ ctx, item, draftValues }: { ctx: Ctx; item?: AnyRecord; d
       saleUnit: product?.saleUnit || undefined,
       saleUnitRatio: product?.saleUnitRatio ?? undefined,
       mainImageUrl: productImages[0] || "",
-      detailText: detail.imageUrl && !String(detail.text || "").includes("<img")
-        ? `${detail.text || ""}<p><img src="${detail.imageUrl}" /></p>`
-        : detail.text,
-      detailImageUrl: detail.imageUrl,
+      detailText,
+      detailImageUrl: detailImageUrls[0] || "",
       carouselImages: productImages,
       skuList: productSkuRows(product),
       tierPrices: productTierRows(product)
@@ -2935,23 +2980,8 @@ function ProductForm({ ctx, item, draftValues }: { ctx: Ctx; item?: AnyRecord; d
     });
   };
 
-  const renderedProductSections = useMemo(() => {
-    const sections = new Set([...visitedProductSections, activeProductSection]);
-    return {
-      spec: sections.has("spec"),
-      custom: sections.has("custom"),
-      detail: sections.has("detail")
-    };
-  }, [activeProductSection, visitedProductSections]);
-
   const scrollToProductSection = (key: string) => {
     setActiveProductSection(key);
-    setVisitedProductSections(previous => {
-      if (previous.has(key)) return previous;
-      const next = new Set(previous);
-      next.add(key);
-      return next;
-    });
     window.setTimeout(() => {
       const body = productFormBodyRef.current;
       const target = body?.querySelector<HTMLElement>(`[data-product-section="${key}"]`);
@@ -2960,6 +2990,12 @@ function ProductForm({ ctx, item, draftValues }: { ctx: Ctx; item?: AnyRecord; d
       body.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
     }, 0);
   };
+  const productFormAnchors = [
+    { key: "basic", label: "基础信息" },
+    { key: "spec", label: "商品规格" },
+    { key: "custom", label: "商品属性" },
+    { key: "detail", label: "商品详情" }
+  ];
 
   return (
     <Form className="product-form-layout" form={form} layout="vertical" initialValues={initial} onFinish={async values => {
@@ -3053,17 +3089,18 @@ function ProductForm({ ctx, item, draftValues }: { ctx: Ctx; item?: AnyRecord; d
           />
         ) : null}
         <div className="product-form-body" ref={productFormBodyRef}>
-          <Tabs
-            className="product-form-tabs product-form-tabbar"
-            activeKey={activeProductSection}
-            onChange={scrollToProductSection}
-            items={[
-              { key: "basic", label: "基础信息", children: null },
-              { key: "spec", label: "商品规格", children: null },
-              { key: "custom", label: "商品属性", children: null },
-              { key: "detail", label: "商品详情", children: null },
-            ]}
-          />
+          <div className="product-form-tabs product-form-tabbar product-form-anchorbar" role="navigation" aria-label="商品编辑区域导航">
+            {productFormAnchors.map(anchor => (
+              <button
+                key={anchor.key}
+                type="button"
+                className={`product-form-anchor ${activeProductSection === anchor.key ? "is-active" : ""}`}
+                onClick={() => scrollToProductSection(anchor.key)}
+              >
+                {anchor.label}
+              </button>
+            ))}
+          </div>
           <div className="product-form-pane">
                     <section className="product-form-section" data-product-section="basic">
                       <div className="product-form-section-title">基础信息</div>
@@ -3265,7 +3302,6 @@ function ProductForm({ ctx, item, draftValues }: { ctx: Ctx; item?: AnyRecord; d
                         </div>
                     ) : null}
                   </section>
-                  {renderedProductSections.spec ? (
                   <section className="product-form-section" data-product-section="spec">
                       <ProductSpecEditor
                         form={form}
@@ -3276,8 +3312,6 @@ function ProductForm({ ctx, item, draftValues }: { ctx: Ctx; item?: AnyRecord; d
                         showAutoSkuCodePlaceholder={!product?.id}
                       />
                   </section>
-                  ) : null}
-                  {renderedProductSections.custom ? (
                     <section className="product-form-section" data-product-section="custom">
                       <div className="product-form-section-title">商品属性</div>
                       <div className="product-custom-attribute-panel">
@@ -3314,8 +3348,6 @@ function ProductForm({ ctx, item, draftValues }: { ctx: Ctx; item?: AnyRecord; d
                         </Form.List>
                       </div>
                     </section>
-                  ) : null}
-                  {renderedProductSections.detail ? (
                     <section className="product-form-section" data-product-section="detail">
                       <div className="product-form-section-title">商品详情</div>
                       <div className="product-detail-editor-row is-full">
@@ -3324,7 +3356,6 @@ function ProductForm({ ctx, item, draftValues }: { ctx: Ctx; item?: AnyRecord; d
                         </Form.Item>
                       </div>
                     </section>
-                  ) : null}
                   </div>
         </div>
         <div className="product-form-submit-bar">
