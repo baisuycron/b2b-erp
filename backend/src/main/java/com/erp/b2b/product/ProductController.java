@@ -18,10 +18,12 @@ import com.erp.b2b.product.search.ImageSearchService;
 @RequestMapping("/api/products")
 public class ProductController {
     private final ProductRepository productRepository;
+    private final ProductThumbnailService productThumbnailService;
     private final ImageSearchService imageSearchService;
 
-    public ProductController(ProductRepository productRepository, ImageSearchService imageSearchService) {
+    public ProductController(ProductRepository productRepository, ProductThumbnailService productThumbnailService, ImageSearchService imageSearchService) {
         this.productRepository = productRepository;
+        this.productThumbnailService = productThumbnailService;
         this.imageSearchService = imageSearchService;
     }
 
@@ -50,6 +52,7 @@ public class ProductController {
     public Product create(@Valid @RequestBody CreateProductRequest request) {
         long suffix = System.currentTimeMillis();
         Product product = productRepository.create(request, "P-" + suffix, "SKU-" + suffix);
+        productThumbnailService.refreshAndStore(product);
         imageSearchService.syncProductImages(product);
         return product;
     }
@@ -57,6 +60,7 @@ public class ProductController {
     @PutMapping("/{productId}")
     public Product update(@PathVariable Long productId, @Valid @RequestBody CreateProductRequest request) {
         Product product = productRepository.update(productId, request);
+        productThumbnailService.refreshAndStore(product);
         imageSearchService.syncProductImages(product);
         return product;
     }

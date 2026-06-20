@@ -21,6 +21,9 @@ management:
         include: health
 
 b2b:
+  product-thumbnail:
+    directory: ${PRODUCT_THUMBNAIL_DIR:./uploads/products/thumb}
+    url-prefix: /api/public/product-thumbnails
   auth:
     token-ttl: ${B2B_AUTH_TOKEN_TTL:PT24H}
     token-secret: ${B2B_AUTH_TOKEN_SECRET:b2b-erp-production-token-signing-key-2026}

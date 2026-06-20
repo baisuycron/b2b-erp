@@ -6,7 +6,9 @@ import com.erp.b2b.inventory.InventoryRepository;
 import com.erp.b2b.order.OrderService;
 import com.erp.b2b.product.CreateProductRequest;
 import com.erp.b2b.product.Product;
+import com.erp.b2b.product.ProductListItem;
 import com.erp.b2b.product.ProductRepository;
+import com.erp.b2b.product.ProductThumbnailService;
 import com.erp.b2b.product.search.ImageSearchService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -50,6 +52,7 @@ public class PhaseOneController {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final JdbcClient jdbcClient;
     private final ProductRepository productRepository;
+    private final ProductThumbnailService productThumbnailService;
     private final ImageSearchService imageSearchService;
     private final InventoryRepository inventoryRepository;
     private final OrderService orderService;
@@ -61,9 +64,10 @@ public class PhaseOneController {
     private static final String SUPER_ADMIN_ROLE = "超级管理员";
     private static final String DASHBOARD_PERMISSION_KEY = "dashboard";
 
-    public PhaseOneController(JdbcClient jdbcClient, ProductRepository productRepository, ImageSearchService imageSearchService, InventoryRepository inventoryRepository, OrderService orderService, AuthTokenService authTokenService) {
+    public PhaseOneController(JdbcClient jdbcClient, ProductRepository productRepository, ProductThumbnailService productThumbnailService, ImageSearchService imageSearchService, InventoryRepository inventoryRepository, OrderService orderService, AuthTokenService authTokenService) {
         this.jdbcClient = jdbcClient;
         this.productRepository = productRepository;
+        this.productThumbnailService = productThumbnailService;
         this.imageSearchService = imageSearchService;
         this.inventoryRepository = inventoryRepository;
         this.orderService = orderService;
@@ -532,8 +536,8 @@ public class PhaseOneController {
     }
 
     @GetMapping("/admin/products")
-    public List<Product> adminProducts() {
-        return productRepository.findAll();
+    public List<ProductListItem> adminProducts() {
+        return productRepository.findAdminList();
     }
 
     @GetMapping("/admin/products/{productId}")
@@ -546,6 +550,7 @@ public class PhaseOneController {
     public Product createAdminProduct(@Valid @RequestBody CreateProductRequest request) {
         long suffix = System.currentTimeMillis();
         Product product = productRepository.create(request, "P-" + suffix, "SKU" + suffix);
+        productThumbnailService.refreshAndStore(product);
         imageSearchService.syncProductImages(product);
         log("商品管理", "新增商品", product.productCode(), "新增商品 " + product.productName());
         return product;
@@ -554,6 +559,7 @@ public class PhaseOneController {
     @PutMapping("/admin/products/{productId}")
     public Product updateAdminProduct(@PathVariable Long productId, @Valid @RequestBody CreateProductRequest request) {
         Product product = productRepository.update(productId, request);
+        productThumbnailService.refreshAndStore(product);
         imageSearchService.syncProductImages(product);
         log("商品管理", "编辑商品", product.productCode(), "编辑商品 " + product.productName());
         return product;

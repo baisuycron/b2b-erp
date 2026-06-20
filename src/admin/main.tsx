@@ -271,20 +271,41 @@ function compactText(value: any) {
 }
 
 function productThumbSrc(item: AnyRecord) {
-  return String(item?.mainImageUrl || "").trim();
+  const src = String(item?.mainImageThumbnailUrl || item?.thumbnailUrl || item?.mainImageUrl || "").trim();
+  if (!src || src.toLowerCase().startsWith("data:image")) return "";
+  return src;
+}
+
+function ProductNameThumbnail({ src }: { src: string }) {
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => setFailed(false), [src]);
+
+  if (!src || failed) {
+    return (
+      <span className="product-name-thumb is-empty">
+        <PictureOutlined />
+      </span>
+    );
+  }
+
+  return (
+    <img
+      className="product-name-thumb"
+      src={src}
+      alt=""
+      loading="lazy"
+      decoding="async"
+      onError={() => setFailed(true)}
+    />
+  );
 }
 
 function renderProductNameCell(value: any, item: AnyRecord) {
   const src = productThumbSrc(item);
   return (
     <div className="product-name-cell">
-      {src ? (
-        <img className="product-name-thumb" src={src} alt="" />
-      ) : (
-        <span className="product-name-thumb is-empty">
-          <PictureOutlined />
-        </span>
-      )}
+      <ProductNameThumbnail src={src} />
       <span className="product-name-text">{compactText(value)}</span>
     </div>
   );
@@ -1494,6 +1515,7 @@ function normalizeProductRecord(item?: AnyRecord) {
     saleUnit: firstPresent(item.saleUnit, item.sale_unit, item.sellingUnit),
     saleUnitRatio: normalizeProductSaleUnitRatio(item),
     mainImageUrl: firstPresent(item.mainImageUrl, item.main_image_url, item.imageUrl, item.image_url),
+    mainImageThumbnailUrl: firstPresent(item.mainImageThumbnailUrl, item.main_image_thumbnail_url, item.thumbnailUrl),
     detailContent: firstPresent(item.detailContent, item.detail_content),
     salePrice: firstPresent(item.salePrice, item.sale_price),
     stockQuantity: firstPresent(item.stockQuantity, item.stock_quantity),
@@ -1556,31 +1578,18 @@ async function requestProductDetail(item?: AnyRecord) {
   if (!normalizedItem?.id) return normalizedItem;
 
   const urls = [`/api/admin/products/${normalizedItem.id}`, `/api/products/${normalizedItem.id}`];
+  let lastError: unknown;
   for (const url of urls) {
     try {
       const response = await request(url);
       const detail = unwrapProductResponse(response, normalizedItem.id);
       if (detail) return { ...normalizedItem, ...detail };
-    } catch {
+    } catch (error) {
+      lastError = error;
       continue;
     }
   }
-  return normalizedItem;
-}
-
-function upsertProductRecord(rows: AnyRecord[], nextItem?: AnyRecord, prepend = false) {
-  const normalizedItem = normalizeProductRecord(nextItem);
-  if (!normalizedItem?.id) return Array.isArray(rows) ? rows : [];
-
-  const currentRows = Array.isArray(rows) ? rows : [];
-  const nextRows = currentRows.map(row =>
-    String(row?.id ?? "") === String(normalizedItem.id)
-      ? { ...row, ...normalizedItem }
-      : row
-  );
-  const exists = nextRows.some(row => String(row?.id ?? "") === String(normalizedItem.id));
-  if (exists) return nextRows;
-  return prepend ? [normalizedItem, ...nextRows] : [...nextRows, normalizedItem];
+  throw lastError || new Error("商品详情加载失败");
 }
 
 function buildProductUpdatePayload(item: AnyRecord, patch: AnyRecord = {}) {
@@ -1655,10 +1664,15 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
   const [draggingColumnKey, setDraggingColumnKey] = useState<string>();
   const [productSort, setProductSort] = useState<{ key?: string; order?: "ascend" | "descend" }>({});
   const openProductForm = async (item?: AnyRecord) => {
-    if (!Object.prototype.hasOwnProperty.call(ctx.data, "attributeTemplates")) {
-      await ctx.loadKeys(["attributeTemplates"]);
+    try {
+      if (!Object.prototype.hasOwnProperty.call(ctx.data, "attributeTemplates")) {
+        await ctx.loadKeys(["attributeTemplates"]);
+      }
+      const detailItem = item?.id ? await requestProductDetail(item) : item;
+      productForm(ctx, detailItem);
+    } catch (error: any) {
+      ctx.message.error(error.message || "商品详情加载失败");
     }
-    productForm(ctx, item);
   };
   const categoryTreeData = useMemo(() => buildCategoryTreeData(categories), [categories]);
   const filteredCategoryTreeData = useMemo(() => filterCategoryTreeData(categoryTreeData, categoryKeyword), [categoryKeyword, categoryTreeData]);
@@ -1864,7 +1878,8 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
     }
     setBatchEditSubmitting(true);
     try {
-      await Promise.all(selectedProducts.map((item: AnyRecord) => request(`/api/admin/products/${item.id}`, {
+      const detailedProducts = await Promise.all(selectedProducts.map((item: AnyRecord) => requestProductDetail(item)));
+      await Promise.all(detailedProducts.map((item: AnyRecord) => request(`/api/admin/products/${item.id}`, {
         method: "PUT",
         data: buildProductUpdatePayload(item, patch)
       })));
@@ -1934,7 +1949,7 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
   };
   const baseColumns: ColumnsType<AnyRecord> = [
     { key: "index", title: "序号", width: 72, align: "center", className: "product-index-column", render: (_, __, index) => index + 1 },
-    { key: "skuCode", title: "商品条码", dataIndex: "skuCode", width: 150, align: "left", className: "product-sku-column", render: (v, item) => <Button className="product-sku-link" type="link" onClick={() => productDetail(ctx, item)}>{v || item.productCode || "-"}</Button> },
+    { key: "skuCode", title: "商品条码", dataIndex: "skuCode", width: 150, align: "left", className: "product-sku-column", render: (v, item) => <Button className="product-sku-link" type="link" onClick={() => void productDetail(ctx, item)}>{v || item.productCode || "-"}</Button> },
     { key: "productCode", title: "商品编码", dataIndex: "productCode", width: 150, render: compactText },
     { key: "productName", title: "商品名称", dataIndex: "productName", width: 260, render: renderProductNameCell },
     { key: "categoryName", title: "商品分类", dataIndex: "categoryName", width: 150 },
@@ -3011,13 +3026,10 @@ function ProductForm({ ctx, item, draftValues }: { ctx: Ctx; item?: AnyRecord; d
           });
           if (saved) {
             setProduct(saved);
-            ctx.setData?.(prev => ({
-              ...prev,
-              products: upsertProductRecord(prev.products || [], saved, !productId)
-            }));
           }
           ctx.message.success("商品已保存，商城端数据已同步");
           ctx.setDrawer(null);
+          ctx.reload();
         } catch (error: any) {
           ctx.message.error(error.message);
         }
@@ -3530,42 +3542,48 @@ async function productSale(ctx: Ctx, item: AnyRecord) {
   }
 }
 
-function productDetail(ctx: Ctx, item: AnyRecord) {
-  const detail = parseDetailContent(item.detailContent);
-  const specImages = productSpecImages(item);
-  ctx.setDrawer({
-    title: `商品详情 ${item.productName || ""}`,
-    body: (
-      <Space direction="vertical" size={16} style={{ width: "100%" }}>
-        <Descriptions bordered column={2} items={[
-          { key: "code", label: "商品编码", children: item.productCode },
-          { key: "sku", label: "SKU", children: item.skuCode },
-          { key: "category", label: "分类", children: item.categoryName },
-          { key: "brand", label: "品牌", children: item.brandName },
-          { key: "price", label: "售价", children: money(item.salePrice) },
-          { key: "stock", label: "库存", children: item.stockQuantity },
-          { key: "status", label: "状态", children: tag(item.saleStatus) }
-        ]} />
-        {item.mainImageUrl?.startsWith("data:") ? <Image src={item.mainImageUrl} className="detail-image" /> : null}
-        {specImages.length ? (
-          <Card title="规格图片">
-            <div className="product-detail-spec-images">
-              {specImages.map((spec: AnyRecord) => (
-                <div className="product-detail-spec-image-item" key={spec.key}>
-                  <Image src={spec.image} className="product-detail-spec-image" />
-                  <div className="product-detail-spec-image-label">
-                    {spec.groupName ? `${spec.groupName}：` : ""}{spec.value || "-"}
+async function productDetail(ctx: Ctx, item: AnyRecord) {
+  try {
+    const fullItem = await requestProductDetail(item);
+    if (!fullItem) throw new Error("商品详情加载失败");
+    const detail = parseDetailContent(fullItem.detailContent);
+    const specImages = productSpecImages(fullItem);
+    ctx.setDrawer({
+      title: `商品详情 ${fullItem.productName || ""}`,
+      body: (
+        <Space direction="vertical" size={16} style={{ width: "100%" }}>
+          <Descriptions bordered column={2} items={[
+            { key: "code", label: "商品编码", children: fullItem.productCode },
+            { key: "sku", label: "SKU", children: fullItem.skuCode },
+            { key: "category", label: "分类", children: fullItem.categoryName },
+            { key: "brand", label: "品牌", children: fullItem.brandName },
+            { key: "price", label: "售价", children: money(fullItem.salePrice) },
+            { key: "stock", label: "库存", children: fullItem.stockQuantity },
+            { key: "status", label: "状态", children: tag(fullItem.saleStatus) }
+          ]} />
+          {fullItem.mainImageUrl ? <Image src={fullItem.mainImageUrl} className="detail-image" /> : null}
+          {specImages.length ? (
+            <Card title="规格图片">
+              <div className="product-detail-spec-images">
+                {specImages.map((spec: AnyRecord) => (
+                  <div className="product-detail-spec-image-item" key={spec.key}>
+                    <Image src={spec.image} className="product-detail-spec-image" />
+                    <div className="product-detail-spec-image-label">
+                      {spec.groupName ? `${spec.groupName}：` : ""}{spec.value || "-"}
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
-          </Card>
-        ) : null}
-        <Card title="图文详情"><div className="product-detail-render" dangerouslySetInnerHTML={{ __html: detail.text || "-" }} /></Card>
-        {detail.imageUrl ? <Image src={detail.imageUrl} className="detail-image" /> : null}
-      </Space>
-    )
-  });
+                ))}
+              </div>
+            </Card>
+          ) : null}
+          <Card title="图文详情"><div className="product-detail-render" dangerouslySetInnerHTML={{ __html: detail.text || "-" }} /></Card>
+          {detail.imageUrl ? <Image src={detail.imageUrl} className="detail-image" /> : null}
+        </Space>
+      )
+    });
+  } catch (error: any) {
+    ctx.message.error(error.message || "商品详情加载失败");
+  }
 }
 
 function CategoryPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {

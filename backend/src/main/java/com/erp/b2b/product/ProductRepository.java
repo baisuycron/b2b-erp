@@ -53,6 +53,34 @@ public class ProductRepository {
             .list();
     }
 
+    public List<ProductListItem> findAdminList() {
+        return jdbcClient.sql("""
+            SELECT id, product_code, sku_code, sku_barcode, product_name, category_name, brand_name,
+                   sku_name, unit, quote_type, sale_price, stock_quantity, sale_status,
+                   main_image_thumbnail_url, updated_at
+            FROM products
+            ORDER BY id DESC
+            """)
+            .query((rs, rowNum) -> new ProductListItem(
+                rs.getLong("id"),
+                rs.getString("product_code"),
+                rs.getString("sku_code"),
+                rs.getString("sku_barcode"),
+                rs.getString("product_name"),
+                rs.getString("category_name"),
+                rs.getString("brand_name"),
+                rs.getString("sku_name"),
+                rs.getString("unit"),
+                rs.getString("quote_type"),
+                rs.getBigDecimal("sale_price"),
+                rs.getInt("stock_quantity"),
+                rs.getString("sale_status"),
+                rs.getString("main_image_thumbnail_url"),
+                rs.getTimestamp("updated_at") == null ? null : rs.getTimestamp("updated_at").toLocalDateTime()
+            ))
+            .list();
+    }
+
     public Optional<Product> findById(Long id) {
         return jdbcClient.sql("""
             SELECT id, product_code, sku_code, sku_barcode, pinyin_code, pinyin_full, initial_code, product_name, category_name, brand_name, attribute_template_id, custom_attributes_json, sku_name, sku_status, unit,
