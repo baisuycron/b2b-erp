@@ -25,14 +25,13 @@ public class ProductSkuCodeNormalizer {
     @EventListener(ApplicationReadyEvent.class)
     public void normalizeExistingSkuCodes() {
         List<Map<String, Object>> products = jdbcClient.sql("""
-            SELECT id, sku_code, sku_list_json
+            SELECT id, sku_list_json
             FROM products
             ORDER BY id ASC
             """)
             .query((rs, rowNum) -> {
                 Map<String, Object> row = new LinkedHashMap<>();
                 row.put("id", rs.getLong("id"));
-                row.put("skuCode", rs.getString("sku_code"));
                 row.put("skuListJson", rs.getString("sku_list_json"));
                 return row;
             })
@@ -47,13 +46,11 @@ public class ProductSkuCodeNormalizer {
         Long productId = longValue(product.get("id"));
         if (productId == null) return;
 
-        String productSkuCode = text(product.get("skuCode"));
-        String nextProductSkuCode = normalizeSkuCode(productSkuCode);
         String rawSkuListJson = text(product.get("skuListJson"));
         String nextSkuListJson = rawSkuListJson;
 
         List<Map<String, Object>> skuRows = parseSkuRows(rawSkuListJson);
-        boolean changed = !nextProductSkuCode.equals(productSkuCode);
+        boolean changed = false;
         if (!skuRows.isEmpty()) {
             List<Map<String, Object>> nextRows = new ArrayList<>();
             for (int index = 0; index < skuRows.size(); index += 1) {
@@ -68,27 +65,19 @@ public class ProductSkuCodeNormalizer {
                     changed = true;
                     row.put("skuCode", nextSkuCode);
                 }
-                if (index == 0) {
-                    nextProductSkuCode = nextSkuCode;
-                }
                 nextRows.add(row);
             }
             nextSkuListJson = writeSkuRows(nextRows, rawSkuListJson);
             changed = changed || !nextSkuListJson.equals(rawSkuListJson);
-        } else if (nextProductSkuCode.isBlank()) {
-            nextProductSkuCode = generatedSkuCode(productId, 0);
-            changed = true;
         }
 
         if (!changed) return;
 
         jdbcClient.sql("""
             UPDATE products
-            SET sku_code = :skuCode,
-                sku_list_json = :skuListJson
+            SET sku_list_json = :skuListJson
             WHERE id = :id
             """)
-            .param("skuCode", nextProductSkuCode)
             .param("skuListJson", nextSkuListJson)
             .param("id", productId)
             .update();

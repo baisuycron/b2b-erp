@@ -554,8 +554,7 @@ public class PhaseOneController {
 
     @PostMapping("/admin/products")
     public Product createAdminProduct(@Valid @RequestBody CreateProductRequest request) {
-        long suffix = System.currentTimeMillis();
-        Product product = productRepository.create(request, "P-" + suffix, "SKU" + suffix);
+        Product product = productRepository.create(request);
         productThumbnailService.refreshAndStore(product);
         imageSearchService.syncProductImages(product);
         log("商品管理", "新增商品", product.productCode(), "新增商品 " + product.productName());
@@ -609,7 +608,6 @@ public class PhaseOneController {
             Map<String, Object> result = row(
                 "id", product.id(),
                 "productCode", product.productCode(),
-                "skuCode", product.skuCode(),
                 "productName", product.productName(),
                 "hasInboundRecord", hasInboundRecord,
                 "hasSalesRecord", hasSalesRecord,
@@ -1006,7 +1004,7 @@ public class PhaseOneController {
             .param("supplierName", supplier.get("supplierName"))
             .param("productId", productId)
             .param("productName", product.productName())
-            .param("skuCode", product.skuCode())
+            .param("skuCode", productRepository.primarySkuCode(product))
             .param("quantity", quantity)
             .param("price", price)
             .param("amount", price.multiply(BigDecimal.valueOf(quantity)))
@@ -1051,7 +1049,7 @@ public class PhaseOneController {
             .param("supplierName", supplier.get("supplierName"))
             .param("productId", productId)
             .param("productName", product.productName())
-            .param("skuCode", product.skuCode())
+            .param("skuCode", productRepository.primarySkuCode(product))
             .param("quantity", quantity)
             .param("price", price)
             .param("amount", price.multiply(BigDecimal.valueOf(quantity)))
@@ -1100,7 +1098,7 @@ public class PhaseOneController {
             .param("supplierName", order.get("supplierName"))
             .param("productId", productId)
             .param("productName", product.productName())
-            .param("skuCode", product.skuCode())
+            .param("skuCode", productRepository.primarySkuCode(product))
             .param("quantity", quantity)
             .param("amount", price.multiply(BigDecimal.valueOf(quantity)))
             .param("operatorName", string(request.getOrDefault("operatorName", "仓库王")))
@@ -1133,7 +1131,7 @@ public class PhaseOneController {
             .map(product -> row(
                 "productId", product.id(),
                 "productName", product.productName(),
-                "skuCode", product.skuCode(),
+                "skuCode", productRepository.primarySkuCode(product),
                 "actualStock", product.stockQuantity(),
                 "occupiedStock", 0,
                 "saleableStock", product.stockQuantity(),
@@ -1842,7 +1840,7 @@ public class PhaseOneController {
             "specIndex", specIndex,
             "productName", product.productName(),
             "productCode", product.productCode(),
-            "skuCode", skuString(sku, "skuCode", product.skuCode()),
+            "skuCode", skuString(sku, "skuCode", productRepository.primarySkuCode(product)),
             "skuName", skuString(sku, "skuName", product.skuName()),
             "unit", product.unit(),
             "quoteType", product.quoteType(),

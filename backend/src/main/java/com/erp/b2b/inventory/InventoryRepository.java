@@ -16,7 +16,7 @@ public class InventoryRepository {
 
     public List<InventoryMovement> findAll() {
         return jdbcClient.sql("""
-            SELECT im.id, im.product_id, p.product_name, p.sku_code, im.movement_type,
+            SELECT im.id, im.product_id, p.product_name, p.product_code AS sku_code, im.movement_type,
                    im.quantity_delta, im.stock_after, im.source_type, im.source_no, im.remark, im.created_at
             FROM inventory_movements im
             JOIN products p ON p.id = im.product_id

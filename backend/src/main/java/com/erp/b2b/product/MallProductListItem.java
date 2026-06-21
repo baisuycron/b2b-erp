@@ -6,7 +6,6 @@ import java.time.LocalDateTime;
 public record MallProductListItem(
     Long id,
     String productCode,
-    String skuCode,
     String skuBarcode,
     String productName,
     String categoryName,

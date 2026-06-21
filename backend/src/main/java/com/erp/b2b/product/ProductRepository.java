@@ -18,6 +18,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 @Repository
 public class ProductRepository {
@@ -43,7 +44,7 @@ public class ProductRepository {
 
     public List<Product> findAll() {
         return jdbcClient.sql("""
-            SELECT id, product_code, sku_code, sku_barcode, pinyin_code, pinyin_full, initial_code, product_name, category_name, brand_name, attribute_template_id, custom_attributes_json, sku_name, sku_status, unit,
+            SELECT id, product_code, sku_barcode, pinyin_code, pinyin_full, initial_code, product_name, category_name, brand_name, attribute_template_id, custom_attributes_json, sku_name, sku_status, unit,
                    quote_type, sale_mode, sale_unit, sale_unit_ratio, main_image_url, detail_content, sale_price, stock_quantity,
                    min_order_quantity, sku_list_json, tier_prices_json, sale_status, created_at, updated_at
             FROM products
@@ -55,7 +56,7 @@ public class ProductRepository {
 
     public List<ProductListItem> findAdminList() {
         return jdbcClient.sql("""
-            SELECT id, product_code, sku_code, sku_barcode, product_name, category_name, brand_name,
+            SELECT id, product_code, sku_barcode, product_name, category_name, brand_name,
                    sku_name, unit, quote_type, sale_price, stock_quantity, sale_status,
                    main_image_thumbnail_url, updated_at
             FROM products
@@ -64,7 +65,6 @@ public class ProductRepository {
             .query((rs, rowNum) -> new ProductListItem(
                 rs.getLong("id"),
                 rs.getString("product_code"),
-                rs.getString("sku_code"),
                 rs.getString("sku_barcode"),
                 rs.getString("product_name"),
                 rs.getString("category_name"),
@@ -83,7 +83,7 @@ public class ProductRepository {
 
     public Optional<Product> findById(Long id) {
         return jdbcClient.sql("""
-            SELECT id, product_code, sku_code, sku_barcode, pinyin_code, pinyin_full, initial_code, product_name, category_name, brand_name, attribute_template_id, custom_attributes_json, sku_name, sku_status, unit,
+            SELECT id, product_code, sku_barcode, pinyin_code, pinyin_full, initial_code, product_name, category_name, brand_name, attribute_template_id, custom_attributes_json, sku_name, sku_status, unit,
                    quote_type, sale_mode, sale_unit, sale_unit_ratio, main_image_url, detail_content, sale_price, stock_quantity,
                    min_order_quantity, sku_list_json, tier_prices_json, sale_status, created_at, updated_at
             FROM products
@@ -137,7 +137,7 @@ public class ProductRepository {
         String text = clean(keyword, "").toLowerCase();
         String likeKeyword = "%" + text + "%";
         return jdbcClient.sql("""
-            SELECT id, product_code, sku_code, sku_barcode, pinyin_code, pinyin_full, initial_code, product_name, category_name, brand_name, attribute_template_id, custom_attributes_json, sku_name, sku_status, unit,
+            SELECT id, product_code, sku_barcode, pinyin_code, pinyin_full, initial_code, product_name, category_name, brand_name, attribute_template_id, custom_attributes_json, sku_name, sku_status, unit,
                    quote_type, sale_mode, sale_unit, sale_unit_ratio, main_image_url, NULL AS detail_content, sale_price, stock_quantity,
                    min_order_quantity, sku_list_json, tier_prices_json, sale_status, created_at, updated_at
             FROM products
@@ -150,7 +150,6 @@ public class ProductRepository {
                 OR LOWER(COALESCE(pinyin_code, '')) LIKE :likeKeyword
                 OR LOWER(COALESCE(pinyin_full, '')) LIKE :likeKeyword
                 OR LOWER(COALESCE(initial_code, '')) LIKE :likeKeyword
-                OR LOWER(COALESCE(sku_code, '')) LIKE :likeKeyword
                 OR LOWER(COALESCE(sku_barcode, '')) LIKE :likeKeyword
                 OR LOWER(COALESCE(sku_list_json, '')) LIKE :likeKeyword
               )
@@ -195,7 +194,7 @@ public class ProductRepository {
         String text = clean(keyword, "").toLowerCase();
         String likeKeyword = "%" + text + "%";
         return jdbcClient.sql("""
-            SELECT id, product_code, sku_code, sku_barcode, product_name, category_name, brand_name,
+            SELECT id, product_code, sku_barcode, product_name, category_name, brand_name,
                    sku_name, unit, quote_type, sale_mode, sale_unit, sale_unit_ratio, sale_price,
                    stock_quantity, min_order_quantity, sale_status,
                    CASE
@@ -217,7 +216,6 @@ public class ProductRepository {
                 OR LOWER(COALESCE(pinyin_code, '')) LIKE :likeKeyword
                 OR LOWER(COALESCE(pinyin_full, '')) LIKE :likeKeyword
                 OR LOWER(COALESCE(initial_code, '')) LIKE :likeKeyword
-                OR LOWER(COALESCE(sku_code, '')) LIKE :likeKeyword
                 OR LOWER(COALESCE(sku_barcode, '')) LIKE :likeKeyword
                 OR LOWER(COALESCE(sku_list_json, '')) LIKE :likeKeyword
               )
@@ -230,7 +228,6 @@ public class ProductRepository {
             .query((rs, rowNum) -> new MallProductListItem(
                 rs.getLong("id"),
                 rs.getString("product_code"),
-                rs.getString("sku_code"),
                 rs.getString("sku_barcode"),
                 rs.getString("product_name"),
                 rs.getString("category_name"),
@@ -260,7 +257,7 @@ public class ProductRepository {
         int safeLimit = Math.max(1, Math.min(limit, 5));
         String likeKeyword = "%" + text + "%";
         return jdbcClient.sql("""
-            SELECT id, product_code, sku_code, sku_barcode, pinyin_code, pinyin_full, initial_code, product_name, category_name, brand_name, attribute_template_id, custom_attributes_json, sku_name, sku_status, unit,
+            SELECT id, product_code, sku_barcode, pinyin_code, pinyin_full, initial_code, product_name, category_name, brand_name, attribute_template_id, custom_attributes_json, sku_name, sku_status, unit,
                    quote_type, sale_mode, sale_unit, sale_unit_ratio, main_image_url, detail_content, sale_price, stock_quantity,
                    min_order_quantity, sku_list_json, tier_prices_json, sale_status, created_at, updated_at
             FROM products
@@ -272,7 +269,6 @@ public class ProductRepository {
                 OR LOWER(COALESCE(pinyin_code, '')) LIKE :likeKeyword
                 OR LOWER(COALESCE(pinyin_full, '')) LIKE :likeKeyword
                 OR LOWER(COALESCE(initial_code, '')) LIKE :likeKeyword
-                OR LOWER(COALESCE(sku_code, '')) LIKE :likeKeyword
                 OR LOWER(COALESCE(sku_barcode, '')) LIKE :likeKeyword
                 OR LOWER(COALESCE(sku_list_json, '')) LIKE :likeKeyword
               )
@@ -368,24 +364,25 @@ public class ProductRepository {
         return normalized;
     }
 
-    public Product create(CreateProductRequest request, String productCode, String skuCode) {
-        ProductPayload payload = normalizePayload(request, skuCode, "ON_SALE");
+    @Transactional
+    public Product create(CreateProductRequest request) {
+        String productCode = reserveNextProductCode();
+        ProductPayload payload = normalizePayload(request, "SKU" + productCode, "ON_SALE");
         ProductSearchCodeGenerator.SearchCodes searchCodes = searchCodeGenerator.generate(payload.productName());
         KeyHolder keyHolder = new GeneratedKeyHolder();
         jdbcClient.sql("""
             INSERT INTO products (
-                product_code, sku_code, sku_barcode, pinyin_code, pinyin_full, initial_code, product_name, category_name, brand_name, attribute_template_id, custom_attributes_json, sku_name, sku_status, unit,
+                product_code, sku_barcode, pinyin_code, pinyin_full, initial_code, product_name, category_name, brand_name, attribute_template_id, custom_attributes_json, sku_name, sku_status, unit,
                 quote_type, sale_mode, sale_unit, sale_unit_ratio, main_image_url, detail_content, sale_price, stock_quantity,
                 min_order_quantity, sku_list_json, tier_prices_json, sale_status
             )
             VALUES (
-                :productCode, :skuCode, :skuBarcode, :pinyinCode, :pinyinFull, :initialCode, :productName, :categoryName, :brandName, :attributeTemplateId, :customAttributesJson, :skuName, :skuStatus, :unit,
+                :productCode, :skuBarcode, :pinyinCode, :pinyinFull, :initialCode, :productName, :categoryName, :brandName, :attributeTemplateId, :customAttributesJson, :skuName, :skuStatus, :unit,
                 :quoteType, :saleMode, :saleUnit, :saleUnitRatio, :mainImageUrl, :detailContent, :salePrice, :stockQuantity,
                 :minOrderQuantity, :skuListJson, :tierPricesJson, :saleStatus
             )
             """)
             .param("productCode", productCode)
-            .param("skuCode", payload.skuCode())
             .param("skuBarcode", payload.skuBarcode())
             .param("pinyinCode", searchCodes.pinyinCode())
             .param("pinyinFull", searchCodes.pinyinFull())
@@ -418,7 +415,7 @@ public class ProductRepository {
     public Product update(Long productId, CreateProductRequest request) {
         Product existing = findById(productId)
             .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "商品不存在"));
-        ProductPayload payload = normalizePayload(request, existing.skuCode(), existing.saleStatus());
+        ProductPayload payload = normalizePayload(request, primarySkuCode(existing), existing.saleStatus());
         ProductSearchCodeGenerator.SearchCodes searchCodes = searchCodeGenerator.generate(payload.productName());
         jdbcClient.sql("""
             UPDATE products
@@ -430,7 +427,6 @@ public class ProductRepository {
                 brand_name = :brandName,
                 attribute_template_id = :attributeTemplateId,
                 custom_attributes_json = :customAttributesJson,
-                sku_code = :skuCode,
                 sku_barcode = :skuBarcode,
                 sku_name = :skuName,
                 sku_status = :skuStatus,
@@ -458,7 +454,6 @@ public class ProductRepository {
             .param("brandName", payload.brandName())
             .param("attributeTemplateId", payload.attributeTemplateId())
             .param("customAttributesJson", payload.customAttributesJson())
-            .param("skuCode", payload.skuCode())
             .param("skuBarcode", payload.skuBarcode())
             .param("skuName", payload.skuName())
             .param("skuStatus", payload.skuStatus())
@@ -568,7 +563,6 @@ public class ProductRepository {
         return new Product(
             rs.getLong("id"),
             rs.getString("product_code"),
-            rs.getString("sku_code"),
             rs.getString("sku_barcode"),
             rs.getString("pinyin_code"),
             rs.getString("pinyin_full"),
@@ -596,6 +590,37 @@ public class ProductRepository {
             rs.getTimestamp("created_at").toLocalDateTime(),
             rs.getTimestamp("updated_at").toLocalDateTime()
         );
+    }
+
+    public String primarySkuCode(Product product) {
+        List<Map<String, Object>> rows = parseObjectRows(product.skuListJson());
+        if (!rows.isEmpty()) {
+            String code = clean(rows.get(0).get("skuCode"), "");
+            if (!code.isBlank()) return code;
+        }
+        return "SKU" + product.productCode();
+    }
+
+    private String reserveNextProductCode() {
+        Long nextValue = jdbcClient.sql("""
+            SELECT next_value
+            FROM product_code_sequences
+            WHERE sequence_name = 'product'
+            FOR UPDATE
+            """)
+            .query(Long.class)
+            .optional()
+            .orElseThrow(() -> new IllegalStateException("Product code sequence is not initialized"));
+        if (nextValue < 1 || nextValue > 9_999_999) {
+            throw new ApiException(HttpStatus.CONFLICT, "商品编码已达到最大值9999999");
+        }
+        jdbcClient.sql("""
+            UPDATE product_code_sequences
+            SET next_value = next_value + 1
+            WHERE sequence_name = 'product'
+            """)
+            .update();
+        return String.format("%07d", nextValue);
     }
 
     private void ensureReadyForSale(Long productId) {

@@ -50,8 +50,7 @@ public class ProductController {
 
     @PostMapping
     public Product create(@Valid @RequestBody CreateProductRequest request) {
-        long suffix = System.currentTimeMillis();
-        Product product = productRepository.create(request, "P-" + suffix, "SKU-" + suffix);
+        Product product = productRepository.create(request);
         productThumbnailService.refreshAndStore(product);
         imageSearchService.syncProductImages(product);
         return product;

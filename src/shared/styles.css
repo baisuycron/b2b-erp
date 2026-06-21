@@ -982,11 +982,11 @@ body,
   box-shadow: none !important;
 }
 
-.product-archive-table .product-sku-column {
+.product-archive-table .product-code-column {
   text-align: left !important;
 }
 
-.product-archive-table .product-sku-link.ant-btn-link {
+.product-archive-table .product-code-link.ant-btn-link {
   max-width: 100%;
   padding-inline: 0;
   justify-content: flex-start;
@@ -3394,13 +3394,18 @@ body,
   min-height: 38px;
   display: grid;
   place-items: center;
-  gap: 2px;
+  gap: 4px;
   border: 0;
   border-radius: 6px;
   background: transparent;
   color: #334155;
-  font-size: 12px;
+  font-size: 14px;
   cursor: pointer;
+}
+
+.mall-floating-toolbar button > svg,
+.mall-floating-cart-icon > svg {
+  font-size: 20px;
 }
 
 .mall-floating-toolbar button:hover {
@@ -3412,8 +3417,8 @@ body,
   position: relative;
   display: inline-grid;
   place-items: center;
-  min-width: 18px;
-  min-height: 18px;
+  min-width: 22px;
+  min-height: 22px;
 }
 
 .mall-floating-cart-badge {
@@ -4698,12 +4703,23 @@ body,
   border-top: 1px solid #edf0f5;
 }
 
+.mall-detail-sku-box.is-single-spec {
+  margin-top: 0;
+  border-top: 0;
+}
+
 .mall-detail-sku-box.is-plain {
   display: grid;
   grid-template-columns: 70px minmax(0, 1fr);
   gap: 0;
   align-items: start;
   padding: 12px 14px 0;
+}
+
+.mall-detail-sku-box.is-plain.is-single-spec {
+  grid-template-columns: minmax(0, 1fr);
+  padding-top: 5px;
+  padding-bottom: 7px;
 }
 
 .mall-detail-sku-top {
@@ -4727,6 +4743,10 @@ body,
 
 .mall-detail-sku-box.is-plain .mall-detail-sku-list {
   grid-column: 2;
+}
+
+.mall-detail-sku-box.is-plain.is-single-spec .mall-detail-sku-list {
+  grid-column: 1;
 }
 
 .mall-detail-sku-box.is-plain .mall-detail-sku-row {
@@ -5622,6 +5642,11 @@ body,
   font-size: 12px;
 }
 
+.mall-detail-spec-area.is-single-spec .mall-detail-sku-name em {
+  color: #2c3138;
+  font-size: 14px;
+}
+
 .mall-cart-spec-choice-card {
   overflow: hidden;
   border: 1px solid #e7eaf0;
@@ -6467,7 +6492,7 @@ body,
 
 .mall-orders-buyer {
   grid-column: 5;
-  grid-template-rows: 24px 20px;
+  grid-template-rows: 24px 20px auto;
   justify-items: center;
   text-align: center;
 }
@@ -6492,6 +6517,14 @@ body,
   color: #8a94a3;
   font-size: 14px;
   line-height: 20px;
+}
+
+.mall-orders-buyer .mall-orders-buyer-address {
+  max-width: 100%;
+  color: #667085;
+  font-size: 13px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
 }
 
 .mall-orders-buyer strong {

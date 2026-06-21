@@ -1679,6 +1679,7 @@ function QuickBuyModal({ ctx, open, loading, product, onClose }: any) {
   const selectionGroups = product ? selectionGroupsFor(product) : [];
   const displaySelectionGroups = visibleSelectionGroupsForProduct(product, selectionGroups);
   const lastGroup = product ? lastSkuGroupFor(product) : null;
+  const isSingleSpecProduct = lastGroup?.key === "default_spec";
   const visibleSpecs = product ? product.specs
     .map((spec: AnyRecord, index: number) => ({ ...spec, originalIndex: index }))
     .filter((spec: AnyRecord) => specMatchesSelection(spec, selectedSpecValues, selectionGroups, product)) : [];
@@ -1785,7 +1786,7 @@ function QuickBuyModal({ ctx, open, loading, product, onClose }: any) {
               )}
             </div>
 
-            <div className="mall-detail-spec-area">
+            <div className={`mall-detail-spec-area ${isSingleSpecProduct ? "is-single-spec" : ""}`}>
               {displaySelectionGroups.map((group: AnyRecord, groupIndex: number) => (
                 <div className="mall-detail-spec-row" key={group.key}>
                   <div className="mall-detail-spec-label">{group.name}</div>
@@ -1807,11 +1808,11 @@ function QuickBuyModal({ ctx, open, loading, product, onClose }: any) {
                 </div>
               ))}
 
-              <div className={`mall-detail-sku-box ${batchSaleTip ? "" : "is-plain"}`}>
-                <div className="mall-detail-sku-top">
-                  <div className="mall-detail-sku-group-name">{lastGroup?.name || "规格"}</div>
+              <div className={`mall-detail-sku-box ${batchSaleTip ? "" : "is-plain"} ${isSingleSpecProduct ? "is-single-spec" : ""}`}>
+                {batchSaleTip || !isSingleSpecProduct ? <div className="mall-detail-sku-top">
+                  {!isSingleSpecProduct ? <div className="mall-detail-sku-group-name">{lastGroup?.name || "规格"}</div> : null}
                   {batchSaleTip ? <div className="mall-detail-batch-tip"><ExclamationCircleFilled /><span>{batchSaleTip}</span></div> : null}
-                </div>
+                </div> : null}
                 <div className="mall-detail-sku-list">
                   {visibleSpecs.length ? visibleSpecs.map((spec: AnyRecord) => {
                     const specIndex = Number(spec.originalIndex);
@@ -1819,7 +1820,7 @@ function QuickBuyModal({ ctx, open, loading, product, onClose }: any) {
                     const soldOut = spec.status === "DISABLED" || Number(spec.stock || 0) <= 0;
                     return (
                       <div className={`mall-detail-sku-row ${soldOut ? "is-sold-out" : ""}`} key={`${spec.code}-${specIndex}`}>
-                        <div className="mall-detail-sku-name"><span>{skuRowLabel(spec, lastGroup, product)}</span><em>SKU条码:{spec.barcode || "-"}</em></div>
+                        <div className="mall-detail-sku-name">{isSingleSpecProduct ? <em>SKU条码:{spec.barcode || "-"}</em> : <><span>{skuRowLabel(spec, lastGroup, product)}</span><em>SKU条码:{spec.barcode || "-"}</em></>}</div>
                         <div className="mall-detail-sku-price">{money(detailUnitPrice(product, specIndex, totalQty))}</div>
                         <div className="mall-detail-sku-stock">{Number(spec.stock || 0)} {stockUnitLabel}</div>
                         {soldOut ? <div className="mall-detail-stock-empty">库存不足</div> : <div className="mall-detail-stepper">
@@ -2053,6 +2054,7 @@ function DetailPage({ ctx }: any) {
   const selectionGroups = selectionGroupsFor(p);
   const displaySelectionGroups = visibleSelectionGroupsForProduct(p, selectionGroups);
   const lastGroup = lastSkuGroupFor(p);
+  const isSingleSpecProduct = lastGroup?.key === "default_spec";
   const useCarouselImages = (p.gallery || []).length > 1;
   const visibleSpecs = p.specs
     .map((spec: AnyRecord, index: number) => ({ ...spec, originalIndex: index }))
@@ -2165,7 +2167,7 @@ function DetailPage({ ctx }: any) {
               )}
             </div>
 
-            <div className="mall-detail-spec-area">
+            <div className={`mall-detail-spec-area ${isSingleSpecProduct ? "is-single-spec" : ""}`}>
               {displaySelectionGroups.map((group: AnyRecord, groupIndex: number) => (
                 <div className="mall-detail-spec-row" key={group.key}>
                   <div className="mall-detail-spec-label">{group.name}</div>
@@ -2192,16 +2194,16 @@ function DetailPage({ ctx }: any) {
                 </div>
               ))}
 
-              <div className={`mall-detail-sku-box ${batchSaleTip ? "" : "is-plain"}`}>
-                <div className="mall-detail-sku-top">
-                  <div className="mall-detail-sku-group-name">{lastGroup?.name || "规格"}</div>
+              <div className={`mall-detail-sku-box ${batchSaleTip ? "" : "is-plain"} ${isSingleSpecProduct ? "is-single-spec" : ""}`}>
+                {batchSaleTip || !isSingleSpecProduct ? <div className="mall-detail-sku-top">
+                  {!isSingleSpecProduct ? <div className="mall-detail-sku-group-name">{lastGroup?.name || "规格"}</div> : null}
                   {batchSaleTip ? (
                     <div className="mall-detail-batch-tip">
                       <ExclamationCircleFilled />
                       <span>{batchSaleTip}</span>
                     </div>
                   ) : null}
-                </div>
+                </div> : null}
                 <div className="mall-detail-sku-list">
                   {visibleSpecs.length ? visibleSpecs.map((spec: AnyRecord) => {
                     const specIndex = Number(spec.originalIndex);
@@ -2210,8 +2212,7 @@ function DetailPage({ ctx }: any) {
                     return (
                       <div className={`mall-detail-sku-row ${soldOut ? "is-sold-out" : ""}`} key={`${spec.code}-${specIndex}`}>
                         <div className="mall-detail-sku-name">
-                          <span>{skuRowLabel(spec, lastGroup, p)}</span>
-                          <em>SKU条码:{spec.barcode || "-"}</em>
+                          {isSingleSpecProduct ? <em>SKU条码:{spec.barcode || "-"}</em> : <><span>{skuRowLabel(spec, lastGroup, p)}</span><em>SKU条码:{spec.barcode || "-"}</em></>}
                         </div>
                         <div className="mall-detail-sku-price">{money(detailUnitPrice(p, specIndex, totalQty))}</div>
                         <div className="mall-detail-sku-stock">{Number(spec.stock || 0)} {stockUnitLabel}</div>
@@ -3286,7 +3287,7 @@ function OrdersPage({ ctx, loading }: any) {
             <label className="mall-orders-receiver-filter"><span>收货人</span><Input value={filters.receiver} placeholder="收货人/手机号" allowClear onChange={event => patchFilter({ receiver: event.target.value })} /></label>
             <label><span>订单状态</span><Select value={filters.orderStatus} options={selectOptions.status} onChange={value => patchFilter({ orderStatus: value })} /></label>
             <label><span>支付方式</span><Select value={filters.payStatus} options={selectOptions.pay} onChange={value => patchFilter({ payStatus: value })} /></label>
-            <label className="mall-orders-amount-filter"><span>金额</span><Input value={filters.minAmount} placeholder="¥ 最小金额" onChange={event => patchFilter({ minAmount: event.target.value.replace(/[^\d.]/g, "") })} /><em /> <Input value={filters.maxAmount} placeholder="¥ 最大金额" onChange={event => patchFilter({ maxAmount: event.target.value.replace(/[^\d.]/g, "") })} /></label>
+            <label className="mall-orders-amount-filter"><span>订单金额</span><Input value={filters.minAmount} placeholder="¥ 最小金额" onChange={event => patchFilter({ minAmount: event.target.value.replace(/[^\d.]/g, "") })} /><em /> <Input value={filters.maxAmount} placeholder="¥ 最大金额" onChange={event => patchFilter({ maxAmount: event.target.value.replace(/[^\d.]/g, "") })} /></label>
             <div className="mall-orders-filter-actions">
               <button type="button" className="mall-orders-collapse" onClick={() => setFiltersOpen(false)}>收起 <DownOutlined /></button>
               <Button onClick={resetFilters}>清除选项</Button>
@@ -3310,7 +3311,7 @@ function OrdersPage({ ctx, loading }: any) {
           <span>商品信息</span>
           <span>单价</span>
           <span>数量</span>
-          <span>总金额</span>
+          <span>订单金额</span>
           <span>收货信息</span>
           <span>订单状态</span>
           <span>交易操作</span>
@@ -3396,7 +3397,8 @@ function OrderListCard({ order, selected, onSelectedChange, ctx, onDetail }: any
         </div>
         <div className="mall-orders-buyer">
           <strong>{buyerName}</strong>
-          <span>{order.receiverPhone || "查看买家信息"}</span>
+          <span className="mall-orders-buyer-phone">{order.receiverPhone || "查看买家信息"}</span>
+          <span className="mall-orders-buyer-address" title={order.receiverAddress || ""}>{order.receiverAddress || "收货地址暂缺"}</span>
         </div>
         <div className="mall-orders-status">
           {orderStatusBadge(order)}

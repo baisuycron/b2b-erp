@@ -102,7 +102,7 @@ public class OrderService {
                 orderId,
                 product.id(),
                 product.productName(),
-                product.skuCode(),
+                productRepository.primarySkuCode(product),
                 product.skuName(),
                 "BATCH".equals(product.saleMode()) && product.saleUnit() != null && !product.saleUnit().isBlank() ? product.saleUnit() : product.unit(),
                 item.quantity(),

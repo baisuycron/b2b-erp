@@ -6,7 +6,6 @@ import java.time.LocalDateTime;
 public record Product(
     Long id,
     String productCode,
-    String skuCode,
     String skuBarcode,
     String pinyinCode,
     String pinyinFull,

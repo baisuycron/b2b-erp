@@ -13,8 +13,7 @@ class MallProductListItemTest {
     void serializesOnlyMallListFields() throws Exception {
         MallProductListItem item = new MallProductListItem(
             1L,
-            "P-1",
-            "SKU-1",
+            "0000001",
             "BAR-1",
             "Product",
             "Category",
@@ -38,6 +37,7 @@ class MallProductListItemTest {
 
         assertThat(json).contains("mainImageCardUrl");
         assertThat(json).contains("mainImageThumbnailUrl");
+        assertThat(json).doesNotContain("skuCode");
         assertThat(json).doesNotContain(
             "data:image",
             "detailContent",

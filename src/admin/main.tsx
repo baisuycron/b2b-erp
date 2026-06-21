@@ -1364,7 +1364,6 @@ function parseBatchQueryKeywords(text: string) {
 function getBatchQueryFields(item: AnyRecord) {
   return [
     item.productCode,
-    item.skuCode,
     item.productName,
     item.productAlias,
     item.aliasName,
@@ -1409,7 +1408,6 @@ function collectCategoryNames(node?: AnyRecord) {
 
 const productColumnDefaults = [
   { key: "index", label: "序号", width: 72 },
-  { key: "skuCode", label: "商品条码", width: 150 },
   { key: "productCode", label: "商品编码", width: 150 },
   { key: "productName", label: "商品名称", width: 260 },
   { key: "categoryName", label: "商品分类", width: 150 },
@@ -1541,7 +1539,6 @@ function normalizeProductRecord(item?: AnyRecord) {
     ...item,
     id: firstPresent(item.id, item.productId),
     productCode: firstPresent(item.productCode, item.product_code),
-    skuCode: firstPresent(item.skuCode, item.sku_code),
     skuBarcode: firstPresent(item.skuBarcode, item.sku_barcode, item.barcode, item.barCode),
     productName: firstPresent(item.productName, item.product_name),
     categoryName: firstPresent(item.categoryName, item.category_name),
@@ -1779,7 +1776,6 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
   const filteredRows = rows.filter((item: AnyRecord) => {
     const searchText = [
       item.productCode,
-      item.skuCode,
       item.productName,
       item.productAlias,
       item.aliasName,
@@ -2032,8 +2028,7 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
   };
   const baseColumns: ColumnsType<AnyRecord> = [
     { key: "index", title: "序号", width: 72, align: "center", className: "product-index-column", render: (_, __, index) => index + 1 },
-    { key: "skuCode", title: "商品条码", dataIndex: "skuCode", width: 150, align: "left", className: "product-sku-column", render: (v, item) => <Button className="product-sku-link" type="link" onClick={() => void productDetail(ctx, item)}>{v || item.productCode || "-"}</Button> },
-    { key: "productCode", title: "商品编码", dataIndex: "productCode", width: 150, render: compactText },
+    { key: "productCode", title: "商品编码", dataIndex: "productCode", width: 150, align: "left", className: "product-code-column", render: (v, item) => <Button className="product-code-link" type="link" onClick={() => void productDetail(ctx, item)}>{v || "-"}</Button> },
     { key: "productName", title: "商品名称", dataIndex: "productName", width: 260, render: renderProductNameCell },
     { key: "categoryName", title: "商品分类", dataIndex: "categoryName", width: 150 },
     { key: "saleStatus", title: "是否淘汰", dataIndex: "saleStatus", width: 120, render: v => <span className={v === "OFF_SALE" ? "archive-danger-text" : ""}>{v === "OFF_SALE" ? "是" : "否"}</span> },
@@ -2147,7 +2142,7 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
                   className="product-archive-keyword-input"
                   value={keywordInput}
                   allowClear
-                  placeholder="代码 | 条码 | 名称"
+                  placeholder="编码 | 名称"
                   suffix={(
                     <span
                       className="product-archive-keyword-addon"
@@ -2438,16 +2433,16 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
         footer={null}
         onCancel={() => setBatchQueryOpen(false)}
       >
-        <div className="product-batch-query-head">商品编码 | 条码 | 名称 | 商品别称</div>
+        <div className="product-batch-query-head">商品编码 | 名称 | 商品别称</div>
         <Input.TextArea
           rows={10}
           value={batchQueryText}
-          placeholder="请输入商品编码、条码、名称、商品别称"
+          placeholder="请输入商品编码、名称、商品别称"
           onChange={event => setBatchQueryText(event.target.value)}
         />
         <div className="product-batch-query-tips">
           <div className="product-batch-query-tips-title">提示：</div>
-          <div>1、多个代码|条码|名称|商品别称 使用回车、空格或逗号分割</div>
+          <div>1、多个编码|名称|商品别称使用回车、空格或逗号分割</div>
           <div>2、商品数量最大支持上限100个</div>
           <div>3、多个商品查询时，仅支持精确匹配</div>
         </div>

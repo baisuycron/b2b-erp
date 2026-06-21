@@ -13,8 +13,7 @@ class ProductListItemTest {
     void serializesOnlyLightweightListFields() throws Exception {
         ProductListItem item = new ProductListItem(
             1L,
-            "P-1",
-            "SKU-1",
+            "0000001",
             "BAR-1",
             "商品",
             "分类",
@@ -32,6 +31,7 @@ class ProductListItemTest {
         String json = objectMapper.writeValueAsString(item);
 
         assertThat(json).contains("mainImageThumbnailUrl");
+        assertThat(json).doesNotContain("skuCode");
         assertThat(json).doesNotContain(
             "data:image",
             "detailContent",

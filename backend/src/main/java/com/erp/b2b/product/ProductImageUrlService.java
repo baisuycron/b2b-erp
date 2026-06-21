@@ -53,7 +53,6 @@ public class ProductImageUrlService {
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("id", product.id());
         response.put("productCode", product.productCode());
-        response.put("skuCode", product.skuCode());
         response.put("skuBarcode", product.skuBarcode());
         response.put("pinyinCode", product.pinyinCode());
         response.put("pinyinFull", product.pinyinFull());
