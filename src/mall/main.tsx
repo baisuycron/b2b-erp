@@ -19,6 +19,7 @@ import {
   List,
   Modal,
   Pagination,
+  Popconfirm,
   Radio,
   Select,
   Space,
@@ -29,19 +30,30 @@ import {
   Typography
 } from "antd";
 import {
+  AlipayCircleOutlined,
   AppstoreOutlined,
+  ArrowLeftOutlined,
   CameraOutlined,
+  CheckOutlined,
   CloseOutlined,
+  CopyOutlined,
+  DeleteOutlined,
+  DownOutlined,
+  EnvironmentOutlined,
   ExclamationCircleFilled,
+  HeartOutlined,
   HomeOutlined,
+  PictureOutlined,
   SearchOutlined,
   MinusOutlined,
   PlusOutlined,
   ProfileOutlined,
+  RightOutlined,
   RobotOutlined,
   ShoppingCartOutlined,
   ShoppingOutlined,
-  UserOutlined
+  UserOutlined,
+  WechatOutlined
 } from "@ant-design/icons";
 import "antd/dist/reset.css";
 import zhCN from "antd/locale/zh_CN";
@@ -319,6 +331,7 @@ function MallRoot() {
   const aiButtonRef = useRef<HTMLButtonElement | null>(null);
   const productCacheRef = useRef<Map<string, AnyRecord[]>>(new Map());
   const productDetailCacheRef = useRef<Map<string, AnyRecord>>(new Map());
+  const productDetailRequestsRef = useRef<Map<string, Promise<AnyRecord>>>(new Map());
   const detailRequestSeqRef = useRef(0);
   const imageSearchRequestRef = useRef(false);
   const snapshotWriteReadyRef = useRef(Boolean(initialSnapshot));
@@ -659,6 +672,30 @@ function MallRoot() {
     setPage("home");
   };
 
+  const loadProductDetail = async (payload: AnyRecord) => {
+    const productKey = String(payload?.id || "");
+    if (!productKey) throw new Error("商品信息不存在");
+    const cached = productDetailCacheRef.current.get(productKey);
+    if (cached) return cached;
+    const payloadIsDetail = payload?.raw && Object.prototype.hasOwnProperty.call(payload.raw, "skuListJson");
+    if (payloadIsDetail) {
+      productDetailCacheRef.current.set(productKey, payload);
+      return payload;
+    }
+    const existing = productDetailRequestsRef.current.get(productKey);
+    if (existing) return existing;
+    const detailRequest = request<AnyRecord>(`/api/mall/products/${payload.id}`)
+      .then(productFromApi)
+      .then(detail => {
+        productDetailCacheRef.current.set(productKey, detail);
+        setProducts(current => current.map(item => String(item.id) === productKey ? detail : item));
+        return detail;
+      })
+      .finally(() => productDetailRequestsRef.current.delete(productKey));
+    productDetailRequestsRef.current.set(productKey, detailRequest);
+    return detailRequest;
+  };
+
   const go = async (next: Page, payload?: AnyRecord, options: AnyRecord = {}) => {
     if (!options.skipAuth && protectedPages.includes(next) && !isLoggedIn) {
       const redirect = next === "detail" && payload?.id ? `/product/${payload.id}` : redirectForPage(next);
@@ -669,8 +706,9 @@ function MallRoot() {
       const productKey = String(payload.id);
       const requestSeq = ++detailRequestSeqRef.current;
       const cachedDetail = productDetailCacheRef.current.get(productKey);
-      if (payload?.raw?.detailContent) productDetailCacheRef.current.set(productKey, payload);
-      const readyDetail = cachedDetail || (payload?.raw?.detailContent ? payload : null);
+      const payloadIsDetail = payload?.raw && Object.prototype.hasOwnProperty.call(payload.raw, "skuListJson");
+      if (payloadIsDetail) productDetailCacheRef.current.set(productKey, payload);
+      const readyDetail = cachedDetail || (payloadIsDetail ? payload : null);
       if (readyDetail) {
         setSelectedProduct(readyDetail);
         setDetailQty(Object.fromEntries((readyDetail.specs || []).map((_: AnyRecord, idx: number) => [idx, 0])));
@@ -681,8 +719,7 @@ function MallRoot() {
       }
       setLoading(true);
       try {
-        const detailPayload = productFromApi(await request<AnyRecord>(`/api/mall/products/${payload.id}`));
-        productDetailCacheRef.current.set(productKey, detailPayload);
+        const detailPayload = await loadProductDetail(payload);
         if (detailRequestSeqRef.current !== requestSeq) return;
         setSelectedProduct(detailPayload);
         setDetailQty(Object.fromEntries((detailPayload.specs || []).map((_: AnyRecord, idx: number) => [idx, 0])));
@@ -870,7 +907,10 @@ function MallRoot() {
     categoryRows,
     brands,
     cart,
+    cartCount,
+    setCart,
     orders,
+    setOrders,
     addresses,
     invoiceTitles,
     profile,
@@ -917,6 +957,7 @@ function MallRoot() {
     hydrateInvoiceTitles,
     hydrateProfile,
     hydratePrivateData,
+    loadProductDetail,
     requireLogin,
     completeLogin,
     logout,
@@ -948,8 +989,8 @@ function MallRoot() {
           )}
           <div className="mall-top-links">
             <button type="button" onClick={() => go("cart")}><ShoppingCartOutlined />购物车（{cartCount}）</button>
-            <button type="button" onClick={() => go("orders")}><ProfileOutlined />订单</button>
-            <button type="button" onClick={() => go("profile")}><UserOutlined />账户</button>
+            <button type="button" onClick={() => go("orders")}><ProfileOutlined />我的订单</button>
+            <button type="button" onClick={() => go("profile")}><UserOutlined />个人中心</button>
           </div>
         </div>
       </div>
@@ -958,7 +999,7 @@ function MallRoot() {
         <MallSearchBar ctx={ctx} />
         <Button ref={aiButtonRef} className="mall-ai-header-button" type="primary" icon={<RobotOutlined />} onClick={openAiAssistant}>AI助手</Button>
       </div>
-      <main className="mall-main">
+      <main className={`mall-main is-${page}`}>
         <div className="mall-live-content">
           {page === "home" && <HomePage ctx={ctx} loading={false} />}
           {page === "list" && <ListPage ctx={ctx} loading={false} />}
@@ -991,20 +1032,35 @@ function productFromApi(item: AnyRecord) {
   const baseUnit = item.unit || "件";
   const displayUnit = saleMode === "BATCH" && saleUnit ? saleUnit : baseUnit;
   const skuRows = parseRows(item.skuListJson || item.skuList);
-  const specs = skuRows.length ? skuRows.map((row, index) => ({
-    code: row.skuCode || item.skuCode || `${item.id}-${index}`,
-    name: row.skuName || item.skuName || "默认规格",
-    image: row.skuImageUrl || row.imageUrl || mainImage,
-    price: Number(row.salePrice ?? item.salePrice ?? 0),
-    stock: Number(row.stockQuantity ?? item.stockQuantity ?? 0),
-    min: Number(row.minOrderQuantity ?? item.minOrderQuantity ?? 1),
-    status: row.skuStatus || "ENABLED",
-    specValues: normalizeSkuSpecValues(row.specValues),
-    tierPrices: parseRows(row.tierPrices)
-  })) : [{
+  const specValueImageMap = new Map<string, string>();
+  skuRows.forEach((row: AnyRecord) => {
+    normalizeSkuSpecValues(row.specValues).forEach((cell: AnyRecord) => {
+      const image = safeMallImageUrl(cell.image);
+      if (image) specValueImageMap.set(mallSpecValueImageKey(cell), image);
+    });
+  });
+  const specs = skuRows.length ? skuRows.map((row, index) => {
+    const specValues = normalizeSkuSpecValues(row.specValues).map((cell: AnyRecord) => ({
+      ...cell,
+      image: safeMallImageUrl(cell.image) || specValueImageMap.get(mallSpecValueImageKey(cell)) || ""
+    }));
+    return {
+      code: row.skuCode || item.skuCode || `${item.id || item.productId}-${index}`,
+      barcode: row.skuBarcode || row.barCode || row.barcode || item.skuBarcode || item.barCode || item.barcode || "",
+      name: row.skuName || item.skuName || "默认规格",
+      image: mallSkuImageSrc(row) || firstSpecValueImage(specValues),
+      price: Number(row.salePrice ?? item.salePrice ?? 0),
+      stock: Number(row.stockQuantity ?? item.stockQuantity ?? 0),
+      min: Number(row.minOrderQuantity ?? item.minOrderQuantity ?? 1),
+      status: row.skuStatus || "ENABLED",
+      specValues,
+      tierPrices: parseRows(row.tierPrices)
+    };
+  }) : [{
     code: item.skuCode,
+    barcode: item.skuBarcode || item.barCode || item.barcode || "",
     name: item.skuName || "默认规格",
-    image: mainImage,
+    image: mallSkuImageSrc(item),
     price: Number(item.salePrice || 0),
     stock: Number(item.stockQuantity || 0),
     min: Number(item.minOrderQuantity || 1),
@@ -1018,8 +1074,8 @@ function productFromApi(item: AnyRecord) {
   const carouselImages = uniqueTruthy([mainImage, ...(detail.carouselImages || [])]).slice(0, 5);
   const gallery = carouselImages.length ? carouselImages : uniqueTruthy([mainImage]);
   return {
-    id: Number(item.id),
-    apiId: Number(item.id),
+    id: Number(item.id || item.productId),
+    apiId: Number(item.id || item.productId),
     name: item.productName,
     category: item.categoryName || "后台商品",
     brand: item.brandName || "B2B",
@@ -1099,6 +1155,25 @@ function uniqueTruthy(values: any[]) {
   return Array.from(new Set(values.map(value => String(value || "").trim()).filter(Boolean)));
 }
 
+function mallSkuImageSrc(value: any) {
+  return String(
+    value?.skuImageUrl
+    || value?.specImageUrl
+    || value?.specImage
+    || value?.imageUrl
+    || value?.image
+    || value?.imagePath
+    || value?.picUrl
+    || value?.pic
+    || value?.url
+    || value?.specValueImageUrl
+    || value?.specValueImage
+    || value?.valueImageUrl
+    || value?.valueImage
+    || ""
+  ).trim();
+}
+
 function normalizeSkuSpecValues(value: any) {
   if (!Array.isArray(value)) return [];
   return value
@@ -1107,9 +1182,17 @@ function normalizeSkuSpecValues(value: any) {
       groupName: String(cell?.groupName || `规格${index + 1}`),
       valueId: String(cell?.valueId || cell?.value || ""),
       value: String(cell?.value || ""),
-      image: String(cell?.image || "")
+      image: mallSkuImageSrc(cell)
     }))
     .filter(cell => cell.value);
+}
+
+function mallSpecValueImageKey(cell: AnyRecord) {
+  return `${String(cell?.groupId || cell?.groupName || "")}:${String(cell?.valueId || cell?.value || "")}`;
+}
+
+function firstSpecValueImage(specValues: AnyRecord[]) {
+  return String((specValues || []).find(cell => safeMallImageUrl(cell.image))?.image || "");
 }
 
 function buildMallSpecGroups(specs: AnyRecord[]) {
@@ -1152,7 +1235,8 @@ function cartFromApi(item: AnyRecord) {
     productId: Number(item.productId),
     specIndex: Number(item.specIndex || 0),
     qty: Number(item.quantity || item.qty || 1),
-    checked: item.checked !== false
+    checked: item.checked !== false,
+    raw: item
   };
 }
 
@@ -1168,7 +1252,7 @@ function orderFromApi(order: AnyRecord) {
     payLabel: order.paymentStatus === "PAID" ? "已支付" : order.paymentStatus === "NOT_REQUIRED_BEFORE_RECEIPT" ? "后付款" : "未支付",
     statusLabel: statusText(order.orderStatus),
     shipLabel: statusText(order.fulfillmentStatus || order.orderStatus),
-    orderTime: dateText(order.createdAt),
+    orderTime: orderDateTimeText(order.createdAt),
     receiverName: order.receiverName,
     receiverPhone: order.receiverPhone,
     receiverAddress: order.receiverAddress,
@@ -1177,8 +1261,26 @@ function orderFromApi(order: AnyRecord) {
   };
 }
 
+function orderDateTimeText(value: any) {
+  if (!value) return "-";
+  const normalized = String(value).replace("T", " ").replace(/\.\d+.*$/, "");
+  if (normalized.length >= 19) return normalized.slice(0, 19);
+  if (normalized.length === 16) return `${normalized}:00`;
+  return normalized;
+}
+
 function addressFromApi(item: AnyRecord) {
-  return { id: item.id, name: item.receiverName, phone: item.receiverPhone, address: item.receiverAddress, isDefault: Boolean(item.isDefault) };
+  const region = item.region === "-" ? "" : item.region || "";
+  const detailAddress = item.detailAddress || "";
+  return {
+    id: item.id,
+    name: item.receiverName,
+    phone: item.receiverPhone,
+    region,
+    detailAddress,
+    address: item.receiverAddress || [region, detailAddress].filter(Boolean).join(" ") || item.fullAddress,
+    isDefault: Boolean(item.isDefault)
+  };
 }
 
 function invoiceTitleFromApi(item: AnyRecord) {
@@ -1486,29 +1588,25 @@ function Section({ title, extra, children }: any) {
 }
 
 function ProductGrid({ products, ctx, loading }: any) {
-  const [addingProductIds, setAddingProductIds] = useState<Set<string>>(new Set());
-  const addToCart = async (event: any, product: AnyRecord) => {
+  const [quickBuyOpen, setQuickBuyOpen] = useState(false);
+  const [quickBuyLoading, setQuickBuyLoading] = useState(false);
+  const [quickBuyProduct, setQuickBuyProduct] = useState<AnyRecord | null>(null);
+  const openQuickBuy = async (event: any, product: AnyRecord) => {
     event.stopPropagation();
     if (!ctx.isLoggedIn) {
       ctx.requireLogin(`/product/${product.id}`);
       return;
     }
-    const addingKey = String(product.id);
-    if (addingProductIds.has(addingKey)) return;
-    setAddingProductIds(prev => new Set(prev).add(addingKey));
+    setQuickBuyProduct(null);
+    setQuickBuyOpen(true);
+    setQuickBuyLoading(true);
     try {
-      const qty = Math.max(1, Number(product.specs?.[0]?.min || product.raw?.minOrderQuantity || 1));
-      await request("/api/mall/cart/items", { method: "POST", data: { productId: product.id, quantity: qty, specIndex: 0 } });
-      await ctx.hydrateCart();
-      ctx.message.open({ type: "success", content: "已加入购物车", key: "mall-cart-add", duration: 1.2 });
+      setQuickBuyProduct(await ctx.loadProductDetail(product));
     } catch (error: any) {
-      ctx.message.open({ type: "error", content: error?.message || "加入购物车失败", key: "mall-cart-add", duration: 2 });
+      setQuickBuyOpen(false);
+      ctx.message.error(error?.message || "商品详情加载失败，请稍后重试");
     } finally {
-      setAddingProductIds(prev => {
-        const next = new Set(prev);
-        next.delete(addingKey);
-        return next;
-      });
+      setQuickBuyLoading(false);
     }
   };
   return (
@@ -1517,9 +1615,7 @@ function ProductGrid({ products, ctx, loading }: any) {
         <Empty description="暂无匹配商品，请调整搜索关键词或筛选条件" />
       ) : (
         <div className="product-grid">
-          {products.map((p: AnyRecord) => {
-          const isAdding = addingProductIds.has(String(p.id));
-          return (
+          {products.map((p: AnyRecord) => (
             <Card
               key={p.id}
               className="mall-product-card"
@@ -1538,22 +1634,219 @@ function ProductGrid({ products, ctx, loading }: any) {
                   <Button
                     type="primary"
                     size="small"
-                    className="mall-product-cart-icon"
-                    icon={<ShoppingCartOutlined />}
-                    loading={isAdding}
-                    aria-busy={isAdding}
-                    aria-label="加入购物车"
-                    title="加入购物车"
-                    onClick={(event) => addToCart(event, p)}
-                  />
+                     className="mall-product-cart-icon"
+                     icon={<ShoppingCartOutlined />}
+                     aria-label="选择规格并购买"
+                     title="选择规格并购买"
+                     onClick={(event) => openQuickBuy(event, p)}
+                   />
                 </div>
               </div>
             </Card>
-          );
-          })}
+          ))}
         </div>
       )}
+      <QuickBuyModal
+        ctx={ctx}
+        open={quickBuyOpen}
+        loading={quickBuyLoading}
+        product={quickBuyProduct}
+        onClose={() => setQuickBuyOpen(false)}
+      />
     </div>
+  );
+}
+
+function QuickBuyModal({ ctx, open, loading, product, onClose }: any) {
+  const [selectedSpecValues, setSelectedSpecValues] = useState<AnyRecord>({});
+  const [qtyMap, setQtyMap] = useState<AnyRecord>({});
+  const [activeImage, setActiveImage] = useState("");
+  const [submitting, setSubmitting] = useState<"cart" | "buy" | "">("");
+
+  useEffect(() => {
+    if (!open || !product) return;
+    setSelectedSpecValues(defaultSpecSelection(product));
+    setQtyMap(Object.fromEntries((product.specs || []).map((_: AnyRecord, index: number) => [index, 0])));
+    setActiveImage(product.gallery?.[0] || product.image || "");
+    setSubmitting("");
+  }, [open, product?.id]);
+
+  const selected = Object.entries(qtyMap).filter(([, qty]) => Number(qty) > 0);
+  const totalQty = selected.reduce((sum, [, qty]) => sum + Number(qty), 0);
+  const totalAmount = product
+    ? selected.reduce((sum, [index, qty]) => sum + detailUnitPrice(product, Number(index), totalQty) * Number(qty), 0)
+    : 0;
+  const selectionGroups = product ? selectionGroupsFor(product) : [];
+  const displaySelectionGroups = visibleSelectionGroupsForProduct(product, selectionGroups);
+  const lastGroup = product ? lastSkuGroupFor(product) : null;
+  const visibleSpecs = product ? product.specs
+    .map((spec: AnyRecord, index: number) => ({ ...spec, originalIndex: index }))
+    .filter((spec: AnyRecord) => specMatchesSelection(spec, selectedSpecValues, selectionGroups, product)) : [];
+  const priceTiers = product ? tierRowsForProduct(product) : [];
+  const stockUnitLabel = product ? stockUnitForProduct(product) : "件";
+  const quantityStep = product ? quantityStepForProduct(product) : 1;
+  const batchSaleTip = product ? batchSaleTipForProduct(product) : "";
+
+  const setSkuQty = (specIndex: number, value: any) => {
+    const spec = product?.specs?.[specIndex] || {};
+    const next = clampQty(value, Number(spec.stock || 0));
+    setQtyMap((old: AnyRecord) => ({ ...old, [specIndex]: next }));
+  };
+
+  const increaseQty = (specIndex: number) => {
+    const spec = product?.specs?.[specIndex] || {};
+    const current = Number(qtyMap[specIndex] || 0);
+    const minimum = nextValidPurchaseQty(product, Number(spec.min || 1));
+    setSkuQty(specIndex, current <= 0 ? minimum : current + quantityStep);
+  };
+
+  const chooseSpecValue = (group: AnyRecord, value: AnyRecord) => {
+    setSelectedSpecValues(normalizeSpecSelection(product, { ...selectedSpecValues, [group.key]: value.key }));
+  };
+
+  const purchaseRows = () => {
+    const rows = selectedItemsForProduct(product, qtyMap, ctx.message);
+    if (rows === null) return null;
+    if (!rows.length) {
+      ctx.message.warning("请选择采购数量");
+      return null;
+    }
+    return rows;
+  };
+
+  const addToCart = async () => {
+    const rows = purchaseRows();
+    if (!rows) return;
+    setSubmitting("cart");
+    try {
+      for (const row of rows) {
+        await request("/api/mall/cart/items", { method: "POST", data: { productId: product.id, quantity: row.qty, specIndex: row.specIndex } });
+      }
+      await ctx.hydrateCart();
+      ctx.message.open({ type: "success", content: "已加入购物车", key: "mall-cart-add", duration: 1.2 });
+      onClose();
+    } catch (error: any) {
+      ctx.message.error(error?.message || "加入购物车失败");
+    } finally {
+      setSubmitting("");
+    }
+  };
+
+  const buyNow = () => {
+    const rows = purchaseRows();
+    if (!rows) return;
+    setSubmitting("buy");
+    ctx.setCheckoutItems(rows.map((row: AnyRecord) => ({ productId: product.id, specIndex: row.specIndex, qty: row.qty, checked: true })));
+    onClose();
+    ctx.go("confirm");
+  };
+
+  return (
+    <Modal
+      open={open}
+      footer={null}
+      width={1280}
+      centered
+      destroyOnHidden
+      className="mall-quick-buy-modal"
+      onCancel={submitting ? undefined : onClose}
+    >
+      {loading || !product ? (
+        <div className="mall-quick-buy-loading">商品详情加载中...</div>
+      ) : (
+        <div className="mall-detail-layout mall-quick-buy-layout">
+          <div className="mall-detail-gallery">
+            {activeImage ? <Image src={activeImage} className="mall-detail-main-image" preview={false} /> : <div className="mall-detail-image-placeholder">暂无图片</div>}
+            {product.gallery?.length ? (
+              <div className="mall-detail-thumbs">
+                {product.gallery.map((url: string) => (
+                  <button key={url} type="button" className={`mall-detail-thumb ${activeImage === url ? "is-active" : ""}`} onClick={() => setActiveImage(url)}>
+                    <img src={url} alt="" loading="lazy" decoding="async" />
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="mall-detail-buy">
+            <Typography.Title level={2} className="mall-detail-title">{product.name}</Typography.Title>
+            <div className="mall-detail-meta"><span>{product.category}</span><span>{product.brand}</span></div>
+            <div className="mall-detail-price-panel">
+              {priceTiers.length ? priceTiers.map((tier: AnyRecord, index: number) => (
+                <div className="mall-detail-price-tier" key={`${tier.minQty || 1}-${index}`}>
+                  <div className="mall-detail-price">{money(tier.price)}</div>
+                  <div className="mall-detail-threshold">{Number(tier.minQty || 1) <= 1 ? `${Number(tier.minQty || 1)}${stockUnitLabel}起批` : `≥${Number(tier.minQty)}${stockUnitLabel}`}</div>
+                </div>
+              )) : (
+                <div className="mall-detail-price-tier">
+                  <div className="mall-detail-price">{money(firstPrice(product))}</div>
+                  <div className="mall-detail-threshold">{Math.max(1, minOrderQtyForProduct(product))}{stockUnitLabel}起批</div>
+                </div>
+              )}
+            </div>
+
+            <div className="mall-detail-spec-area">
+              {displaySelectionGroups.map((group: AnyRecord, groupIndex: number) => (
+                <div className="mall-detail-spec-row" key={group.key}>
+                  <div className="mall-detail-spec-label">{group.name}</div>
+                  <div className="mall-detail-spec-options">
+                    {group.values.map((value: AnyRecord) => {
+                      const disabled = !specOptionHasStock(product, group, value, selectedSpecValues, selectionGroups);
+                      const active = selectedSpecValues[group.key] === value.key;
+                      const optionQty = selectedQtyForOption(product, group, value, qtyMap);
+                      return (
+                        <Badge key={value.key} count={optionQty} size="small" offset={[-2, 2]}>
+                          <button type="button" className={`mall-detail-spec-option ${active ? "is-active" : ""}`} disabled={disabled} onClick={() => chooseSpecValue(group, value)}>
+                            {shouldShowSpecOptionImage(groupIndex, group) ? <SpecImageThumb src={value.image} /> : null}
+                            <span>{value.value}</span>
+                          </button>
+                        </Badge>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+
+              <div className={`mall-detail-sku-box ${batchSaleTip ? "" : "is-plain"}`}>
+                <div className="mall-detail-sku-top">
+                  <div className="mall-detail-sku-group-name">{lastGroup?.name || "规格"}</div>
+                  {batchSaleTip ? <div className="mall-detail-batch-tip"><ExclamationCircleFilled /><span>{batchSaleTip}</span></div> : null}
+                </div>
+                <div className="mall-detail-sku-list">
+                  {visibleSpecs.length ? visibleSpecs.map((spec: AnyRecord) => {
+                    const specIndex = Number(spec.originalIndex);
+                    const qty = Number(qtyMap[specIndex] || 0);
+                    const soldOut = spec.status === "DISABLED" || Number(spec.stock || 0) <= 0;
+                    return (
+                      <div className={`mall-detail-sku-row ${soldOut ? "is-sold-out" : ""}`} key={`${spec.code}-${specIndex}`}>
+                        <div className="mall-detail-sku-name"><span>{skuRowLabel(spec, lastGroup, product)}</span><em>SKU条码:{spec.barcode || "-"}</em></div>
+                        <div className="mall-detail-sku-price">{money(detailUnitPrice(product, specIndex, totalQty))}</div>
+                        <div className="mall-detail-sku-stock">{Number(spec.stock || 0)} {stockUnitLabel}</div>
+                        {soldOut ? <div className="mall-detail-stock-empty">库存不足</div> : <div className="mall-detail-stepper">
+                          <Button icon={<MinusOutlined />} disabled={qty <= 0} onClick={() => setSkuQty(specIndex, qty - quantityStep)} />
+                          <InputNumber min={0} max={Number(spec.stock || 0)} step={quantityStep} controls={false} precision={0} value={qty} disabled={soldOut} onChange={value => setSkuQty(specIndex, value)} />
+                          <Button icon={<PlusOutlined />} disabled={soldOut || qty + quantityStep > Number(spec.stock || 0)} onClick={() => increaseQty(specIndex)} />
+                        </div>}
+                      </div>
+                    );
+                  }) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前规格暂无可购 SKU" />}
+                </div>
+              </div>
+            </div>
+
+            <div className="mall-detail-summary">
+              <span>已选 <b>{selected.length}</b> 款 <b>{totalQty}</b> {stockUnitLabel}</span>
+              <span>商品金额：<b>{money(totalAmount)}</b></span>
+              <span>另需运费：¥0.00</span>
+            </div>
+            <div className="mall-detail-actions">
+              <Button className="mall-detail-primary-action" size="large" loading={submitting === "buy"} disabled={Boolean(submitting && submitting !== "buy")} onClick={buyNow}>立即下单</Button>
+              <Button className="mall-detail-secondary-action" size="large" loading={submitting === "cart"} disabled={Boolean(submitting && submitting !== "cart")} onClick={addToCart}>加入购物车</Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </Modal>
   );
 }
 
@@ -1758,6 +2051,7 @@ function DetailPage({ ctx }: any) {
   const quantityStep = quantityStepForProduct(p);
   const batchSaleTip = batchSaleTipForProduct(p);
   const selectionGroups = selectionGroupsFor(p);
+  const displaySelectionGroups = visibleSelectionGroupsForProduct(p, selectionGroups);
   const lastGroup = lastSkuGroupFor(p);
   const useCarouselImages = (p.gallery || []).length > 1;
   const visibleSpecs = p.specs
@@ -1872,7 +2166,7 @@ function DetailPage({ ctx }: any) {
             </div>
 
             <div className="mall-detail-spec-area">
-              {selectionGroups.map((group: AnyRecord, groupIndex: number) => (
+              {displaySelectionGroups.map((group: AnyRecord, groupIndex: number) => (
                 <div className="mall-detail-spec-row" key={group.key}>
                   <div className="mall-detail-spec-label">{group.name}</div>
                   <div className="mall-detail-spec-options">
@@ -1888,7 +2182,7 @@ function DetailPage({ ctx }: any) {
                             disabled={disabled}
                             onClick={() => chooseSpecValue(group, value)}
                           >
-                            {groupIndex === 0 && value.image ? <img src={value.image} alt="" /> : null}
+                            {shouldShowSpecOptionImage(groupIndex, group) ? <SpecImageThumb src={value.image} /> : null}
                             <span>{value.value}</span>
                           </button>
                         </Badge>
@@ -1917,16 +2211,15 @@ function DetailPage({ ctx }: any) {
                       <div className={`mall-detail-sku-row ${soldOut ? "is-sold-out" : ""}`} key={`${spec.code}-${specIndex}`}>
                         <div className="mall-detail-sku-name">
                           <span>{skuRowLabel(spec, lastGroup, p)}</span>
-                          <em>规格ID:{spec.code || "-"}</em>
-                          {soldOut ? <Tag color="default">售罄</Tag> : null}
+                          <em>SKU条码:{spec.barcode || "-"}</em>
                         </div>
                         <div className="mall-detail-sku-price">{money(detailUnitPrice(p, specIndex, totalQty))}</div>
                         <div className="mall-detail-sku-stock">{Number(spec.stock || 0)} {stockUnitLabel}</div>
-                        <div className="mall-detail-stepper">
+                        {soldOut ? <div className="mall-detail-stock-empty">库存不足</div> : <div className="mall-detail-stepper">
                           <Button icon={<MinusOutlined />} disabled={qty <= 0} onClick={() => setSkuQty(specIndex, qty - quantityStep)} />
                           <InputNumber min={0} max={Number(spec.stock || 0)} step={quantityStep} controls={false} precision={0} value={qty} disabled={soldOut} onChange={value => setSkuQty(specIndex, value)} />
                           <Button icon={<PlusOutlined />} disabled={soldOut || qty + quantityStep > Number(spec.stock || 0)} onClick={() => increaseQty(specIndex)} />
-                        </div>
+                        </div>}
                       </div>
                     );
                   }) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前规格暂无可购 SKU" />}
@@ -1937,7 +2230,7 @@ function DetailPage({ ctx }: any) {
             <div className="mall-detail-summary">
               <span>已选 <b>{selected.length}</b> 款 <b>{totalQty}</b> {stockUnitLabel}</span>
               <span>商品金额：<b>{money(totalAmount)}</b></span>
-              <span>运费：待确认</span>
+              <span>另需运费：¥0.00</span>
             </div>
 
             <div className="mall-detail-actions">
@@ -1983,6 +2276,10 @@ function selectionGroupsFor(product: AnyRecord) {
   const groups = product?.specGroups || [];
   if (groups.length <= 1) return groups;
   return groups.slice(0, -1);
+}
+
+function visibleSelectionGroupsForProduct(product: AnyRecord, groups = selectionGroupsFor(product)) {
+  return groups.filter((group: AnyRecord) => groups.length > 1 || (group.values || []).length > 1);
 }
 
 function lastSkuGroupFor(product: AnyRecord) {
@@ -2107,63 +2404,597 @@ function nextValidPurchaseQty(product: AnyRecord, qty: number) {
 }
 
 function selectedItems(ctx: AnyRecord) {
-  const p = ctx.selectedProduct;
-  const rows = Object.entries(ctx.detailQty)
+  return selectedItemsForProduct(ctx.selectedProduct, ctx.detailQty, ctx.message);
+}
+
+function selectedItemsForProduct(product: AnyRecord, qtyMap: AnyRecord, messageApi: AnyRecord) {
+  const rows = Object.entries(qtyMap || {})
     .filter(([, qty]) => Number(qty) > 0)
-    .map(([idx, qty]) => ({ specIndex: Number(idx), qty: Number(qty), spec: p.specs[Number(idx)] }));
+    .map(([idx, qty]) => ({ specIndex: Number(idx), qty: Number(qty), spec: product?.specs?.[Number(idx)] }));
   const invalid = rows.find(row => row.qty < Number(row.spec?.min || 1));
   if (invalid) {
-    ctx.message.warning("未满足最小起订量");
+    messageApi.warning("未满足最小起订量");
     return null;
   }
   const overStock = rows.find(row => row.qty > Number(row.spec?.stock || 0));
   if (overStock) {
-    ctx.message.warning("采购数量不能超过库存");
+    messageApi.warning("采购数量不能超过库存");
     return null;
   }
-  const step = quantityStepForProduct(p);
-  const invalidStep = p.saleMode === "BATCH" && step > 1 ? rows.find(row => row.qty % step !== 0) : null;
+  const step = quantityStepForProduct(product);
+  const invalidStep = product?.saleMode === "BATCH" && step > 1 ? rows.find(row => row.qty % step !== 0) : null;
   if (invalidStep) {
-    ctx.message.warning(`采购数量需按 ${step}${stockUnitForProduct(p)} 的倍数填写`);
+    messageApi.warning(`采购数量需按 ${step}${stockUnitForProduct(product)} 的倍数填写`);
     return null;
   }
   return rows;
 }
 
+const mallCartSkuStateKey = "b2b-erp-mall-cart-sku-state";
+
+function readCartSkuState() {
+  try {
+    const rows = JSON.parse(localStorage.getItem(mallCartSkuStateKey) || "[]");
+    return Array.isArray(rows) ? rows : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistCartSkuState(rows: AnyRecord[]) {
+  try {
+    localStorage.setItem(mallCartSkuStateKey, JSON.stringify(rows.map(row => ({
+      productId: row.productId,
+      specIndex: row.specIndex,
+      qty: row.qty
+    }))));
+  } catch {
+    // Ignore private-mode and storage quota failures.
+  }
+}
+
+function cartSkuRowKey(row: AnyRecord) {
+  return `${row.productId}:${row.specIndex}`;
+}
+
+function safeMallImageUrl(value: any) {
+  const src = String(value || "").trim();
+  return src && !src.toLowerCase().startsWith("data:image") ? src : "";
+}
+
+function SpecImageThumb({ src, className = "" }: { src?: any; className?: string }) {
+  const safeSrc = safeMallImageUrl(src);
+  return safeSrc
+    ? <img className={className || undefined} src={safeSrc} alt="" loading="lazy" decoding="async" />
+    : <span className={`mall-spec-image-placeholder ${className}`.trim()} aria-label="暂无规格图片"><PictureOutlined /></span>;
+}
+
+function shouldShowSpecOptionImage(groupIndex: number, group: AnyRecord) {
+  return groupIndex === 0 || (group?.values || []).some((value: AnyRecord) => safeMallImageUrl(value.image));
+}
+
+function cartSpecText(spec: AnyRecord) {
+  const values = (spec?.specValues || []).map((cell: AnyRecord) => String(cell.value || "").trim()).filter(Boolean);
+  return values.length ? values.join("；") : spec?.name || "默认规格";
+}
+
+function cartRowInvalidReason(product: AnyRecord, row: AnyRecord) {
+  const rawSaleStatus = String(product?.raw?.saleStatus || product?.raw?.productStatus || "").toUpperCase();
+  if (!product?.name || (rawSaleStatus && rawSaleStatus !== "ON_SALE")) return "商品已下架";
+  const spec = product?.specs?.[Number(row?.specIndex || 0)];
+  if (!spec) return "规格已停用";
+  if (String(spec.status || "ENABLED").toUpperCase() === "DISABLED") return "规格已停用";
+  if (Number(spec.stock || 0) <= 0) return "库存为 0";
+  return "";
+}
+
+function groupCartRows(rows: AnyRecord[]) {
+  return Object.values(rows.reduce((groups: AnyRecord, row: AnyRecord) => {
+    const key = String(row.productId);
+    if (!groups[key]) groups[key] = { productId: row.productId, cartItemId: row.cartItemId, checked: row.checked !== false, rows: [] };
+    groups[key].rows.push(row);
+    groups[key].checked = groups[key].rows.every((item: AnyRecord) => item.checked !== false);
+    return groups;
+  }, {}));
+}
+
 function CartPage({ ctx, loading }: any) {
-  const total = ctx.cart.filter((x: AnyRecord) => x.checked !== false).reduce((sum: number, item: AnyRecord) => sum + cartItemPrice(ctx.products, item) * item.qty, 0);
-  const updateCart = (item: AnyRecord, patch: AnyRecord) => ctx.apiGuard(async () => {
-    await request(`/api/mall/cart/items/${item.cartItemId}`, { method: "PUT", data: patch });
-    await ctx.hydrateCart();
+  const [cartRows, setCartRows] = useState<AnyRecord[]>([]);
+  const [cartProducts, setCartProducts] = useState<Record<string, AnyRecord>>({});
+  const [cartReady, setCartReady] = useState(false);
+  const [specSelector, setSpecSelector] = useState<AnyRecord | null>(null);
+  const [updatingQtyKeys, setUpdatingQtyKeys] = useState<Set<string>>(new Set());
+  const defaultAddress = ctx.addresses.find((item: AnyRecord) => item.isDefault) || ctx.addresses[0];
+
+  useEffect(() => {
+    let cancelled = false;
+    const hydrateCartDetails = async () => {
+      const productEntries = await Promise.all(ctx.cart.map(async (item: AnyRecord) => {
+        const listProduct = ctx.products.find((product: AnyRecord) => Number(product.id) === Number(item.productId))
+          || (item.raw?.productName ? productFromApi(item.raw) : { id: item.productId });
+        try {
+          return [String(item.productId), await ctx.loadProductDetail(listProduct)];
+        } catch {
+          return [String(item.productId), listProduct];
+        }
+      }));
+      if (cancelled) return;
+      const productMap = Object.fromEntries(productEntries);
+      const nextRows = ctx.cart.flatMap((item: AnyRecord) => {
+        return [{
+          cartItemId: item.cartItemId,
+          productId: item.productId,
+          specIndex: Number(item.specIndex || 0),
+          qty: Number(item.qty || 1),
+          checked: item.checked !== false
+        }];
+      });
+      const normalizedRows = nextRows.map((row: AnyRecord) => ({
+        ...row,
+        checked: cartRowInvalidReason(productMap[String(row.productId)], row) ? false : row.checked !== false
+      }));
+      setCartProducts(productMap);
+      setCartRows(normalizedRows);
+      persistCartSkuState(normalizedRows);
+      setCartReady(true);
+    };
+    hydrateCartDetails();
+    return () => { cancelled = true; };
+  }, [ctx.cart]);
+
+  const validRows = cartRows.filter(row => !cartRowInvalidReason(cartProducts[String(row.productId)], row));
+  const invalidRows = cartRows.filter(row => cartRowInvalidReason(cartProducts[String(row.productId)], row));
+  const productGroups = groupCartRows(validRows);
+  const invalidGroups = groupCartRows(invalidRows);
+
+  const rowMatchesCartItem = (item: AnyRecord, row: AnyRecord) => {
+    const itemCartId = item.cartItemId || item.id;
+    if (itemCartId && row.cartItemId) return String(itemCartId) === String(row.cartItemId);
+    return Number(item.productId) === Number(row.productId) && Number(item.specIndex || 0) === Number(row.specIndex || 0);
+  };
+
+  const commitRows = (nextRows: AnyRecord[]) => {
+    setCartRows(nextRows);
+    persistCartSkuState(nextRows);
+    ctx.setCart((current: AnyRecord[]) => current
+      .filter(item => nextRows.some(row => rowMatchesCartItem(item, row)))
+      .map(item => {
+        const matching = nextRows.find(row => rowMatchesCartItem(item, row));
+        return matching ? {
+          ...item,
+          cartItemId: matching.cartItemId || item.cartItemId,
+          productId: matching.productId,
+          specIndex: Number(matching.specIndex || 0),
+          qty: Number(matching.qty || 0),
+          checked: matching.checked !== false
+        } : item;
+      }));
+  };
+
+  const updateRowQty = async (row: AnyRecord, value: number) => {
+    const rowKey = cartSkuRowKey(row);
+    if (updatingQtyKeys.has(rowKey)) return;
+    const product = cartProducts[String(row.productId)];
+    const spec = product?.specs?.[Number(row.specIndex || 0)] || {};
+    const minimum = nextValidPurchaseQty(product, Number(spec.min || 1));
+    const step = quantityStepForProduct(product);
+    const next = Math.max(minimum, Number(value || minimum));
+    if (next > Number(spec.stock || 0)) {
+      ctx.message.warning("库存不足，无法继续增加");
+      return;
+    }
+    const normalized = product?.saleMode === "BATCH" ? Math.ceil(next / step) * step : next;
+    const previousQty = Number(row.qty || minimum);
+    const optimisticRows = cartRows.map(item => cartSkuRowKey(item) === rowKey ? { ...item, qty: normalized } : item);
+    setUpdatingQtyKeys(current => new Set(current).add(rowKey));
+    setCartRows(optimisticRows);
+    persistCartSkuState(optimisticRows);
+    try {
+      await request(`/api/mall/cart/items/${row.cartItemId}`, { method: "PUT", data: { quantity: normalized } });
+      ctx.setCart((current: AnyRecord[]) => current.map(item => rowMatchesCartItem(item, row) ? { ...item, qty: normalized } : item));
+    } catch (error: any) {
+      setCartRows(current => {
+        const revertedRows = current.map(item => cartSkuRowKey(item) === rowKey ? { ...item, qty: previousQty } : item);
+        persistCartSkuState(revertedRows);
+        return revertedRows;
+      });
+      ctx.message.error(error?.message || "数量更新失败，请稍后重试");
+    } finally {
+      setUpdatingQtyKeys(current => {
+        const nextKeys = new Set(current);
+        nextKeys.delete(rowKey);
+        return nextKeys;
+      });
+    }
+  };
+
+  const toggleProduct = (group: AnyRecord, checked: boolean) => ctx.apiGuard(async () => {
+    await Promise.all(group.rows.map((row: AnyRecord) => request(`/api/mall/cart/items/${row.cartItemId}`, { method: "PUT", data: { checked } })));
+    commitRows(cartRows.map(row => Number(row.productId) === Number(group.productId) && !cartRowInvalidReason(cartProducts[String(row.productId)], row) ? { ...row, checked } : row));
   });
-  const remove = (item: AnyRecord) => ctx.apiGuard(async () => {
-    await request(`/api/mall/cart/items/${item.cartItemId}`, { method: "DELETE" });
-    await ctx.hydrateCart();
+
+  const toggleAll = (checked: boolean) => ctx.apiGuard(async () => {
+    await Promise.all(validRows.map((row: AnyRecord) => request(`/api/mall/cart/items/${row.cartItemId}`, { method: "PUT", data: { checked } })));
+    commitRows(cartRows.map(row => cartRowInvalidReason(cartProducts[String(row.productId)], row) ? { ...row, checked: false } : { ...row, checked }));
   });
+
+  const removeRow = (row: AnyRecord) => ctx.apiGuard(async () => {
+    const nextRows = cartRows.filter(item => cartSkuRowKey(item) !== cartSkuRowKey(row));
+    await request(`/api/mall/cart/items/${row.cartItemId}`, { method: "DELETE" });
+    commitRows(nextRows);
+    ctx.message.success("商品已删除");
+  });
+
+  const removeProduct = (group: AnyRecord) => ctx.apiGuard(async () => {
+    const productRows = cartRows.filter(row => Number(row.productId) === Number(group.productId));
+    const groupKeys = new Set(productRows.map(cartSkuRowKey));
+    await Promise.all(productRows.map((row: AnyRecord) => request(`/api/mall/cart/items/${row.cartItemId}`, { method: "DELETE" })));
+    commitRows(cartRows.filter(row => !groupKeys.has(cartSkuRowKey(row))));
+    setSpecSelector(null);
+    ctx.message.success("商品已从购物车删除");
+  });
+
+  const deleteSelected = () => ctx.apiGuard(async () => {
+    await Promise.all(selectedRows.map((row: AnyRecord) => request(`/api/mall/cart/items/${row.cartItemId}`, { method: "DELETE" })));
+    const selectedKeys = new Set(selectedRows.map(cartSkuRowKey));
+    const nextRows = cartRows.filter(row => !selectedKeys.has(cartSkuRowKey(row)));
+    commitRows(nextRows);
+    ctx.message.success("已删除选中商品");
+  });
+
+  const applySpecSelection = (specIndex: number) => ctx.apiGuard(async () => {
+    const target = specSelector;
+    if (!target) return;
+    const productId = Number(target.productId);
+    let nextRows = [...cartRows];
+    const existingIndex = nextRows.findIndex(row => Number(row.productId) === productId && Number(row.specIndex) === Number(specIndex));
+    const sourceIndex = target.mode === "edit" ? nextRows.findIndex(row => cartSkuRowKey(row) === target.rowKey) : -1;
+    const qty = Number(target.qty || nextRows[sourceIndex]?.qty || 1);
+    const mergedQty = existingIndex >= 0 && existingIndex !== sourceIndex ? Number(nextRows[existingIndex].qty || 0) + qty : qty;
+    const targetStock = Number(cartProducts[String(productId)]?.specs?.[specIndex]?.stock || 0);
+    if (mergedQty > targetStock) {
+      ctx.message.warning("所选规格库存不足");
+      return;
+    }
+    if (target.mode === "edit") {
+      if (sourceIndex < 0) return;
+      if (existingIndex >= 0 && existingIndex !== sourceIndex) {
+        const existingRow = nextRows[existingIndex];
+        const sourceRow = nextRows[sourceIndex];
+        await request(`/api/mall/cart/items/${existingRow.cartItemId}`, { method: "PUT", data: { quantity: mergedQty } });
+        await request(`/api/mall/cart/items/${sourceRow.cartItemId}`, { method: "DELETE" });
+      } else {
+        const sourceRow = nextRows[sourceIndex];
+        if (Number(sourceRow.specIndex) !== Number(specIndex)) {
+          await request(`/api/mall/cart/items/${sourceRow.cartItemId}`, { method: "DELETE" });
+          const created = await request("/api/mall/cart/items", { method: "POST", data: { productId, specIndex, quantity: qty } });
+          if (sourceRow.checked === false) {
+            await request(`/api/mall/cart/items/${created.cartItemId}`, { method: "PUT", data: { checked: false } });
+          }
+        }
+      }
+    } else if (existingIndex >= 0) {
+      await request(`/api/mall/cart/items/${nextRows[existingIndex].cartItemId}`, { method: "PUT", data: { quantity: mergedQty } });
+    } else {
+      await request("/api/mall/cart/items", { method: "POST", data: { productId, specIndex, quantity: qty } });
+    }
+    await ctx.hydrateCart();
+    setSpecSelector(null);
+  });
+
+  const applyAddedSpecs = (items: AnyRecord[]) => ctx.apiGuard(async () => {
+    const target = specSelector;
+    if (!target) return;
+    const productId = Number(target.productId);
+    const product = cartProducts[String(productId)];
+    const qtyMap = Object.fromEntries(items.map(item => [item.specIndex, item.qty]));
+    const selected = selectedItemsForProduct(product, qtyMap, ctx.message);
+    if (!selected?.length) {
+      if (selected) ctx.message.warning("请选择采购数量");
+      return;
+    }
+    for (const item of selected) {
+      const existing = cartRows.find(row => Number(row.productId) === productId && Number(row.specIndex) === Number(item.specIndex));
+      const currentQty = existing ? Number(existing.qty || 0) : 0;
+      const mergedQty = currentQty + Number(item.qty || 0);
+      if (mergedQty > Number(product?.specs?.[item.specIndex]?.stock || 0)) {
+        ctx.message.warning(`${cartSpecText(product?.specs?.[item.specIndex])}库存不足`);
+        return;
+      }
+      if (existing) {
+        await request(`/api/mall/cart/items/${existing.cartItemId}`, { method: "PUT", data: { quantity: mergedQty } });
+      } else {
+        await request("/api/mall/cart/items", { method: "POST", data: { productId, specIndex: item.specIndex, quantity: item.qty } });
+      }
+    }
+    await ctx.hydrateCart();
+    setSpecSelector(null);
+  });
+
+  const clearInvalidRows = () => ctx.apiGuard(async () => {
+    const invalidKeys = new Set(invalidRows.map(cartSkuRowKey));
+    const nextRows = cartRows.filter(row => !invalidKeys.has(cartSkuRowKey(row)));
+    await Promise.all(invalidRows.map(row => request(`/api/mall/cart/items/${row.cartItemId}`, { method: "DELETE" })));
+    commitRows(nextRows);
+    setSpecSelector(null);
+    ctx.message.success("失效商品已清理");
+  });
+
+  const selectedGroups = productGroups.filter((group: AnyRecord) => group.checked);
+  const selectedRows = validRows.filter(row => row.checked !== false);
+  const selectedQty = selectedRows.reduce((sum, row) => sum + Number(row.qty || 0), 0);
+  const selectedAmount = selectedRows.reduce((sum, row) => {
+    const product = cartProducts[String(row.productId)];
+    const productQty = cartRows.filter(item => Number(item.productId) === Number(row.productId)).reduce((total, item) => total + Number(item.qty || 0), 0);
+    return sum + detailUnitPrice(product, Number(row.specIndex || 0), productQty) * Number(row.qty || 0);
+  }, 0);
+  const allChecked = productGroups.length > 0 && productGroups.every((group: AnyRecord) => group.checked);
+
+  const checkout = () => {
+    if (!selectedRows.length) return;
+    ctx.setCheckoutItems(selectedRows.map(row => ({ productId: row.productId, specIndex: row.specIndex, qty: row.qty, cartItemId: row.cartItemId, checked: true })));
+    ctx.go("confirm");
+  };
+
   return (
-    <Space direction="vertical" size={16} style={{ width: "100%" }}>
-      <Card title="购物车">
-        <Table loading={loading} rowKey="cartItemId" dataSource={ctx.cart} columns={[
-          { title: "选择", render: (_, item) => <Checkbox checked={item.checked !== false} onChange={e => updateCart(item, { checked: e.target.checked })} /> },
-          { title: "商品", render: (_, item) => cartProduct(ctx.products, item)?.name || "-" },
-          { title: "规格", render: (_, item) => cartSpec(ctx.products, item)?.name || "-" },
-          { title: "单价", render: (_, item) => money(cartItemPrice(ctx.products, item)) },
-          { title: "数量", render: (_, item) => <InputNumber min={Number(cartSpec(ctx.products, item)?.min || 1)} precision={0} step={1} value={item.qty} onChange={v => updateCart(item, { quantity: Number(v || cartSpec(ctx.products, item)?.min || 1) })} /> },
-          { title: "小计", render: (_, item) => money(cartItemPrice(ctx.products, item) * item.qty) },
-          { title: "操作", render: (_, item) => <Button type="link" danger onClick={() => remove(item)}>删除</Button> }
-        ]} />
+    <div className="mall-cart-page">
+      <Card
+        title="购物车"
+        className="mall-cart-card"
+        extra={defaultAddress ? (
+          <div className="mall-cart-address"><EnvironmentOutlined /><span>发货至：{defaultAddress.address}</span><button type="button" onClick={() => openCartAddressModal(ctx, defaultAddress)}>修改</button></div>
+        ) : (
+          <button type="button" className="mall-cart-address mall-cart-address-empty" onClick={() => openCartAddressModal(ctx)}><EnvironmentOutlined />点击添加收货地址</button>
+        )}
+      >
+        <div className="mall-cart-grid mall-cart-header">
+          <div><Checkbox checked={allChecked} indeterminate={!allChecked && selectedGroups.length > 0} onChange={event => toggleAll(event.target.checked)} /> <span>全选</span></div>
+          <div>商品信息</div><div>单价</div><div>数量</div><div>小计</div><div>操作</div>
+        </div>
+        {!cartReady || loading ? <div className="mall-cart-loading">购物车加载中...</div> : !productGroups.length ? <Empty description={invalidRows.length ? "暂无可结算商品" : "购物车暂无商品"} /> : (
+          <div className="mall-cart-products">
+            {productGroups.map((group: AnyRecord) => {
+              const product = cartProducts[String(group.productId)] || ctx.products.find((item: AnyRecord) => Number(item.id) === Number(group.productId));
+              const activeSelector = Number(specSelector?.productId) === Number(group.productId) ? specSelector : null;
+              const editingRowIndex = activeSelector?.mode === "edit" ? group.rows.findIndex((row: AnyRecord) => cartSkuRowKey(row) === activeSelector.rowKey) : -1;
+              const addPanelOpen = activeSelector?.mode === "add";
+              const rowGridPosition = (index: number) => 1 + index;
+              const addButtonGridPosition = 1 + group.rows.length;
+              const panelTop = addPanelOpen ? 90 + Math.max(0, group.rows.length - 1) * 62 + 42 : editingRowIndex >= 0 ? 90 + editingRowIndex * 62 + 8 : 0;
+              const gridRows = ["90px", ...group.rows.slice(1).map(() => "62px"), "40px"];
+              return (
+                <div className="mall-cart-product-group" key={group.productId} style={{ "--cart-row-count": gridRows.length, gridTemplateRows: gridRows.join(" ") } as React.CSSProperties}>
+                  <div className="mall-cart-group-check"><Checkbox checked={group.checked} onChange={event => toggleProduct(group, event.target.checked)} /></div>
+                  <div className="mall-cart-product-summary">
+                    <button type="button" className="mall-cart-product-image-link" aria-label={`查看${product?.name || "商品"}详情`} onClick={() => ctx.go("detail", product)}>
+                      {safeMallImageUrl(product?.cardImage || product?.image) ? <img src={safeMallImageUrl(product?.cardImage || product?.image)} alt={product?.name || "商品"} loading="lazy" decoding="async" /> : <span className="mall-cart-product-placeholder">商</span>}
+                    </button>
+                    <button type="button" className="mall-cart-product-name-link" onClick={() => ctx.go("detail", product)}><strong>{product?.name || "商品"}</strong></button>
+                  </div>
+                  {group.rows.map((row: AnyRecord, index: number) => {
+                    const spec = product?.specs?.[Number(row.specIndex || 0)] || {};
+                    const productQty = group.rows.reduce((sum: number, item: AnyRecord) => sum + Number(item.qty || 0), 0);
+                    const unitPrice = detailUnitPrice(product, Number(row.specIndex || 0), productQty);
+                    const tiers = tierRowsForSpec(product, spec);
+                    return (
+                      <React.Fragment key={cartSkuRowKey(row)}>
+                        <button type="button" className={`mall-cart-spec-trigger ${editingRowIndex === index ? "is-open" : ""}`} style={{ gridRow: rowGridPosition(index) }} onClick={() => setSpecSelector(editingRowIndex === index ? null : { mode: "edit", productId: group.productId, rowKey: cartSkuRowKey(row), specIndex: row.specIndex, qty: row.qty })}>
+                          <SpecImageThumb src={spec.image} /><span>{cartSpecText(spec)}</span><DownOutlined />
+                        </button>
+                        <div className="mall-cart-unit-price" style={{ gridRow: rowGridPosition(index) }}><strong>{money(unitPrice)}</strong>{tiers.length > 1 ? <div>{tiers.map((tier: AnyRecord) => <small key={`${tier.minQty}-${tier.price}`}>{tier.maxQty ? `${tier.minQty}-${tier.maxQty}${stockUnitForProduct(product)}` : `≥${tier.minQty}${stockUnitForProduct(product)}`}：{money(tier.price)}</small>)}</div> : null}</div>
+                        <div className="mall-cart-quantity" style={{ gridRow: rowGridPosition(index) }}><CartQuantityStepper product={product} spec={spec} value={row.qty} disabled={updatingQtyKeys.has(cartSkuRowKey(row))} onChange={(value: number) => updateRowQty(row, value)} /></div>
+                        <div className="mall-cart-subtotal" style={{ gridRow: rowGridPosition(index) }}>{money(unitPrice * Number(row.qty || 0))}</div>
+                        <div className="mall-cart-actions" style={{ gridRow: rowGridPosition(index) }}><Popconfirm title="确认删除该规格商品？" okText="删除" cancelText="取消" onConfirm={() => removeRow(row)}><Button type="text" danger icon={<DeleteOutlined />} aria-label="删除该规格商品" title="删除该规格商品" /></Popconfirm></div>
+                      </React.Fragment>
+                    );
+                  })}
+                  <Button className={`mall-cart-add-spec ${addPanelOpen ? "is-open" : ""}`} style={{ gridRow: addButtonGridPosition }} onClick={() => setSpecSelector(addPanelOpen ? null : { mode: "add", productId: group.productId })}>再选一款</Button>
+                  <div className="mall-cart-product-tools" style={{ gridRow: addButtonGridPosition }}>
+                    <Button type="link" icon={<HeartOutlined />} onClick={() => ctx.message.success("已移入收藏")}>收藏</Button>
+                    <Popconfirm title="确认删除该商品的全部规格？" okText="删除商品" cancelText="取消" onConfirm={() => removeProduct(group)}><Button type="link" danger icon={<DeleteOutlined />}>删除商品</Button></Popconfirm>
+                  </div>
+                  {activeSelector ? <div className="mall-cart-inline-panel-wrap" style={{ "--cart-panel-top": `${panelTop}px` } as React.CSSProperties}><CartSpecSelectorPanel product={product} initialSpecIndex={Number(activeSelector.specIndex || 0)} mode={activeSelector.mode} onCancel={() => setSpecSelector(null)} onConfirm={activeSelector.mode === "add" ? applyAddedSpecs : applySpecSelection} /></div> : null}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </Card>
-      <div className="cart-summary">
-        <Typography.Text>已选 {ctx.cart.filter((x: AnyRecord) => x.checked !== false).length} 种商品</Typography.Text>
-        <Space><b>合计：{money(total)}</b><Button type="primary" onClick={() => { ctx.setCheckoutItems(null); ctx.go("confirm"); }}>去结算</Button></Space>
+
+      <div className="mall-cart-settlement">
+        <div className="mall-cart-settlement-actions"><Checkbox checked={allChecked} indeterminate={!allChecked && selectedGroups.length > 0} onChange={event => toggleAll(event.target.checked)}>全选</Checkbox><Popconfirm title="确认删除选中的商品？" disabled={!selectedGroups.length} onConfirm={deleteSelected}><Button disabled={!selectedGroups.length}>删除</Button></Popconfirm><Button disabled={!selectedGroups.length} onClick={() => ctx.message.success("已移入收藏")}>移入收藏夹</Button></div>
+        <div className="mall-cart-settlement-counts"><span>已选 <b>{selectedGroups.length}</b> 种商品</span><span>数量总计 <b>{selectedQty}</b> 件</span></div>
+        <div className="mall-cart-settlement-total">共计 <strong>{money(selectedAmount)}</strong></div>
+        <Button type="primary" className="mall-cart-checkout" disabled={!selectedRows.length} onClick={checkout}>去结算</Button>
       </div>
-    </Space>
+
+      {invalidRows.length ? (
+        <Card className="mall-cart-invalid-card" title="失效商品" extra={<Popconfirm title="确认清空全部失效商品？" okText="清空" cancelText="取消" onConfirm={clearInvalidRows}><Button type="text" icon={<DeleteOutlined />}>清空失效商品</Button></Popconfirm>}>
+          <div className="mall-cart-invalid-list">
+            {(invalidGroups as AnyRecord[]).map((group: AnyRecord) => {
+              const product = cartProducts[String(group.productId)];
+              return <div className="mall-cart-invalid-product" key={group.productId}>
+                {safeMallImageUrl(product?.cardImage || product?.image) ? <img src={safeMallImageUrl(product?.cardImage || product?.image)} alt="" loading="lazy" decoding="async" /> : <div className="mall-cart-product-placeholder">商</div>}
+                <div className="mall-cart-invalid-info"><strong>{product?.name || `商品 #${group.productId}`}</strong>{group.rows.map((row: AnyRecord) => {
+                  const spec = product?.specs?.[Number(row.specIndex || 0)] || {};
+                  return <div className="mall-cart-invalid-spec" key={cartSkuRowKey(row)}><SpecImageThumb src={spec.image} /><span>{cartSpecText(spec)}</span><em>{cartRowInvalidReason(product, row)}</em><Popconfirm title="确认删除该失效商品？" okText="删除" cancelText="取消" onConfirm={() => removeRow(row)}><Button type="text" danger icon={<DeleteOutlined />} aria-label="删除失效商品" /></Popconfirm></div>;
+                })}</div>
+              </div>;
+            })}
+          </div>
+        </Card>
+      ) : null}
+    </div>
+  );
+}
+
+function CartQuantityStepper({ product, spec, value, disabled, onChange }: any) {
+  const { message } = AntApp.useApp();
+  const step = quantityStepForProduct(product);
+  const minimum = nextValidPurchaseQty(product, Number(spec?.min || 1));
+  const quantity = Number(value || minimum);
+  const maximum = Number(spec?.stock || 0);
+  const canDecrease = quantity > minimum;
+  const canIncrease = maximum > 0;
+  return (
+    <div className="mall-cart-stepper">
+      <Button icon={<MinusOutlined />} disabled={!canDecrease} aria-disabled={disabled || !canDecrease} onClick={() => !disabled && onChange(Math.max(minimum, quantity - step))} />
+      <InputNumber value={quantity} min={minimum} max={maximum} step={step} precision={0} controls={false} onChange={next => !disabled && onChange(Number(next || minimum))} />
+      <Button icon={<PlusOutlined />} disabled={!canIncrease} aria-disabled={disabled || !canIncrease} onClick={() => {
+        if (disabled) return;
+        quantity + step > maximum ? message.warning("库存不足，无法继续增加") : onChange(quantity + step);
+      }} />
+    </div>
+  );
+}
+
+function specSelectionForIndex(product: AnyRecord, specIndex: number) {
+  const spec = product?.specs?.[specIndex] || {};
+  const selection: AnyRecord = {};
+  selectionGroupsFor(product).forEach((group: AnyRecord) => {
+    const cell = specCellForGroup(spec, group);
+    if (cell) selection[group.key] = String(cell.valueId || cell.value);
+  });
+  return normalizeSpecSelection(product, selection);
+}
+
+function CartAddQuantityStepper({ product, spec, value, onChange }: any) {
+  const step = quantityStepForProduct(product);
+  const minimum = nextValidPurchaseQty(product, Number(spec?.min || 1));
+  const quantity = Number(value || 0);
+  const maximum = Number(spec?.stock || 0);
+  const soldOut = String(spec?.status || "ENABLED").toUpperCase() === "DISABLED" || maximum <= 0;
+  return (
+    <div className="mall-cart-stepper mall-cart-add-stepper">
+      <Button icon={<MinusOutlined />} disabled={quantity <= 0} onClick={() => onChange(quantity <= minimum ? 0 : Math.max(minimum, quantity - step))} />
+      <InputNumber value={quantity} min={0} max={maximum} step={step} precision={0} controls={false} disabled={soldOut} onChange={next => onChange(Number(next || 0))} />
+      <Button icon={<PlusOutlined />} disabled={soldOut || quantity + step > maximum} onClick={() => onChange(quantity <= 0 ? minimum : quantity + step)} />
+    </div>
+  );
+}
+
+function CartSpecSelectorPanel({ product, initialSpecIndex, mode, onCancel, onConfirm }: any) {
+  const [selection, setSelection] = useState<AnyRecord>({});
+  const [selectedSpecIndex, setSelectedSpecIndex] = useState(0);
+  const [qtyMap, setQtyMap] = useState<AnyRecord>({});
+  useEffect(() => {
+    if (!product) return;
+    const requestedIndex = Math.min(Math.max(0, Number(initialSpecIndex || 0)), Math.max(0, (product.specs || []).length - 1));
+    const firstAvailableIndex = (product.specs || []).findIndex((spec: AnyRecord) => spec.status !== "DISABLED" && Number(spec.stock || 0) > 0);
+    const specIndex = mode === "add" && firstAvailableIndex >= 0 ? firstAvailableIndex : requestedIndex;
+    setSelection(specSelectionForIndex(product, specIndex));
+    setSelectedSpecIndex(specIndex);
+    setQtyMap(Object.fromEntries((product.specs || []).map((_: AnyRecord, index: number) => [index, 0])));
+  }, [product?.id, initialSpecIndex, mode]);
+  if (!product) return null;
+  const groups = selectionGroupsFor(product);
+  const visibleSpecs = product.specs.map((spec: AnyRecord, index: number) => ({ ...spec, originalIndex: index })).filter((spec: AnyRecord) => specMatchesSelection(spec, selection, groups, product));
+  const chooseValue = (group: AnyRecord, value: AnyRecord) => {
+    const next = normalizeSpecSelection(product, { ...selection, [group.key]: value.key });
+    setSelection(next);
+    const first = product.specs.findIndex((spec: AnyRecord) => specMatchesSelection(spec, next, groups, product) && spec.status !== "DISABLED" && Number(spec.stock || 0) > 0);
+    if (first >= 0) {
+      setSelectedSpecIndex(first);
+    }
+  };
+  const selectedItems = Object.entries(qtyMap).filter(([, qty]) => Number(qty) > 0).map(([specIndex, qty]) => ({ specIndex: Number(specIndex), qty: Number(qty) }));
+  const confirm = () => mode === "add" ? onConfirm(selectedItems) : onConfirm(selectedSpecIndex);
+  const skuGroup = lastSkuGroupFor(product);
+  return (
+    <div className={`mall-cart-spec-panel is-${mode}`}>
+      <div className="mall-cart-spec-title"><strong>{mode === "add" ? "再选一款" : "切换规格"}</strong><span>价格展示商品原价，优惠金额以购物车展示为准</span><button type="button" aria-label="关闭规格选择" onClick={onCancel}><CloseOutlined /></button></div>
+      <div className="mall-cart-spec-choice-card">
+        {groups.map((group: AnyRecord, groupIndex: number) => (
+          <div className="mall-cart-spec-dimension" key={group.key}>
+            <label>{group.name}</label>
+            <div>
+              {group.values.map((value: AnyRecord) => (
+                <button type="button" key={value.key} className={selection[group.key] === value.key ? "is-active" : ""} disabled={!specOptionHasStock(product, group, value, selection, groups)} onClick={() => chooseValue(group, value)}>
+                  {shouldShowSpecOptionImage(groupIndex, group) ? <SpecImageThumb src={value.image} /> : null}<span>{value.value}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+        <div className={`mall-cart-spec-skus is-${mode}`}>
+          <label>{skuGroup?.name || "规格"}</label>
+          <div className="mall-cart-spec-sku-list">
+            {visibleSpecs.map((spec: AnyRecord) => {
+              const index = Number(spec.originalIndex);
+              const active = index === selectedSpecIndex;
+              const disabled = spec.status === "DISABLED" || Number(spec.stock || 0) <= 0;
+              return (
+                <div
+                  className={`mall-cart-spec-sku-row ${active ? "is-active" : ""} ${disabled ? "is-disabled" : ""}`}
+                  key={`${spec.code}-${index}`}
+                  role={mode === "edit" ? "button" : undefined}
+                  tabIndex={mode === "edit" && !disabled ? 0 : undefined}
+                  onClick={() => mode === "edit" && !disabled ? setSelectedSpecIndex(index) : undefined}
+                >
+                  <span><strong>{skuRowLabel(spec, skuGroup, product)}</strong><small>SKU条码:{spec.barcode || "-"}</small></span>
+                  <b>{money(detailUnitPrice(product, index, Number(qtyMap[index] || 1)))}</b>
+                  <em>{Number(spec.stock || 0)} {stockUnitForProduct(product)}</em>
+                  {mode === "add" ? <CartAddQuantityStepper product={product} spec={spec} value={qtyMap[index]} onChange={(qty: number) => setQtyMap((current: AnyRecord) => ({ ...current, [index]: qty }))} /> : <i>{active ? "已选择" : "选择"}</i>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+      <div className="mall-cart-spec-footer"><Button type="primary" disabled={mode === "add" && !selectedItems.length} onClick={confirm}>确定</Button><Button onClick={onCancel}>取消</Button></div>
+    </div>
+  );
+}
+
+function openCartAddressModal(ctx: AnyRecord, item?: AnyRecord) {
+  Modal.confirm({
+    title: item ? "修改收货地址" : "新增地址",
+    icon: null,
+    width: 520,
+    className: "mall-cart-address-modal",
+    content: <CartAddressForm ctx={ctx} item={item} />,
+    footer: null
+  });
+}
+
+function CartAddressForm({ ctx, item }: any) {
+  return (
+    <Form layout="vertical" initialValues={{ name: item?.name, phone: item?.phone, address: item?.detailAddress || item?.address, isDefault: item?.isDefault ?? true }} onFinish={async values => {
+      await ctx.apiGuard(async () => {
+        await request(item ? `/api/mall/addresses/${item.id}` : "/api/mall/addresses", {
+          method: item ? "PUT" : "POST",
+          data: { receiverName: values.name, receiverPhone: values.phone, region: item?.region || "-", detailAddress: values.address, isDefault: values.isDefault }
+        });
+        await ctx.hydrateAddresses();
+        Modal.destroyAll();
+        ctx.message.success("地址已保存");
+      });
+    }}>
+      <Form.Item name="name" label="收货人" rules={[{ required: true }]}><Input /></Form.Item>
+      <Form.Item name="phone" label="手机号" rules={phoneRules()}><Input maxLength={11} /></Form.Item>
+      <Form.Item name="address" label="详细地址" rules={[{ required: true }]}><Input.TextArea rows={3} /></Form.Item>
+      <Form.Item name="isDefault" valuePropName="checked"><Checkbox>设为默认</Checkbox></Form.Item>
+      <div className="mall-cart-address-actions"><Button onClick={() => Modal.destroyAll()}>取消</Button><Button type="primary" htmlType="submit">保存</Button></div>
+    </Form>
   );
 }
 
 function ConfirmPage({ ctx }: any) {
+  const [remark, setRemark] = useState("");
   const rows = ctx.checkoutRows;
   const address = ctx.addresses.find((x: AnyRecord) => x.isDefault) || ctx.addresses[0];
+  const productCount = new Set(rows.map((item: AnyRecord) => String(item.productId))).size;
+  const quantityCount = rows.reduce((sum: number, item: AnyRecord) => sum + Number(item.qty || 0), 0);
+  const productGroups = Object.values(rows.reduce((groups: AnyRecord, item: AnyRecord, rowIndex: number) => {
+    const key = String(item.productId);
+    if (!groups[key]) groups[key] = { productId: item.productId, rows: [] };
+    groups[key].rows.push({ item, rowIndex });
+    return groups;
+  }, {})) as AnyRecord[];
+  const updateQuantity = (rowIndex: number, nextQty: number) => {
+    const currentRows = ctx.checkoutItems || rows;
+    ctx.setCheckoutItems(currentRows.map((item: AnyRecord, index: number) => index === rowIndex ? { ...item, qty: nextQty } : item));
+  };
   const submit = () => ctx.apiGuard(async () => {
     if (!rows.length) return ctx.message.warning("请先选择商品");
     if (!address) return ctx.message.warning("请先维护收货地址");
@@ -2175,14 +3006,13 @@ function ConfirmPage({ ctx }: any) {
         receiverName: address.name,
         receiverPhone: address.phone,
         receiverAddress: address.address,
-        remark: "网页商城下单",
+        remark: remark.trim() || "网页商城下单",
         items: rows.map((item: AnyRecord) => ({ productId: item.productId, quantity: item.qty, specIndex: item.specIndex || 0 }))
       }
     });
-    if (!ctx.checkoutItems) {
-      for (const item of rows) {
-        if (item.cartItemId) await request(`/api/mall/cart/items/${item.cartItemId}`, { method: "DELETE" });
-      }
+    const submittedCartItemIds = Array.from(new Set(rows.map((item: AnyRecord) => item.cartItemId).filter(Boolean)));
+    if (submittedCartItemIds.length) {
+      await Promise.all(submittedCartItemIds.map(cartItemId => request(`/api/mall/cart/items/${cartItemId}`, { method: "DELETE" })));
       await ctx.hydrateCart();
     }
     const mapped = orderFromApi(order);
@@ -2192,21 +3022,82 @@ function ConfirmPage({ ctx }: any) {
     ctx.go("pay");
   });
   return (
-    <Space direction="vertical" size={16} style={{ width: "100%" }}>
-      <Card title="确认订单" extra={<Button onClick={() => ctx.go("addresses")}>管理地址</Button>}>
-        {address ? <Descriptions bordered column={1} items={[{ key: "name", label: "收货人", children: `${address.name} ${address.phone}` }, { key: "address", label: "收货地址", children: address.address }]} /> : <Empty description="暂无收货地址" />}
-      </Card>
-      <Card title="商品明细">
-        <Table pagination={false} rowKey={(_, idx) => String(idx)} dataSource={rows} columns={[
-          { title: "商品", render: (_, item) => cartProduct(ctx.products, item)?.name || "-" },
-          { title: "规格", render: (_, item) => cartSpec(ctx.products, item)?.name || "-" },
-          { title: "单价", render: (_, item) => money(cartItemPrice(ctx.products, item)) },
-          { title: "数量", dataIndex: "qty" },
-          { title: "小计", render: (_, item) => money(cartItemPrice(ctx.products, item) * item.qty) }
-        ]} />
-      </Card>
-      <div className="cart-summary"><Button onClick={() => ctx.go("cart")}>返回购物车</Button><Space><b>应付金额：{money(ctx.checkoutTotal)}</b><Button type="primary" onClick={submit}>提交订单</Button></Space></div>
-    </Space>
+    <div className="mall-confirm-page">
+      <div className="mall-confirm-main">
+        <section className="mall-confirm-address-card">
+          {address ? <>
+            <EnvironmentOutlined className="mall-confirm-address-icon" />
+            <div className="mall-confirm-address-content">
+              <strong>{address.address}</strong>
+              <span>{address.name} {address.phone}</span>
+              <div><Button type="link" className="mall-confirm-change-address" onClick={() => ctx.go("addresses")}>更改地址<RightOutlined /></Button></div>
+            </div>
+          </> : <div className="mall-confirm-address-empty"><Empty description="暂无收货地址" /><Button type="primary" onClick={() => ctx.go("addresses")}>添加收货地址</Button></div>}
+        </section>
+
+        <section className="mall-confirm-order-card">
+          <div className="mall-confirm-order-card-head">
+            <h2>夏至商城自营</h2>
+            <Button type="text" className="mall-confirm-cart-back" icon={<ArrowLeftOutlined />} onClick={() => ctx.go("cart")}>返回购物车</Button>
+          </div>
+          <div className="mall-confirm-products-head"><span>商品信息</span><span>数量</span><span>单价</span><span>小计</span></div>
+          <div className="mall-confirm-products-list">
+            {productGroups.map((group: AnyRecord) => {
+              const firstItem = group.rows[0]?.item || {};
+              const product = cartProduct(ctx.products, firstItem) || {};
+              const productImage = safeMallImageUrl(product.cardImage || product.image);
+              return <section className="mall-confirm-product-group" key={String(group.productId)}>
+                <div className="mall-confirm-product-group-head">
+                  {productImage ? <img src={productImage} alt={product.name || "商品"} loading="lazy" decoding="async" /> : <span className="mall-confirm-product-placeholder"><PictureOutlined /></span>}
+                  <strong>{product.name || "商品"}</strong>
+                </div>
+                {group.rows.map(({ item, rowIndex }: AnyRecord) => {
+                  const spec = cartSpec(ctx.products, item) || {};
+                  const unitPrice = cartItemPrice(ctx.products, item);
+                  const minimum = nextValidPurchaseQty(product, Number(spec.min || 1));
+                  const quantity = Number(item.qty || minimum);
+                  const image = safeMallImageUrl(spec.image);
+                  return <div className="mall-confirm-product-row" key={`${item.productId}-${item.specIndex}-${rowIndex}`}>
+                    <div className="mall-confirm-product-info">
+                      <div className="mall-confirm-product-image">
+                        {image ? <img src={image} alt={cartSpecText(spec)} loading="lazy" decoding="async" /> : <span className="mall-confirm-product-placeholder"><PictureOutlined /></span>}
+                      </div>
+                      <div className="mall-confirm-product-meta">
+                        <div className="mall-confirm-product-spec" title={cartSpecText(spec)}>{cartSpecText(spec)}</div>
+                        <div className="mall-confirm-product-barcode" title={String(spec.barcode || "-")}>SKU条码：{spec.barcode || "-"}</div>
+                      </div>
+                    </div>
+                    <div className="mall-confirm-quantity">
+                      <CartQuantityStepper product={product} spec={spec} value={quantity} disabled={false} onChange={(next: number) => updateQuantity(rowIndex, next)} />
+                    </div>
+                    <div className="mall-confirm-unit-price"><strong>{money(unitPrice)}</strong></div>
+                    <div className="mall-confirm-subtotal">{money(unitPrice * quantity)}</div>
+                  </div>;
+                })}
+              </section>;
+            })}
+          </div>
+          <div className="mall-confirm-message"><label>留言</label><Input value={remark} placeholder="选填，请和商家协商一致" maxLength={200} onChange={event => setRemark(event.target.value)} /></div>
+          <div className="mall-confirm-delivery"><label>配送方式</label><Radio checked>快递 ¥0.00</Radio></div>
+          <div className="mall-confirm-store-summary">
+            <label>店铺明细</label>
+            <div><span>商品总计 {productCount}种{quantityCount}件</span><strong>{money(ctx.checkoutTotal)}</strong></div>
+            <div><span>运费</span><strong>¥0.00</strong></div>
+            <div><span>服务</span><strong>按平台售后规则执行</strong></div>
+          </div>
+        </section>
+      </div>
+
+      <aside className="mall-confirm-price-card">
+        <h2>价格明细</h2>
+        <div className="mall-confirm-price-lines">
+          <div><span>商品总计 <em>{productCount}种{quantityCount}件</em></span><strong>{money(ctx.checkoutTotal)}</strong></div>
+          <div><span>总运费</span><strong>¥0.00</strong></div>
+        </div>
+        <div className="mall-confirm-payable"><span>应付总额</span><strong>{money(ctx.checkoutTotal)}</strong></div>
+        <Button type="primary" className="mall-confirm-submit" onClick={submit}>提交订单</Button>
+      </aside>
+    </div>
   );
 }
 
@@ -2214,74 +3105,522 @@ function PayPage({ ctx }: any) {
   const order = ctx.currentOrder;
   const pay = () => ctx.apiGuard(async () => {
     if (!order?.apiId) return ctx.message.warning("未找到待支付订单");
-    await request("/api/mall/payments", { method: "POST", data: { orderId: Number(order.apiId), paymentMethod: ctx.payMethod === "alipay" ? "ALIPAY" : "WECHAT" } });
+    const paymentMethod = ctx.payMethod === "alipay" ? "ALIPAY" : "WECHAT";
+    await request("/api/mall/payments", { method: "POST", data: { orderId: Number(order.apiId), paymentMethod } });
     await ctx.hydrateOrders();
+    const paidOrder = {
+      ...order,
+      key: "pendingShipment",
+      statusLabel: "待发货",
+      shipLabel: "待发货",
+      payLabel: "已支付",
+      raw: {
+        ...(order.raw || {}),
+        orderStatus: "WAIT_SHIP",
+        fulfillmentStatus: "WAIT_SHIP",
+        paymentStatus: "PAID",
+        paymentMethod,
+        paymentMethodText: paymentMethodLabel(paymentMethod)
+      }
+    };
+    ctx.setOrders((current: AnyRecord[]) => current.map(item => String(item.apiId || item.id) === String(paidOrder.apiId || paidOrder.id) ? paidOrder : item));
     ctx.message.success("支付成功");
-    ctx.setCurrentOrder({ ...order, payLabel: "已支付" });
+    ctx.setCurrentOrder(paidOrder);
     ctx.go("orderDetail");
   });
   return (
-    <Card title="订单支付">
-      <Space direction="vertical" size={16} style={{ width: "100%" }}>
+    <Card title="订单支付" className="mall-pay-card">
+      <div className="mall-pay-layout">
         <Descriptions bordered column={1} items={[
           { key: "order", label: "订单编号", children: order?.id || "-" },
           { key: "amount", label: "支付金额", children: order?.amount || money(ctx.checkoutTotal) }
         ]} />
-        <Radio.Group value={ctx.payMethod} onChange={e => ctx.setPayMethod(e.target.value)}>
-          <Radio.Button value="wechat">微信支付</Radio.Button>
-          <Radio.Button value="alipay">支付宝支付</Radio.Button>
-        </Radio.Group>
-        <Space><Button onClick={() => ctx.go("orders")}>稍后支付</Button><Button type="primary" onClick={pay}>模拟支付成功</Button></Space>
-      </Space>
+        <div className="mall-pay-methods" role="radiogroup" aria-label="支付方式">
+          <button type="button" role="radio" aria-checked={ctx.payMethod === "wechat"} className={`mall-pay-method ${ctx.payMethod === "wechat" ? "is-active" : ""}`} onClick={() => ctx.setPayMethod("wechat")}>
+            <WechatOutlined className="mall-pay-method-icon is-wechat" />
+            <span><strong>微信支付</strong><small>推荐使用微信扫码完成支付</small></span>
+            {ctx.payMethod === "wechat" ? <CheckOutlined className="mall-pay-method-check" /> : null}
+          </button>
+          <button type="button" role="radio" aria-checked={ctx.payMethod === "alipay"} className={`mall-pay-method ${ctx.payMethod === "alipay" ? "is-active" : ""}`} onClick={() => ctx.setPayMethod("alipay")}>
+            <AlipayCircleOutlined className="mall-pay-method-icon is-alipay" />
+            <span><strong>支付宝支付</strong><small>支持支付宝账户或银行卡支付</small></span>
+            {ctx.payMethod === "alipay" ? <CheckOutlined className="mall-pay-method-check" /> : null}
+          </button>
+        </div>
+        <div className="mall-pay-actions"><Button onClick={() => ctx.go("orders")}>稍后支付</Button><Button type="primary" onClick={pay}>模拟支付成功</Button></div>
+      </div>
     </Card>
   );
 }
 
 function OrdersPage({ ctx, loading }: any) {
   const [tab, setTab] = useState("all");
-  const rows = tab === "all" ? ctx.orders : ctx.orders.filter((x: AnyRecord) => x.key === tab);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [selectedOrderIds, setSelectedOrderIds] = useState<Set<string>>(new Set());
+  const [filtersOpen, setFiltersOpen] = useState(true);
+  const [filters, setFilters] = useState({
+    keyword: "",
+    time: "all",
+    receiver: "",
+    phone: "",
+    orderStatus: "all",
+    payStatus: "all",
+    buyer: "",
+    minAmount: "",
+    maxAmount: ""
+  });
   const tabs = [
-    { key: "all", label: `全部(${ctx.orders.length})` },
-    { key: "pendingPayment", label: "待支付" },
-    { key: "pendingShipment", label: "待发货" },
-    { key: "pendingReceipt", label: "待收货" },
-    { key: "completed", label: "已完成" }
+    { key: "all", label: "全部", count: ctx.orders.length },
+    { key: "pendingPayment", label: "待付款", count: ctx.orders.filter((x: AnyRecord) => x.key === "pendingPayment").length },
+    { key: "pendingShipment", label: "待发货", count: ctx.orders.filter((x: AnyRecord) => x.key === "pendingShipment").length },
+    { key: "pendingReceipt", label: "待收货", count: ctx.orders.filter((x: AnyRecord) => x.key === "pendingReceipt").length },
+    { key: "afterSale", label: "退款售后", count: 0 },
+    { key: "completed", label: "已完成", count: ctx.orders.filter((x: AnyRecord) => x.key === "completed").length },
+    { key: "cancelled", label: "已取消", count: ctx.orders.filter((x: AnyRecord) => x.key === "cancelled").length }
   ];
+  const rows = ctx.orders.filter((order: AnyRecord) => {
+    const raw = order.raw || {};
+    if (tab !== "all" && tab !== "afterSale" && order.key !== tab) return false;
+    if (tab === "afterSale") return false;
+    const searchText = [
+      order.id,
+      order.orderTime,
+      order.statusLabel,
+      order.payLabel,
+      raw.batchNo,
+      raw.logisticsNo,
+      ...(order.items || []).map((item: AnyRecord) => `${item.productName || ""} ${item.skuName || ""} ${item.skuBarcode || ""}`)
+    ].join(" ").toLowerCase();
+    if (filters.keyword.trim() && !searchText.includes(filters.keyword.trim().toLowerCase())) return false;
+    if (filters.receiver.trim()) {
+      const receiverText = `${order.receiverName || ""} ${order.receiverPhone || ""}`;
+      if (!receiverText.includes(filters.receiver.trim())) return false;
+    }
+    if (filters.orderStatus !== "all" && order.key !== filters.orderStatus) return false;
+    if (filters.payStatus !== "all" && orderPaymentMethodKey(order) !== filters.payStatus) return false;
+    const minAmount = Number(filters.minAmount || 0);
+    const maxAmount = Number(filters.maxAmount || 0);
+    if (minAmount && Number(order.totalAmount || 0) < minAmount) return false;
+    if (maxAmount && Number(order.totalAmount || 0) > maxAmount) return false;
+    return true;
+  });
+  const currentPage = Math.max(1, Math.min(page, Math.max(1, Math.ceil(rows.length / pageSize))));
+  const pageRows = rows.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+  const pageOrderIds = pageRows.map((order: AnyRecord) => orderSelectionKey(order));
+  const selectedPageCount = pageOrderIds.filter((id: string) => selectedOrderIds.has(id)).length;
+  const pageAllSelected = pageOrderIds.length > 0 && selectedPageCount === pageOrderIds.length;
+  const pagePartiallySelected = selectedPageCount > 0 && selectedPageCount < pageOrderIds.length;
+  const toggleCurrentPageSelection = () => {
+    setSelectedOrderIds(current => {
+      const next = new Set(current);
+      if (pageAllSelected) {
+        pageOrderIds.forEach((id: string) => next.delete(id));
+      } else {
+        pageOrderIds.forEach((id: string) => next.add(id));
+      }
+      return next;
+    });
+  };
+  const toggleOrderSelection = (order: AnyRecord, checked: boolean) => {
+    const id = orderSelectionKey(order);
+    setSelectedOrderIds(current => {
+      const next = new Set(current);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
+  const patchFilter = (patch: AnyRecord) => {
+    setPage(1);
+    setFilters(current => ({ ...current, ...patch }));
+  };
+  const resetFilters = () => {
+    setPage(1);
+    setFilters({
+    keyword: "",
+    time: "all",
+    receiver: "",
+    phone: "",
+    orderStatus: "all",
+    payStatus: "all",
+    buyer: "",
+    minAmount: "",
+    maxAmount: ""
+    });
+  };
+  const selectOptions = {
+    all: [{ value: "all", label: "全部" }],
+    status: [
+      { value: "all", label: "全部" },
+      { value: "pendingPayment", label: "待付款" },
+      { value: "pendingShipment", label: "待发货" },
+      { value: "pendingReceipt", label: "待收货" },
+      { value: "completed", label: "已完成" },
+      { value: "cancelled", label: "已取消" }
+    ],
+    pay: [
+      { value: "all", label: "全部" },
+      { value: "wechat", label: "微信支付" },
+      { value: "alipay", label: "支付宝支付" }
+    ]
+  };
+  const viewDetail = (order: AnyRecord) => {
+    ctx.setCurrentOrder(order);
+    ctx.go("orderDetail");
+  };
   return (
-    <Card title="我的订单">
-      <Tabs activeKey={tab} onChange={setTab} items={tabs.map(t => ({ key: t.key, label: t.label }))} />
-      <Table loading={loading} rowKey="id" dataSource={rows} columns={[
-        { title: "订单编号", dataIndex: "id" },
-        { title: "商品数", dataIndex: "goodsCount" },
-        { title: "金额", dataIndex: "amount" },
-        { title: "支付", dataIndex: "payLabel", render: tag },
-        { title: "状态", dataIndex: "statusLabel", render: tag },
-        { title: "下单时间", dataIndex: "orderTime" },
-        { title: "操作", render: (_, item) => <Space><Button type="link" onClick={() => { ctx.setCurrentOrder(item); ctx.go("orderDetail"); }}>详情</Button>{item.key === "pendingPayment" ? <Button type="link" onClick={() => { ctx.setCurrentOrder(item); ctx.go("pay"); }}>去支付</Button> : null}{item.key === "pendingReceipt" ? <Button type="link" onClick={() => confirmReceipt(ctx, item)}>确认收货</Button> : null}</Space> }
-      ]} />
-    </Card>
+    <div className="mall-orders-page">
+      <section className="mall-orders-filter-card">
+        <div className="mall-orders-tabs">
+          {tabs.map(item => (
+            <button key={item.key} type="button" className={tab === item.key ? "is-active" : ""} onClick={() => { setTab(item.key); setPage(1); }}>
+              {item.label}{item.count ? <b>{item.count}</b> : null}
+            </button>
+          ))}
+        </div>
+        {filtersOpen ? (
+          <div className="mall-orders-filters">
+            <label className="is-wide"><span>订单关键词</span><Input value={filters.keyword} placeholder="商品名称/订单号" allowClear onChange={event => patchFilter({ keyword: event.target.value })} /></label>
+            <label><span>下单时间</span><Select value={filters.time} options={selectOptions.all} onChange={value => patchFilter({ time: value })} /></label>
+            <label className="mall-orders-receiver-filter"><span>收货人</span><Input value={filters.receiver} placeholder="收货人/手机号" allowClear onChange={event => patchFilter({ receiver: event.target.value })} /></label>
+            <label><span>订单状态</span><Select value={filters.orderStatus} options={selectOptions.status} onChange={value => patchFilter({ orderStatus: value })} /></label>
+            <label><span>支付方式</span><Select value={filters.payStatus} options={selectOptions.pay} onChange={value => patchFilter({ payStatus: value })} /></label>
+            <label className="mall-orders-amount-filter"><span>金额</span><Input value={filters.minAmount} placeholder="¥ 最小金额" onChange={event => patchFilter({ minAmount: event.target.value.replace(/[^\d.]/g, "") })} /><em /> <Input value={filters.maxAmount} placeholder="¥ 最大金额" onChange={event => patchFilter({ maxAmount: event.target.value.replace(/[^\d.]/g, "") })} /></label>
+            <div className="mall-orders-filter-actions">
+              <button type="button" className="mall-orders-collapse" onClick={() => setFiltersOpen(false)}>收起 <DownOutlined /></button>
+              <Button onClick={resetFilters}>清除选项</Button>
+              <Button type="primary">搜索</Button>
+            </div>
+          </div>
+        ) : (
+          <button type="button" className="mall-orders-expand" onClick={() => setFiltersOpen(true)}>展开筛选 <DownOutlined /></button>
+        )}
+      </section>
+
+      <section className="mall-orders-list-card">
+        <div className="mall-orders-bulkbar">
+          <Checkbox checked={pageAllSelected} indeterminate={pagePartiallySelected} disabled={!pageRows.length} onChange={toggleCurrentPageSelection} />
+          <button type="button" disabled={!pageRows.length} onClick={toggleCurrentPageSelection}>全选</button>
+          <Button disabled>导出所选订单</Button>
+          <Button>导出当前条件</Button>
+          <Button disabled>批量付款</Button>
+        </div>
+        <div className="mall-orders-list-head">
+          <span>商品信息</span>
+          <span>单价</span>
+          <span>数量</span>
+          <span>总金额</span>
+          <span>收货信息</span>
+          <span>订单状态</span>
+          <span>交易操作</span>
+        </div>
+        {loading ? <div className="mall-orders-empty">订单加载中...</div> : pageRows.length ? pageRows.map((order: AnyRecord) => (
+          <OrderListCard key={order.id} order={order} selected={selectedOrderIds.has(orderSelectionKey(order))} onSelectedChange={(checked: boolean) => toggleOrderSelection(order, checked)} ctx={ctx} onDetail={() => viewDetail(order)} />
+        )) : <Empty className="mall-orders-empty" description="暂无订单" />}
+        <div className="mall-orders-pagination">
+          <Pagination
+            current={currentPage}
+            pageSize={pageSize}
+            total={rows.length}
+            showSizeChanger={{ showSearch: false }}
+            pageSizeOptions={["10", "20", "50", "100"]}
+            showTotal={(total) => `共 ${total} 条`}
+            onChange={(nextPage, nextPageSize) => {
+              setPage(nextPage);
+              setPageSize(nextPageSize);
+            }}
+          />
+        </div>
+      </section>
+    </div>
   );
+}
+
+function orderSelectionKey(order: AnyRecord) {
+  return String(order.apiId || order.id || "");
+}
+
+function OrderListCard({ order, selected, onSelectedChange, ctx, onDetail }: any) {
+  const items = Array.isArray(order.items) && order.items.length ? order.items : [{ productName: "订单商品", quantity: order.goodsCount || 1, salePrice: order.totalAmount || 0 }];
+  const firstItem = items[0] || {};
+  const buyerName = order.receiverName || ctx.profile?.buyerName || "商城买家";
+  const statusKey = order.key;
+  const canPay = statusKey === "pendingPayment";
+  const canReceive = statusKey === "pendingReceipt";
+  const pay = () => {
+    ctx.setCurrentOrder(order);
+    ctx.go("pay");
+  };
+  const copyOrderNo = async () => {
+    const orderNo = String(order.id || "").trim();
+    if (!orderNo) return ctx.message.warning("订单号为空");
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(orderNo);
+      } else {
+        const input = document.createElement("textarea");
+        input.value = orderNo;
+        input.style.position = "fixed";
+        input.style.opacity = "0";
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand("copy");
+        document.body.removeChild(input);
+      }
+      ctx.message.success("订单号已复制");
+    } catch {
+      ctx.message.error("复制失败，请手动复制订单号");
+    }
+  };
+  return (
+    <article className="mall-orders-card">
+      <header className="mall-orders-card-head">
+        <Checkbox checked={selected} onChange={event => onSelectedChange(event.target.checked)} />
+        <span className="mall-orders-order-no">订单号 <strong>{order.id}</strong><Button type="text" className="mall-orders-copy" icon={<CopyOutlined />} aria-label="复制订单号码" title="复制订单号码" onClick={copyOrderNo} /></span>
+        <time>{order.orderTime || "-"}</time>
+      </header>
+      <div className="mall-orders-card-body">
+        <div className="mall-orders-goods">
+          {items.slice(0, 3).map((item: AnyRecord, index: number) => (
+            <div className="mall-orders-goods-row" key={`${order.id}-${item.id || item.skuCode || index}`}>
+              <OrderListProduct item={item} products={ctx.products} ctx={ctx} />
+              <div className="mall-orders-unit-price">{money(orderItemUnitPrice(item))}</div>
+              <div className="mall-orders-qty">{Number(item.quantity || item.qty || 0) || "-"}</div>
+            </div>
+          ))}
+        </div>
+        <div className="mall-orders-total">
+          <strong>{order.amount || money(order.totalAmount)}</strong>
+          <span>含运费 0.00</span>
+        </div>
+        <div className="mall-orders-buyer">
+          <strong>{buyerName}</strong>
+          <span>{order.receiverPhone || "查看买家信息"}</span>
+        </div>
+        <div className="mall-orders-status">
+          {orderStatusBadge(order)}
+          <button type="button" onClick={onDetail}>订单详情 <RightOutlined /></button>
+        </div>
+        <div className="mall-orders-actions">
+          {canPay ? <Button type="primary" onClick={pay}>付款</Button> : null}
+          {canReceive ? <Button type="primary" ghost onClick={() => confirmReceipt(ctx, order)}>确认收货</Button> : null}
+          <button type="button">再次购买</button>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function OrderListProduct({ item, products, ctx }: any) {
+  const image = safeMallImageUrl(orderItemImage(item, products));
+  const productPayload = orderItemProductPayload(item, products);
+  const productName = item.productName || item.skuName || "订单商品";
+  return (
+    <div className="mall-orders-product">
+      {image ? <img src={image} alt="" loading="lazy" decoding="async" /> : <span><PictureOutlined /></span>}
+      <div>
+        <button type="button" disabled={!productPayload} onClick={() => productPayload && ctx.go("detail", productPayload)}>{productName}</button>
+        <small>{orderItemSpecText(item)}</small>
+        <em>SKU条码：{orderItemSkuBarcode(item)}</em>
+      </div>
+    </div>
+  );
+}
+
+function orderPayStatusKey(order: AnyRecord) {
+  const raw = String(order.raw?.paymentStatus || "").toUpperCase();
+  if (raw === "PAID" || order.payLabel === "已支付") return "paid";
+  if (raw === "NOT_REQUIRED_BEFORE_RECEIPT" || order.payLabel === "后付款") return "postpay";
+  return "unpaid";
+}
+
+function orderPaymentMethodKey(order: AnyRecord) {
+  const raw = [
+    order.raw?.paymentMethodText,
+    order.raw?.paymentChannel,
+    order.raw?.payMethod,
+    order.raw?.paymentMethod
+  ].map(value => String(value || "")).join(" ").toUpperCase();
+  if (raw.includes("ALIPAY") || raw.includes("支付宝")) return "alipay";
+  if (raw.includes("WECHAT") || raw.includes("WX") || raw.includes("微信")) return "wechat";
+  return "";
+}
+
+function orderStatusBadge(order: AnyRecord) {
+  if (order.key === "cancelled") return <Tag color="red">已取消</Tag>;
+  if (order.key === "pendingPayment") return <Tag color="orange">待付款</Tag>;
+  if (order.key === "pendingShipment") return <Tag color="orange">待发货</Tag>;
+  if (order.key === "pendingReceipt") return <Tag color="blue">待收货</Tag>;
+  if (order.key === "completed") return <Tag color="green">已完成</Tag>;
+  return tag(order.statusLabel);
 }
 
 function OrderDetailPage({ ctx }: any) {
   const order = ctx.currentOrder || ctx.orders[0];
   if (!order) return <Empty description="暂无订单详情" />;
+  const rawOrder = order.raw || {};
+  const items = Array.isArray(order.items) ? order.items : [];
+  const goodsQty = items.reduce((sum: number, item: AnyRecord) => sum + Number(item.quantity || item.qty || 0), 0);
+  const goodsAmount = items.reduce((sum: number, item: AnyRecord) => sum + orderItemSubtotal(item), 0);
+  const orderAmount = Number(order.totalAmount || rawOrder.totalAmount || rawOrder.payAmount || goodsAmount || 0);
+  const freightAmount = Number(rawOrder.freightAmount || rawOrder.deliveryFee || rawOrder.shippingFee || 0);
+  const paidAmount = Number(rawOrder.paidAmount || rawOrder.payAmount || orderAmount || 0);
+  const paid = order.payLabel === "已支付" || rawOrder.paymentStatus === "PAID";
+  const paidAt = dateText(rawOrder.paidAt || rawOrder.paymentTime || rawOrder.payTime || (paid ? rawOrder.updatedAt : ""));
+  const shippedAt = dateText(rawOrder.shippedAt || rawOrder.deliveryTime || rawOrder.shipTime);
+  const receivedAt = dateText(rawOrder.receivedAt || rawOrder.receiptTime || rawOrder.completedAt);
+  const stepIndex = order.key === "pendingPayment" ? 2 : order.key === "pendingShipment" ? 3 : order.key === "pendingReceipt" ? 4 : order.key === "completed" ? 4 : 1;
+  const steps = [
+    { index: 1, title: "提交订单", time: order.orderTime || dateText(rawOrder.createdAt) },
+    { index: 2, title: "付款成功", time: paid ? paidAt : "-" },
+    { index: 3, title: "商城发货", time: shippedAt || "-" },
+    { index: 4, title: "订单完成", time: receivedAt || "-" }
+  ];
+  const productColumns = [
+    {
+      title: "商品",
+      dataIndex: "productName",
+      render: (_: any, item: AnyRecord) => {
+        const image = safeMallImageUrl(orderItemImage(item, ctx.products));
+        const productName = item.productName || item.skuName || "商品";
+        const productPayload = orderItemProductPayload(item, ctx.products);
+        return (
+          <div className="mall-order-product-cell">
+            {image ? <img src={image} alt="" loading="lazy" decoding="async" /> : <span className="mall-order-product-placeholder"><PictureOutlined /></span>}
+            <div>
+              {productPayload ? (
+                <button type="button" className="mall-order-product-name" onClick={() => ctx.go("detail", productPayload)}>
+                  <strong>{productName}</strong>
+                </button>
+              ) : <strong>{productName}</strong>}
+              <span>{orderItemSpecText(item)}</span>
+            </div>
+          </div>
+        );
+      }
+    },
+    { title: "SKU条码", dataIndex: "skuBarcode", render: (_: any, item: AnyRecord) => orderItemSkuBarcode(item) },
+    { title: "单价（元）", dataIndex: "salePrice", render: (_: any, item: AnyRecord) => orderItemUnitPrice(item).toFixed(2) },
+    { title: "购买数量", dataIndex: "quantity", render: (_: any, item: AnyRecord) => Number(item.quantity || item.qty || 0) },
+    { title: "小计（元）", render: (_: any, item: AnyRecord) => orderItemSubtotal(item).toFixed(2) }
+  ];
   return (
-    <Space direction="vertical" size={16} style={{ width: "100%" }}>
-      <Card title={`订单详情 ${order.id}`} extra={<Space>{order.key === "pendingPayment" ? <Button type="primary" onClick={() => ctx.go("pay")}>去支付</Button> : null}{order.key === "pendingReceipt" ? <Button type="primary" onClick={() => confirmReceipt(ctx, order)}>确认收货</Button> : null}<Button onClick={() => afterSaleModal(ctx, order)}>申请售后</Button>{order.key === "completed" ? <Button onClick={() => invoiceApplyModal(ctx, order)}>申请开票</Button> : null}</Space>}>
-        <Descriptions bordered column={2} items={[
-          { key: "status", label: "订单状态", children: tag(order.statusLabel) },
-          { key: "pay", label: "支付状态", children: tag(order.payLabel) },
-          { key: "amount", label: "订单金额", children: order.amount },
-          { key: "time", label: "下单时间", children: order.orderTime },
-          { key: "address", label: "收货地址", span: 2, children: `${order.receiverName || ""} ${order.receiverPhone || ""}，${order.receiverAddress || ""}` }
-        ]} />
-      </Card>
-      <Card title="商品明细">
-        <List dataSource={order.items || []} renderItem={(item: AnyRecord) => <List.Item><List.Item.Meta title={item.productName || item.skuName} description={`数量 ${item.quantity} / 单价 ${money(item.salePrice || item.price)}`} /></List.Item>} />
-      </Card>
-    </Space>
+    <div className="mall-order-detail-page">
+      <section className="mall-order-section mall-order-track-section">
+        <div className="mall-order-section-title">订单跟踪</div>
+        <div className="mall-order-track">
+          {steps.map((step, index) => {
+            const isDone = step.index < stepIndex || (step.index === 4 && order.key === "completed");
+            const isCurrent = step.index === stepIndex && order.key !== "completed";
+            return (
+              <React.Fragment key={step.index}>
+                <div className={`mall-order-track-step ${isDone ? "is-done" : ""} ${isCurrent ? "is-current" : ""}`}>
+                  <span className="mall-order-track-dot">{isDone ? <CheckOutlined /> : step.index}</span>
+                  <div>
+                    <strong>{step.title}</strong>
+                    <small>{step.time || "-"}</small>
+                  </div>
+                </div>
+                {index < steps.length - 1 ? <span className={`mall-order-track-connector ${isDone || isCurrent ? "is-active" : ""}`} aria-hidden="true" /> : null}
+              </React.Fragment>
+            );
+          })}
+        </div>
+      </section>
+
+      <section className="mall-order-section">
+        <div className="mall-order-section-head">
+          <div className="mall-order-section-title">订单概况</div>
+          <Space>{order.key === "pendingPayment" ? <Button type="primary" onClick={() => ctx.go("pay")}>去支付</Button> : null}{order.key === "pendingReceipt" ? <Button type="primary" onClick={() => confirmReceipt(ctx, order)}>确认收货</Button> : null}<Button onClick={() => afterSaleModal(ctx, order)}>申请售后</Button>{order.key === "completed" ? <Button onClick={() => invoiceApplyModal(ctx, order)}>申请开票</Button> : null}</Space>
+        </div>
+        <div className="mall-order-overview">
+          <div><span>订单状态：</span><strong className="is-orange">{order.statusLabel || "-"}</strong></div>
+          <div><span>付款状态：</span><strong>{order.payLabel || "-"}</strong></div>
+          <div><span>订单编号：</span><strong>{order.id || "-"}</strong></div>
+          <div><span>支付方式：</span><strong>{paymentMethodLabel(rawOrder.paymentMethodText || rawOrder.paymentChannel || rawOrder.payMethod || (String(rawOrder.paymentMethod || "").toUpperCase() === "ONLINE_PAY" ? "" : rawOrder.paymentMethod) || (paid ? ctx.payMethod : ""))}</strong></div>
+        </div>
+        <div className="mall-order-receiver">
+          <div className="mall-order-section-title">收货信息</div>
+          <div className="mall-order-receiver-grid">
+            <div><span>收货人：</span><strong>{order.receiverName || "-"}</strong></div>
+            <div><span>手机号码：</span><strong>{order.receiverPhone || "-"}</strong></div>
+            <div className="mall-order-receiver-address"><span>收货地址：</span><strong>{order.receiverAddress || "-"}</strong></div>
+          </div>
+        </div>
+      </section>
+
+      <section className="mall-order-section">
+        <div className="mall-order-section-title">商品清单</div>
+        <Table
+          className="mall-order-products-table"
+          rowKey={(item: AnyRecord, index?: number) => `${item.id || item.skuCode || item.skuName || "row"}-${index}`}
+          dataSource={items}
+          columns={productColumns}
+          pagination={false}
+        />
+        <div className="mall-order-goods-footer">
+          <div className="mall-order-buyer-message"><span>买家留言：</span><strong>{rawOrder.buyerMessage || rawOrder.remark || "-"}</strong></div>
+          <div className="mall-order-total-lines">
+            <div><span className="mall-order-total-label">共 {goodsQty} 件商品，商品总价：</span><strong>{money(goodsAmount || orderAmount)}</strong></div>
+            <div><span className="mall-order-total-label">运费：</span><strong>+{money(freightAmount)}</strong></div>
+            <div><span className="mall-order-total-label">订单实付：</span><strong className="is-highlight">{money(paidAmount || orderAmount + freightAmount)}</strong></div>
+          </div>
+        </div>
+      </section>
+    </div>
   );
+}
+
+function paymentMethodLabel(value: any) {
+  const raw = String(value || "").trim();
+  const upper = raw.toUpperCase();
+  if (!raw) return "-";
+  if (raw === "wechat" || upper.includes("WECHAT") || upper.includes("WX")) return "微信支付";
+  if (raw === "alipay" || upper.includes("ALIPAY")) return "支付宝支付";
+  if (/微信/.test(raw)) return "微信支付";
+  if (/支付宝/.test(raw)) return "支付宝支付";
+  if (upper === "ONLINE_PAY") return "在线支付";
+  return raw;
+}
+
+function orderItemImage(item: AnyRecord, products: AnyRecord[] = []) {
+  const direct = item.productImageUrl || item.mainImageUrl || item.mainImageCardUrl || item.mainImageThumbnailUrl || item.thumbnailUrl || item.skuImageUrl || item.imageUrl || item.image || "";
+  if (direct) return direct;
+  const productId = orderItemProductId(item);
+  const matched = products.find(product => String(product.id || product.apiId || "") === productId);
+  return matched?.image || matched?.mainImageUrl || matched?.mainImageCardUrl || matched?.mainImageThumbnailUrl || matched?.thumbnailUrl || "";
+}
+
+function orderItemProductId(item: AnyRecord) {
+  return String(item.productId || item.product_id || item.product?.id || item.productApiId || "");
+}
+
+function orderItemProductPayload(item: AnyRecord, products: AnyRecord[] = []) {
+  const productId = orderItemProductId(item);
+  if (!productId) return null;
+  const matched = products.find(product => String(product.id || product.apiId || "") === productId);
+  return matched || { id: Number(productId), name: item.productName || item.skuName || "商品" };
+}
+
+function orderItemSpecText(item: AnyRecord) {
+  const raw = String(item.skuName || item.specName || item.spec || item.specification || "-").trim();
+  if (!raw || raw === "-") return "-";
+  return raw.replace(/\s*\/\s*/g, " ；");
+}
+
+function orderItemSkuBarcode(item: AnyRecord) {
+  return item.skuBarcode || item.barCode || item.barcode || item.skuBarCode || item.skuCode || item.skuNo || "-";
+}
+
+function orderItemUnitPrice(item: AnyRecord) {
+  return Number(item.salePrice ?? item.price ?? item.unitPrice ?? item.actualPrice ?? 0);
+}
+
+function orderItemSubtotal(item: AnyRecord) {
+  const quantity = Number(item.quantity || item.qty || 0);
+  const subtotal = Number(item.subtotalAmount ?? item.totalAmount ?? item.amount ?? item.payAmount ?? NaN);
+  return Number.isFinite(subtotal) ? subtotal : orderItemUnitPrice(item) * quantity;
 }
 
 function confirmReceipt(ctx: any, order: AnyRecord) {
@@ -2432,9 +3771,15 @@ function MallFloatingToolbar({ ctx }: any) {
   };
   return (
     <div className="mall-floating-toolbar">
-      <button type="button" onClick={() => protectedAction("商家中心", "/account")}><HomeOutlined />商家中心</button>
-      <button type="button" onClick={() => protectedAction("购物车", "/cart", "cart")}><ShoppingCartOutlined />购物车</button>
-      <button type="button" onClick={() => protectedAction("优惠券", "/account")}><ProfileOutlined />优惠券</button>
+      <button type="button" onClick={() => protectedAction("个人中心", "/account", "profile")}><HomeOutlined />个人中心</button>
+      <button type="button" className="mall-floating-cart-button" onClick={() => protectedAction("购物车", "/cart", "cart")}>
+        <span className="mall-floating-cart-icon">
+          <ShoppingCartOutlined />
+          {Number(ctx.cartCount || 0) > 0 ? <span className="mall-floating-cart-badge">{Number(ctx.cartCount || 0) > 99 ? "99+" : Number(ctx.cartCount || 0)}</span> : null}
+        </span>
+        购物车
+      </button>
+      <button type="button" onClick={() => protectedAction("我的订单", "/orders", "orders")}><ProfileOutlined />我的订单</button>
       <button type="button" onClick={() => protectedAction("关注商品", "/account")}><ShoppingOutlined />关注商品</button>
       <button type="button" onClick={() => protectedAction("常购清单", "/account")}><AppstoreOutlined />常购清单</button>
       <button type="button" onClick={() => protectedAction("浏览历史", "/account")}><ProfileOutlined />浏览历史</button>

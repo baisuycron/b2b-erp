@@ -35,11 +35,15 @@ public class ProductThumbnailService {
     private final JdbcClient jdbcClient;
     private final Path thumbnailDirectory;
     private final String thumbnailUrlPrefix;
+    private final Path imageDirectory;
+    private final String imageUrlPrefix;
 
     public ProductThumbnailService(
         JdbcClient jdbcClient,
         @Value("${b2b.product-thumbnail.directory}") String thumbnailDirectory,
-        @Value("${b2b.product-thumbnail.url-prefix:/api/public/product-thumbnails}") String thumbnailUrlPrefix
+        @Value("${b2b.product-thumbnail.url-prefix:/api/public/product-thumbnails}") String thumbnailUrlPrefix,
+        @Value("${b2b.product-image.directory}") String imageDirectory,
+        @Value("${b2b.product-image.url-prefix:/api/public/product-images}") String imageUrlPrefix
     ) {
         this.jdbcClient = jdbcClient;
         Path configuredDirectory = Path.of(thumbnailDirectory);
@@ -49,6 +53,13 @@ public class ProductThumbnailService {
             .toAbsolutePath()
             .normalize();
         this.thumbnailUrlPrefix = thumbnailUrlPrefix.replaceAll("/+$", "");
+        Path configuredImageDirectory = Path.of(imageDirectory);
+        this.imageDirectory = (configuredImageDirectory.isAbsolute()
+            ? configuredImageDirectory
+            : Path.of(System.getProperty("user.home")).resolve(configuredImageDirectory))
+            .toAbsolutePath()
+            .normalize();
+        this.imageUrlPrefix = imageUrlPrefix.replaceAll("/+$", "");
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -98,6 +109,8 @@ public class ProductThumbnailService {
         String imageUrl = source.mainImageUrl() == null ? "" : source.mainImageUrl().trim();
         if (imageUrl.isBlank()) return new GeneratedImages("", "");
         if (!imageUrl.toLowerCase(Locale.ROOT).startsWith(DATA_IMAGE_PREFIX)) {
+            GeneratedImages generatedFromStoredImage = createFromStoredProductImageUrl(source.id(), imageUrl);
+            if (!generatedFromStoredImage.isEmpty()) return generatedFromStoredImage;
             String safeUrl = isGeneratedImageUrl(imageUrl) ? imageUrl : "";
             return new GeneratedImages(safeUrl, isCardUrl(imageUrl) ? imageUrl : "");
         }
@@ -119,6 +132,39 @@ public class ProductThumbnailService {
             String cardUrl = writeSizedImage(source.id(), hash, "card", CARD_SIZE, sourceImage);
             return new GeneratedImages(thumbnailUrl, cardUrl);
         } catch (IllegalArgumentException | IOException exception) {
+            return new GeneratedImages("", "");
+        }
+    }
+
+    private GeneratedImages createFromStoredProductImageUrl(Long productId, String imageUrl) {
+        String normalizedPrefix = imageUrlPrefix.toLowerCase(Locale.ROOT) + "/";
+        if (!imageUrl.toLowerCase(Locale.ROOT).startsWith(normalizedPrefix)) {
+            return new GeneratedImages("", "");
+        }
+
+        String filename = imageUrl.substring(imageUrlPrefix.length() + 1);
+        if (!filename.matches("[0-9]+-[0-9a-f]{24}\\.(jpg|jpeg|png|gif|webp)")) {
+            return new GeneratedImages("", "");
+        }
+
+        Path source = imageDirectory.resolve(filename).normalize();
+        if (!source.startsWith(imageDirectory) || !Files.isRegularFile(source)) {
+            return new GeneratedImages("", "");
+        }
+
+        try {
+            long size = Files.size(source);
+            if (size == 0 || size > MAX_IMAGE_BYTES) return new GeneratedImages("", "");
+            byte[] sourceBytes = Files.readAllBytes(source);
+            BufferedImage sourceImage = ImageIO.read(new ByteArrayInputStream(sourceBytes));
+            if (sourceImage == null) return new GeneratedImages("", "");
+
+            Files.createDirectories(thumbnailDirectory);
+            String hash = contentHash(sourceBytes);
+            String thumbnailUrl = writeSizedImage(productId, hash, "thumb", THUMBNAIL_SIZE, sourceImage);
+            String cardUrl = writeSizedImage(productId, hash, "card", CARD_SIZE, sourceImage);
+            return new GeneratedImages(thumbnailUrl, cardUrl);
+        } catch (IOException exception) {
             return new GeneratedImages("", "");
         }
     }
@@ -187,5 +233,8 @@ public class ProductThumbnailService {
     }
 
     private record GeneratedImages(String thumbnailUrl, String cardUrl) {
+        private boolean isEmpty() {
+            return thumbnailUrl.isBlank() && cardUrl.isBlank();
+        }
     }
 }

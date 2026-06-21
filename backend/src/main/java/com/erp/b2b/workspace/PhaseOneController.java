@@ -571,6 +571,26 @@ public class PhaseOneController {
         return product;
     }
 
+    @PutMapping("/admin/products/batch-update")
+    @Transactional
+    public Map<String, Object> batchUpdateProducts(@RequestBody Map<String, Object> request) {
+        List<Long> productIds = requiredProductIds(request);
+        String type = requiredString(request, "type");
+        int updatedCount = switch (type) {
+            case "category" -> productRepository.batchUpdateCategory(productIds, requiredString(request, "categoryName"));
+            case "brand" -> productRepository.batchUpdateBrand(productIds, requiredString(request, "brandName"));
+            case "status" -> productRepository.batchUpdateSaleStatus(productIds, requiredString(request, "saleStatus"));
+            case "attributes" -> productRepository.batchUpdateAttributes(
+                productIds,
+                requiredLong(request, "attributeTemplateId"),
+                mapRows(request.get("customAttributes"))
+            );
+            default -> throw new ApiException(HttpStatus.BAD_REQUEST, "不支持的批量修改类型");
+        };
+        log("商品管理", "批量修改商品", String.join(",", productIds.stream().map(String::valueOf).toList()), "批量修改商品" + updatedCount + "条");
+        return row("updated", updatedCount, "productIds", productIds);
+    }
+
     @PostMapping("/admin/products/batch-delete/check")
     public Map<String, Object> checkProductsBeforeBatchDelete(@RequestBody Map<String, Object> request) {
         List<Long> productIds = requiredProductIds(request);
@@ -741,22 +761,23 @@ public class PhaseOneController {
     public Map<String, Object> addCartItem(@RequestBody Map<String, Object> request) {
         Long productId = requiredLong(request, "productId");
         int quantity = positiveInt(request, "quantity");
+        int specIndex = request.containsKey("specIndex") ? nonNegativeInt(request, "specIndex") : 0;
         Product product = productRepository.findById(productId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
         if (!"ON_SALE".equals(product.saleStatus())) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "Product is not on sale");
         }
         Map<String, Object> item = buyerCartItems.stream()
-            .filter(row -> productId.equals(Long.parseLong(String.valueOf(row.get("productId")))))
+            .filter(row -> productId.equals(Long.parseLong(String.valueOf(row.get("productId")))) && specIndex == intValue(row.get("specIndex"), 0))
             .findFirst()
             .orElse(null);
         int nextQuantity = quantity;
         if (item == null) {
-            item = row("cartItemId", cartItemSequence.incrementAndGet(), "productId", productId, "quantity", 0, "checked", true);
+            item = row("cartItemId", cartItemSequence.incrementAndGet(), "productId", productId, "specIndex", specIndex, "quantity", 0, "checked", true);
             buyerCartItems.add(item);
         } else {
             nextQuantity += Integer.parseInt(String.valueOf(item.get("quantity")));
         }
-        if (nextQuantity > product.stockQuantity()) {
+        if (nextQuantity > skuStockQuantity(product, specIndex)) {
             throw new ApiException(HttpStatus.CONFLICT, "Insufficient stock");
         }
         item.put("quantity", nextQuantity);
@@ -779,7 +800,8 @@ public class PhaseOneController {
             int quantity = positiveInt(request, "quantity");
             Product product = productRepository.findById(Long.parseLong(String.valueOf(item.get("productId"))))
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
-            if (quantity > product.stockQuantity()) {
+            int specIndex = intValue(item.get("specIndex"), 0);
+            if (quantity > skuStockQuantity(product, specIndex)) {
                 throw new ApiException(HttpStatus.CONFLICT, "Insufficient stock");
             }
             item.put("quantity", quantity);
@@ -1680,6 +1702,18 @@ public class PhaseOneController {
         return List.copyOf(productIds);
     }
 
+    private List<Map<String, Object>> mapRows(Object value) {
+        if (!(value instanceof List<?> rows)) return List.of();
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Object item : rows) {
+            if (!(item instanceof Map<?, ?> map)) continue;
+            Map<String, Object> row = new LinkedHashMap<>();
+            map.forEach((key, cell) -> row.put(String.valueOf(key), cell));
+            result.add(row);
+        }
+        return result;
+    }
+
     private int stockWarningThreshold() {
         return Integer.parseInt(String.valueOf(systemParameters().getOrDefault("stockWarningThreshold", "50")));
     }
@@ -1796,22 +1830,82 @@ public class PhaseOneController {
 
     private Map<String, Object> cartItemRow(Map<String, Object> item) {
         Long productId = Long.parseLong(String.valueOf(item.get("productId")));
+        int specIndex = intValue(item.get("specIndex"), 0);
         Product product = productRepository.findById(productId)
             .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
+        Map<String, Object> sku = skuAt(product, specIndex);
+        Map<String, Object> productDetail = productImageUrlService.toDetailResponse(product, productRepository.findMainImageThumbnailUrl(productId));
         return row(
             "cartItemId", item.get("cartItemId"),
+            "id", product.id(),
             "productId", product.id(),
+            "specIndex", specIndex,
             "productName", product.productName(),
             "productCode", product.productCode(),
-            "skuCode", product.skuCode(),
-            "skuName", product.skuName(),
+            "skuCode", skuString(sku, "skuCode", product.skuCode()),
+            "skuName", skuString(sku, "skuName", product.skuName()),
             "unit", product.unit(),
+            "quoteType", product.quoteType(),
+            "saleMode", product.saleMode(),
+            "saleUnit", product.saleUnit(),
+            "saleUnitRatio", product.saleUnitRatio(),
+            "mainImageUrl", productDetail.get("mainImageUrl"),
+            "mainImageThumbnailUrl", productDetail.get("mainImageThumbnailUrl"),
+            "skuListJson", productDetail.get("skuListJson"),
             "quantity", item.get("quantity"),
-            "salePrice", product.salePrice(),
-            "stockQuantity", product.stockQuantity(),
+            "salePrice", skuMoney(sku, "salePrice", product.salePrice()),
+            "stockQuantity", skuStockQuantity(product, specIndex),
+            "minOrderQuantity", product.minOrderQuantity(),
             "saleStatus", product.saleStatus(),
+            "skuStatus", skuString(sku, "skuStatus", product.skuStatus()),
             "checked", Boolean.parseBoolean(String.valueOf(item.getOrDefault("checked", true)))
         );
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> skuRows(Product product) {
+        String raw = string(product.skuListJson()).trim();
+        if (raw.isBlank()) return List.of();
+        try {
+            Object parsed = objectMapper.readValue(raw, Object.class);
+            if (parsed instanceof List<?> rows) {
+                return rows.stream()
+                    .filter(Map.class::isInstance)
+                    .map(row -> (Map<String, Object>) row)
+                    .toList();
+            }
+        } catch (JsonProcessingException exception) {
+            return List.of();
+        }
+        return List.of();
+    }
+
+    private Map<String, Object> skuAt(Product product, int specIndex) {
+        List<Map<String, Object>> rows = skuRows(product);
+        if (specIndex >= 0 && specIndex < rows.size()) {
+            return rows.get(specIndex);
+        }
+        return Map.of();
+    }
+
+    private int skuStockQuantity(Product product, int specIndex) {
+        Map<String, Object> sku = skuAt(product, specIndex);
+        return intValue(sku.get("stockQuantity"), intValue(product.stockQuantity(), 0));
+    }
+
+    private String skuString(Map<String, Object> sku, String field, String fallback) {
+        String value = string(sku.get(field)).trim();
+        return value.isBlank() ? fallback : value;
+    }
+
+    private BigDecimal skuMoney(Map<String, Object> sku, String field, BigDecimal fallback) {
+        Object value = sku.get(field);
+        if (value == null || string(value).isBlank()) return fallback;
+        try {
+            return new BigDecimal(String.valueOf(value));
+        } catch (RuntimeException exception) {
+            return fallback;
+        }
     }
 
     private Map<String, Object> findCartItem(Long cartItemId) {
@@ -1994,6 +2088,14 @@ public class PhaseOneController {
         }
     }
 
+    private int nonNegativeInt(Map<String, Object> request, String field) {
+        int value = requiredInt(request, field);
+        if (value < 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, field + " cannot be negative");
+        }
+        return value;
+    }
+
     private int positiveInt(Map<String, Object> request, String field) {
         int value = requiredInt(request, field);
         if (value <= 0) {
@@ -2034,6 +2136,15 @@ public class PhaseOneController {
             return number;
         }
         return new BigDecimal(String.valueOf(value));
+    }
+
+    private int intValue(Object value, int fallback) {
+        if (value == null || string(value).isBlank()) return fallback;
+        try {
+            return number(value).intValue();
+        } catch (RuntimeException exception) {
+            return fallback;
+        }
     }
 
     private String string(Object value) {

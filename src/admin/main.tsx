@@ -9,6 +9,7 @@ import {
   ConfigProvider,
   Descriptions,
   Drawer,
+  Dropdown,
   Form,
   Image,
   Input,
@@ -1672,6 +1673,8 @@ function buildProductUpdatePayload(item: AnyRecord, patch: AnyRecord = {}) {
     skuBarcode: normalizedItem?.skuBarcode || "",
     categoryName: patch.categoryName ?? normalizedItem?.categoryName ?? "",
     brandName: patch.brandName ?? normalizedItem?.brandName ?? "",
+    attributeTemplateId: patch.attributeTemplateId ?? normalizedItem?.attributeTemplateId ?? null,
+    customAttributes: patch.customAttributes ?? parseRows(normalizedItem?.customAttributesJson || normalizedItem?.customAttributes),
     quoteType: normalizedItem?.quoteType || "INDEPENDENT_PRICE",
     saleMode: normalizedItem?.saleMode || "NORMAL",
     saleUnit: normalizedItem?.saleMode === "BATCH" ? normalizedItem?.saleUnit || null : null,
@@ -1704,7 +1707,9 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
   const [archiveStatus, setArchiveStatus] = useState<string>();
   const [batchQueryOpen, setBatchQueryOpen] = useState(false);
   const [batchEditOpen, setBatchEditOpen] = useState(false);
+  const [batchEditType, setBatchEditType] = useState<string>();
   const [batchEditSubmitting, setBatchEditSubmitting] = useState(false);
+  const [batchAttributeTemplates, setBatchAttributeTemplates] = useState<AnyRecord[]>([]);
   const [batchDeleteChecking, setBatchDeleteChecking] = useState(false);
   const [batchDeleteBlockedOpen, setBatchDeleteBlockedOpen] = useState(false);
   const [batchDeleteBlockedRows, setBatchDeleteBlockedRows] = useState<AnyRecord[]>([]);
@@ -1792,9 +1797,16 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
       && batchMatched;
   });
   const brandOptions = Array.from(new Set(brands.map((x: AnyRecord) => x.brandName).filter(Boolean))).map(value => ({ value, label: value }));
+  const attributeTemplates = batchAttributeTemplates.length ? batchAttributeTemplates : (ctx.data.attributeTemplates || []);
   const tagOptions = [{ value: "重点商品", label: "重点商品" }, { value: "常规商品", label: "常规商品" }];
   const saleStatusOptions = [{ value: "ON_SALE", label: "已上架" }, { value: "OFF_SALE", label: "已下架" }];
   const archiveStatusOptions = [{ value: "YES", label: "是" }, { value: "NO", label: "否" }];
+  const batchEditTitles: AnyRecord = {
+    category: "批量修改商品分类",
+    brand: "批量修改商品品牌",
+    status: "批量修改商品状态",
+    attributes: "批量修改商品属性"
+  };
   const selectedCategoryKey = categoryName ? `category:${categoryName}` : "category:__all__";
   const productSortComparers: Record<string, (a: AnyRecord, b: AnyRecord) => number> = {
     skuCode: (a, b) => String(a.skuCode || "").localeCompare(String(b.skuCode || "")),
@@ -1913,34 +1925,49 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
     setBatchKeywordsInput(nextKeywords);
     setBatchQueryOpen(false);
   };
-  const openBatchEditModal = () => {
+  const openBatchEditModal = async (type: string) => {
     if (!selectedRowKeys.length) {
       ctx.message.error("请先选择需要修改的商品");
       return;
     }
+    if (type === "attributes") {
+      const templates = Object.prototype.hasOwnProperty.call(ctx.data, "attributeTemplates")
+        ? (ctx.data.attributeTemplates || [])
+        : await request<AnyRecord[]>("/api/admin/product-attribute-templates").catch(() => []);
+      setBatchAttributeTemplates(templates);
+    }
     batchEditForm.resetFields();
+    setBatchEditType(type);
     setBatchEditOpen(true);
   };
   const submitBatchEdit = async () => {
     const values = await batchEditForm.validateFields();
-    const patch = Object.fromEntries(Object.entries({
-      categoryName: values.categoryName,
-      brandName: values.brandName,
-      saleStatus: values.saleStatus
-    }).filter(([, value]) => value !== undefined));
+    const patch = batchEditType === "category"
+      ? { categoryName: values.categoryName }
+      : batchEditType === "brand"
+        ? { brandName: values.brandName }
+        : batchEditType === "status"
+          ? { saleStatus: values.saleStatus }
+          : batchEditType === "attributes"
+            ? { attributeTemplateId: values.attributeTemplateId, customAttributes: values.customAttributes || [] }
+            : {};
     if (!Object.keys(patch).length) {
       ctx.message.warning("请至少选择一项修改内容");
       return;
     }
     setBatchEditSubmitting(true);
     try {
-      const detailedProducts = await Promise.all(selectedProducts.map((item: AnyRecord) => requestProductDetail(item)));
-      await Promise.all(detailedProducts.map((item: AnyRecord) => request(`/api/admin/products/${item.id}`, {
+      await request("/api/admin/products/batch-update", {
         method: "PUT",
-        data: buildProductUpdatePayload(item, patch)
-      })));
+        data: {
+          productIds: selectedRowKeys,
+          type: batchEditType,
+          ...patch
+        }
+      });
       ctx.message.success(`已批量修改 ${selectedProducts.length} 个商品`);
       setBatchEditOpen(false);
+      setBatchEditType(undefined);
       batchEditForm.resetFields();
       setSelectedRowKeys([]);
       ctx.reload();
@@ -2162,7 +2189,21 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
           {toolbarButton("新增", <PlusOutlined />, () => void openProductForm())}
           {toolbarButton("导入")}
           {toolbarButton("导出")}
-          {toolbarButton("批量修改", undefined, openBatchEditModal)}
+          <Dropdown
+            trigger={["click"]}
+            placement="bottomLeft"
+            menu={{
+              items: [
+                { key: "category", label: "批量修改商品分类" },
+                { key: "brand", label: "批量修改商品品牌" },
+                { key: "status", label: "批量修改商品状态" },
+                { key: "attributes", label: "批量修改商品属性" }
+              ],
+              onClick: ({ key }) => void openBatchEditModal(String(key))
+            }}
+          >
+            <Button type="primary">批量修改</Button>
+          </Dropdown>
           <Button type="primary" loading={batchDeleteChecking} onClick={openBatchDelete}>批量删除</Button>
         </div>
         <div className={`product-archive-table anchored-pagination-table ${isInitialProductLoading ? "is-initial-loading" : ""}`}>
@@ -2193,12 +2234,13 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
       </section>
       <Modal
         open={batchEditOpen}
-        title="批量修改"
+        title={batchEditTitles[batchEditType || ""] || "批量修改"}
         width={720}
         destroyOnClose
         confirmLoading={batchEditSubmitting}
         onCancel={() => {
           setBatchEditOpen(false);
+          setBatchEditType(undefined);
           batchEditForm.resetFields();
         }}
         onOk={submitBatchEdit}
@@ -2206,27 +2248,67 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
       >
         <Form form={batchEditForm} layout="vertical">
           <Typography.Text type="secondary">
-            已选中 {selectedProducts.length} 个商品，可批量修改商品分类、商品品牌、商品状态。
+            已选中 {selectedProducts.length} 个商品，本次只修改当前选择的功能。
           </Typography.Text>
-          <Form.Item name="categoryName" label="商品分类" style={{ marginTop: 16 }}>
-            <Select
-              showSearch
-              allowClear
-              placeholder="不修改商品分类"
-              options={categories.map((x: AnyRecord) => ({ value: x.categoryName, label: x.categoryName }))}
-            />
-          </Form.Item>
-          <Form.Item name="brandName" label="商品品牌">
-            <Select
-              showSearch
-              allowClear
-              placeholder="不修改商品品牌"
-              options={brands.map((x: AnyRecord) => ({ value: x.brandName, label: x.brandName }))}
-            />
-          </Form.Item>
-          <Form.Item name="saleStatus" label="商品状态">
-            <Select allowClear placeholder="不修改商品状态" options={saleStatusOptions} />
-          </Form.Item>
+          {batchEditType === "category" ? (
+            <Form.Item name="categoryName" label="商品分类" rules={[{ required: true, message: "请选择商品分类" }]} style={{ marginTop: 16 }}>
+              <Select
+                showSearch
+                placeholder="请选择商品分类"
+                options={categories.map((x: AnyRecord) => ({ value: x.categoryName, label: x.categoryName }))}
+              />
+            </Form.Item>
+          ) : null}
+          {batchEditType === "brand" ? (
+            <Form.Item name="brandName" label="商品品牌" rules={[{ required: true, message: "请选择商品品牌" }]} style={{ marginTop: 16 }}>
+              <Select
+                showSearch
+                placeholder="请选择商品品牌"
+                options={brands.map((x: AnyRecord) => ({ value: x.brandName, label: x.brandName }))}
+              />
+            </Form.Item>
+          ) : null}
+          {batchEditType === "status" ? (
+            <Form.Item name="saleStatus" label="商品状态" rules={[{ required: true, message: "请选择商品状态" }]} style={{ marginTop: 16 }}>
+              <Select placeholder="请选择商品状态" options={saleStatusOptions} />
+            </Form.Item>
+          ) : null}
+          {batchEditType === "attributes" ? (
+            <div className="product-custom-attribute-panel product-batch-attribute-panel">
+              <div className="product-custom-template-row">
+                <div className="product-custom-template-label">属性模板</div>
+                <Form.Item name="attributeTemplateId" rules={[{ required: true, message: "请选择属性模板" }]} style={{ marginBottom: 0 }}>
+                  <Select
+                    showSearch
+                    optionFilterProp="label"
+                    placeholder="请选择属性模板"
+                    options={attributeTemplates.map((template: AnyRecord) => ({ value: template.id, label: template.templateName }))}
+                    filterOption={(input, option) => String(option?.label || "").toLocaleLowerCase().includes(input.trim().toLocaleLowerCase())}
+                    onChange={(templateId) => {
+                      batchEditForm.setFieldValue("customAttributes", productAttributeRows(templateId, [], attributeTemplates));
+                    }}
+                  />
+                </Form.Item>
+              </div>
+              <Form.List name="customAttributes">
+                {(fields, { remove }) => fields.length ? (
+                  <div className="product-custom-attribute-list">
+                    {fields.map(field => (
+                      <div className="product-custom-attribute-row" key={field.key}>
+                        <Form.Item name={[field.name, "fieldId"]} hidden><Input /></Form.Item>
+                        <Form.Item name={[field.name, "name"]} hidden><Input /></Form.Item>
+                        <div className="product-custom-attribute-name">{batchEditForm.getFieldValue(["customAttributes", field.name, "name"]) || "属性名称"}</div>
+                        <Form.Item name={[field.name, "value"]} noStyle>
+                          <Input maxLength={100} placeholder="请输入属性值" />
+                        </Form.Item>
+                        <Button type="text" danger icon={<DeleteOutlined />} aria-label="删除该商品属性" onClick={() => remove(field.name)} />
+                      </div>
+                    ))}
+                  </div>
+                ) : <div className="product-form-empty-section">选择属性模板后展示属性字段</div>}
+              </Form.List>
+            </div>
+          ) : null}
         </Form>
       </Modal>
       <Modal

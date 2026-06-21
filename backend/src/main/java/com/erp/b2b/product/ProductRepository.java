@@ -518,6 +518,52 @@ public class ProductRepository {
             .update();
     }
 
+    public int batchUpdateCategory(List<Long> productIds, String categoryName) {
+        return jdbcClient.sql("UPDATE products SET category_name = :categoryName WHERE id IN (:productIds)")
+            .param("categoryName", categoryName)
+            .param("productIds", productIds)
+            .update();
+    }
+
+    public int batchUpdateBrand(List<Long> productIds, String brandName) {
+        return jdbcClient.sql("UPDATE products SET brand_name = :brandName WHERE id IN (:productIds)")
+            .param("brandName", brandName)
+            .param("productIds", productIds)
+            .update();
+    }
+
+    public int batchUpdateSaleStatus(List<Long> productIds, String saleStatus) {
+        if (!"ON_SALE".equals(saleStatus) && !"OFF_SALE".equals(saleStatus)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "商品状态不正确");
+        }
+        if ("ON_SALE".equals(saleStatus)) {
+            productIds.forEach(this::ensureReadyForSale);
+        }
+        return jdbcClient.sql("UPDATE products SET sale_status = :saleStatus WHERE id IN (:productIds)")
+            .param("saleStatus", saleStatus)
+            .param("productIds", productIds)
+            .update();
+    }
+
+    public int batchUpdateAttributes(
+        List<Long> productIds,
+        Long attributeTemplateId,
+        List<Map<String, Object>> customAttributes
+    ) {
+        Long normalizedTemplateId = normalizeAttributeTemplateId(attributeTemplateId);
+        String customAttributesJson = normalizeCustomAttributes(normalizedTemplateId, customAttributes);
+        return jdbcClient.sql("""
+            UPDATE products
+            SET attribute_template_id = :attributeTemplateId,
+                custom_attributes_json = :customAttributesJson
+            WHERE id IN (:productIds)
+            """)
+            .param("attributeTemplateId", normalizedTemplateId)
+            .param("customAttributesJson", customAttributesJson)
+            .param("productIds", productIds)
+            .update();
+    }
+
     private Product mapProduct(ResultSet rs, int rowNum) throws SQLException {
         return new Product(
             rs.getLong("id"),
