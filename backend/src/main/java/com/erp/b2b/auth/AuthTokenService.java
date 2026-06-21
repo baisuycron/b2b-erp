@@ -56,6 +56,12 @@ public class AuthTokenService {
         }
     }
 
+    public String subject(String token, String expectedRole) {
+        if (!isValid(token, expectedRole)) return "";
+        String[] parts = token.split("\\.", -1);
+        return new String(Base64.getUrlDecoder().decode(parts[3]), StandardCharsets.UTF_8);
+    }
+
     private String sign(String payload) {
         try {
             Mac mac = Mac.getInstance(HMAC_ALGORITHM);

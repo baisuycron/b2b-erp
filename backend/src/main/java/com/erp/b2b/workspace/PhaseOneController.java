@@ -14,6 +14,7 @@ import com.erp.b2b.product.ProductImageUrlService;
 import com.erp.b2b.product.search.ImageSearchService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -689,6 +690,72 @@ public class PhaseOneController {
             .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
         String thumbnailUrl = productRepository.findMainImageThumbnailUrl(productId);
         return productImageUrlService.toDetailResponse(product, thumbnailUrl);
+    }
+
+    @GetMapping("/mall/browse-history")
+    public List<Map<String, Object>> mallBrowseHistory(HttpServletRequest request) {
+        Long customerId = buyerCustomerId(request);
+        return rows("""
+            SELECT h.id, h.product_id, h.view_count, h.viewed_at,
+                   p.product_code, p.sku_barcode, p.product_name, p.category_name, p.brand_name,
+                   p.sku_name, p.unit, p.quote_type, p.sale_mode, p.sale_unit, p.sale_unit_ratio,
+                   p.sale_price, p.stock_quantity, p.min_order_quantity, p.sale_status,
+                   CASE
+                     WHEN LOWER(COALESCE(p.main_image_card_url, '')) LIKE 'data:image%' THEN ''
+                     ELSE COALESCE(p.main_image_card_url, '')
+                   END AS main_image_card_url,
+                   CASE
+                     WHEN LOWER(COALESCE(p.main_image_thumbnail_url, '')) LIKE 'data:image%' THEN ''
+                     ELSE COALESCE(p.main_image_thumbnail_url, '')
+                   END AS main_image_thumbnail_url
+            FROM buyer_browse_history h
+            JOIN products p ON p.id = h.product_id
+            WHERE h.customer_id = :customerId
+            ORDER BY h.viewed_at DESC, h.id DESC
+            LIMIT 200
+            """, "customerId", customerId);
+    }
+
+    @PostMapping("/mall/browse-history")
+    @Transactional
+    public Map<String, Object> recordMallBrowseHistory(HttpServletRequest request, @RequestBody Map<String, Object> payload) {
+        Long customerId = buyerCustomerId(request);
+        Long productId = requiredLong(payload, "productId");
+        productRepository.findById(productId)
+            .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
+        jdbcClient.sql("""
+            INSERT INTO buyer_browse_history (customer_id, product_id, view_count, viewed_at)
+            VALUES (:customerId, :productId, 1, CURRENT_TIMESTAMP(6))
+            ON DUPLICATE KEY UPDATE
+              view_count = view_count + 1,
+              viewed_at = CURRENT_TIMESTAMP(6)
+            """)
+            .param("customerId", customerId)
+            .param("productId", productId)
+            .update();
+        return row("recorded", true, "productId", productId);
+    }
+
+    @DeleteMapping("/mall/browse-history/{productId}")
+    public Map<String, Object> deleteMallBrowseHistoryItem(HttpServletRequest request, @PathVariable Long productId) {
+        Long customerId = buyerCustomerId(request);
+        int deleted = jdbcClient.sql("""
+            DELETE FROM buyer_browse_history
+            WHERE customer_id = :customerId AND product_id = :productId
+            """)
+            .param("customerId", customerId)
+            .param("productId", productId)
+            .update();
+        return row("deleted", deleted > 0, "productId", productId);
+    }
+
+    @DeleteMapping("/mall/browse-history")
+    public Map<String, Object> clearMallBrowseHistory(HttpServletRequest request) {
+        Long customerId = buyerCustomerId(request);
+        int deleted = jdbcClient.sql("DELETE FROM buyer_browse_history WHERE customer_id = :customerId")
+            .param("customerId", customerId)
+            .update();
+        return row("deleted", true, "deletedCount", deleted);
     }
 
     @PostMapping("/buyer/register")
@@ -1666,6 +1733,30 @@ public class PhaseOneController {
             FROM operation_logs
             ORDER BY id DESC
             """);
+    }
+
+    private Long buyerCustomerId(HttpServletRequest request) {
+        String authorization = request.getHeader("Authorization");
+        String token = authorization != null && authorization.startsWith("Bearer ")
+            ? authorization.substring(7).trim()
+            : "";
+        String subject = authTokenService.subject(token, "BUYER");
+        if (subject.isBlank()) {
+            throw new ApiException(HttpStatus.UNAUTHORIZED, "Please login first");
+        }
+        try {
+            Long customerId = Long.parseLong(subject);
+            Long count = jdbcClient.sql("SELECT COUNT(*) FROM customers WHERE id = :customerId")
+                .param("customerId", customerId)
+                .query(Long.class)
+                .single();
+            if (count == null || count <= 0) {
+                throw new ApiException(HttpStatus.UNAUTHORIZED, "Buyer account not found");
+            }
+            return customerId;
+        } catch (NumberFormatException exception) {
+            throw new ApiException(HttpStatus.UNAUTHORIZED, "Invalid buyer account");
+        }
     }
 
     private Long firstProductId() {

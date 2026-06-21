@@ -37,6 +37,7 @@ import {
   CheckOutlined,
   CloseOutlined,
   CopyOutlined,
+  CreditCardOutlined,
   DeleteOutlined,
   DownOutlined,
   EnvironmentOutlined,
@@ -101,9 +102,9 @@ function buyerLoginPayload(identifier: string, password: string) {
   return data;
 }
 
-type Page = "home" | "list" | "detail" | "cart" | "confirm" | "pay" | "orders" | "orderDetail" | "addresses" | "invoiceTitles" | "profile" | "login" | "register";
+type Page = "home" | "list" | "detail" | "cart" | "confirm" | "pay" | "orders" | "orderDetail" | "addresses" | "invoiceTitles" | "history" | "profile" | "login" | "register";
 const authPages: Page[] = ["login", "register"];
-const protectedPages: Page[] = ["detail", "cart", "confirm", "pay", "orders", "orderDetail", "addresses", "invoiceTitles", "profile"];
+const protectedPages: Page[] = ["detail", "cart", "confirm", "pay", "orders", "orderDetail", "addresses", "invoiceTitles", "history", "profile"];
 
 function initialBuyerToken() {
   const token = localStorage.getItem(buyerTokenKey) || "";
@@ -128,6 +129,7 @@ function pageFromView(value: string | null): Page {
     profile: "profile",
     addresses: "addresses",
     invoiceTitles: "invoiceTitles",
+    history: "history",
     confirm: "confirm",
     pay: "pay"
   };
@@ -160,6 +162,7 @@ function redirectForPage(page: Page) {
     profile: "/account",
     addresses: "/account",
     invoiceTitles: "/account",
+    history: "/history",
     confirm: "/cart",
     pay: "/orders",
     orderDetail: "/orders"
@@ -178,6 +181,7 @@ function mallUrlForRedirect(redirect: string) {
     "/cart": "/mall.html?view=cart",
     "/orders": "/mall.html?view=orders",
     "/account": "/mall.html?view=account",
+    "/history": "/mall.html?view=history",
     "/mall": "/mall.html"
   };
   return map[redirect] || "/mall.html";
@@ -334,6 +338,7 @@ function MallRoot() {
   const productDetailRequestsRef = useRef<Map<string, Promise<AnyRecord>>>(new Map());
   const detailRequestSeqRef = useRef(0);
   const imageSearchRequestRef = useRef(false);
+  const browseHistoryRecordRef = useRef("");
   const snapshotWriteReadyRef = useRef(Boolean(initialSnapshot));
   const isLoggedIn = Boolean(buyerToken);
 
@@ -388,6 +393,22 @@ function MallRoot() {
     window.addEventListener("b2b-erp-buyer-auth-expired", handleBuyerAuthExpired);
     return () => window.removeEventListener("b2b-erp-buyer-auth-expired", handleBuyerAuthExpired);
   }, [page]);
+
+  useEffect(() => {
+    if (page !== "detail") {
+      browseHistoryRecordRef.current = "";
+      return;
+    }
+    const productId = selectedProduct?.id;
+    if (!isLoggedIn || !productId) return;
+    const recordKey = `${buyerToken}:${productId}`;
+    if (browseHistoryRecordRef.current === recordKey) return;
+    browseHistoryRecordRef.current = recordKey;
+    request("/api/mall/browse-history", {
+      method: "POST",
+      data: { productId: Number(productId) }
+    }).catch(() => undefined);
+  }, [page, selectedProduct?.id, isLoggedIn, buyerToken]);
 
   const apiGuard = async (fn: () => Promise<void>) => {
     setLoading(true);
@@ -632,7 +653,8 @@ function MallRoot() {
     const map: Record<string, Page> = {
       "/cart": "cart",
       "/orders": "orders",
-      "/account": "profile"
+      "/account": "profile",
+      "/history": "history"
     };
     window.history.pushState({}, "", mallUrlForRedirect(redirect));
     await go(map[redirect] || "home", undefined, { skipAuth: true, skipUrl: true });
@@ -1011,6 +1033,7 @@ function MallRoot() {
           {page === "orderDetail" && <OrderDetailPage ctx={ctx} />}
           {page === "addresses" && <AddressPage ctx={ctx} loading={false} />}
           {page === "invoiceTitles" && <InvoiceTitlePage ctx={ctx} loading={false} />}
+          {page === "history" && <BrowseHistoryPage ctx={ctx} />}
           {page === "profile" && <ProfilePage ctx={ctx} />}
           {page === "login" && <AuthPage ctx={ctx} type="login" />}
           {page === "register" && <AuthPage ctx={ctx} type="register" />}
@@ -3784,7 +3807,7 @@ function MallFloatingToolbar({ ctx }: any) {
       <button type="button" onClick={() => protectedAction("我的订单", "/orders", "orders")}><ProfileOutlined />我的订单</button>
       <button type="button" onClick={() => protectedAction("关注商品", "/account")}><ShoppingOutlined />关注商品</button>
       <button type="button" onClick={() => protectedAction("常购清单", "/account")}><AppstoreOutlined />常购清单</button>
-      <button type="button" onClick={() => protectedAction("浏览历史", "/account")}><ProfileOutlined />浏览历史</button>
+      <button type="button" onClick={() => protectedAction("浏览历史", "/history", "history")}><ProfileOutlined />浏览历史</button>
       <button type="button" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}>返回顶部</button>
     </div>
   );
@@ -3952,16 +3975,305 @@ function MallAiAssistant({ ctx }: any) {
   );
 }
 
-function ProfilePage({ ctx }: any) {
+function BrowseHistoryPage({ ctx }: any) {
+  const [rows, setRows] = useState<AnyRecord[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const loadHistory = async () => {
+    setLoading(true);
+    try {
+      const data = await request<AnyRecord[]>("/api/mall/browse-history");
+      setRows((Array.isArray(data) ? data : []).map(historyItemFromApi));
+    } catch (error: any) {
+      ctx.message.error(error?.message || "浏览历史加载失败");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadHistory();
+  }, []);
+
+  const grouped = groupBrowseHistoryByDay(rows);
+
+  const openProduct = (item: AnyRecord) => {
+    const product = ctx.products.find((row: AnyRecord) => String(row.id) === String(item.productId)) || item;
+    ctx.go("detail", product);
+  };
+
+  const removeItem = async (item: AnyRecord, event: React.MouseEvent) => {
+    event.stopPropagation();
+    await request(`/api/mall/browse-history/${item.productId}`, { method: "DELETE" });
+    setRows(current => current.filter(row => String(row.productId) !== String(item.productId)));
+  };
+
+  const clearAll = () => {
+    if (!rows.length) return;
+    Modal.confirm({
+      title: "确认清空浏览历史？",
+      content: "清空后当前账号下的浏览历史会被删除。",
+      okText: "清空",
+      okButtonProps: { danger: true },
+      cancelText: "取消",
+      onOk: async () => {
+        await request("/api/mall/browse-history", { method: "DELETE" });
+        setRows([]);
+      }
+    });
+  };
+
+  const addToCart = async (item: AnyRecord, event: React.MouseEvent) => {
+    event.stopPropagation();
+    await ctx.apiGuard(async () => {
+      const product = productFromApi(await request<AnyRecord>(`/api/mall/products/${item.productId}`));
+      const quantity = Math.max(1, Number(product.specs?.[0]?.min || product.raw?.minOrderQuantity || 1));
+      await request("/api/mall/cart/items", { method: "POST", data: { productId: Number(item.productId), quantity, specIndex: 0 } });
+      await ctx.hydrateCart();
+      ctx.message.success("已加入购物车");
+    });
+  };
+
   return (
-    <Card title="账户信息" extra={<Space><Button onClick={() => ctx.go("invoiceTitles")}>管理发票抬头</Button></Space>}>
-      <Descriptions bordered column={2} items={[
-        { key: "buyerName", label: "买家名称", children: ctx.profile.buyerName || "-" },
-        { key: "companyName", label: "企业名称", children: ctx.profile.companyName || "-" },
-        { key: "phone", label: "手机号", children: ctx.profile.phone || "-" },
-        { key: "level", label: "客户等级", children: ctx.profile.levelName || "-" }
-      ]} />
-    </Card>
+    <div className="mall-history-page">
+      <section className="mall-history-head">
+        <h1>浏览过的商品</h1>
+        <Button icon={<DeleteOutlined />} onClick={clearAll} disabled={!rows.length}>批量清空</Button>
+      </section>
+      {loading ? (
+        <Card className="mall-history-empty" loading />
+      ) : !rows.length ? (
+        <Card className="mall-history-empty"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无浏览历史" /></Card>
+      ) : (
+        grouped.map(group => (
+          <section className="mall-history-section" key={group.key}>
+            <header>
+              <h2>{group.title}</h2>
+              <span>看过{group.items.length}件商品</span>
+            </header>
+            <div className="mall-history-grid">
+              {group.items.map(item => {
+                const image = safeMallImageUrl(item.cardImage || item.image || item.raw?.mainImageCardUrl || item.raw?.mainImageThumbnailUrl);
+                const stock = Number(item.specs?.[0]?.stock ?? item.raw?.stockQuantity ?? 0);
+                const offSale = item.raw?.saleStatus && item.raw.saleStatus !== "ON_SALE";
+                const unavailable = offSale || stock <= 0;
+                const unavailableText = offSale ? "下架" : stock <= 0 ? "无货" : "";
+                const price = Number(item.specs?.[0]?.price ?? item.raw?.salePrice ?? 0);
+                return (
+                  <article className="mall-history-item" key={`${group.key}-${item.productId}`} onClick={() => openProduct(item)}>
+                    <button type="button" className="mall-history-remove" aria-label="删除浏览记录" onClick={(event) => removeItem(item, event)}><DeleteOutlined /></button>
+                    <div className="mall-history-image">
+                      {image ? <img src={image} alt="" loading="lazy" decoding="async" /> : <span><PictureOutlined /></span>}
+                      {unavailable ? <em>{unavailableText}</em> : null}
+                    </div>
+                    <strong title={item.name}>{item.name}</strong>
+                    <div className="mall-history-price-row">
+                      <span>{money(price)}</span>
+                      <Button type="primary" size="small" className="mall-product-cart-icon" icon={<ShoppingCartOutlined />} disabled={unavailable} onClick={(event) => addToCart(item, event)} />
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+        ))
+      )}
+    </div>
+  );
+}
+
+function historyItemFromApi(row: AnyRecord) {
+  const product = productFromApi({ ...row, id: row.productId });
+  return {
+    ...product,
+    historyId: row.id,
+    productId: Number(row.productId || product.id),
+    viewedAt: row.viewedAt,
+    viewCount: Number(row.viewCount || 1),
+    raw: { ...product.raw, ...row }
+  };
+}
+
+function groupBrowseHistoryByDay(rows: AnyRecord[]) {
+  const groups: AnyRecord[] = [];
+  const groupMap = new Map<string, AnyRecord>();
+  rows.forEach(item => {
+    const key = browseHistoryDayKey(item.viewedAt);
+    if (!groupMap.has(key)) {
+      const group = { key, title: browseHistoryDayTitle(key), items: [] as AnyRecord[] };
+      groupMap.set(key, group);
+      groups.push(group);
+    }
+    groupMap.get(key).items.push(item);
+  });
+  return groups;
+}
+
+function browseHistoryDayKey(value: any) {
+  const date = new Date(value || Date.now());
+  const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
+  const month = String(safeDate.getMonth() + 1).padStart(2, "0");
+  const day = String(safeDate.getDate()).padStart(2, "0");
+  return `${safeDate.getFullYear()}-${month}-${day}`;
+}
+
+function browseHistoryDayTitle(key: string) {
+  const [, month, day] = String(key).split("-");
+  return `${month || "--"}月${day || "--"}日`;
+}
+
+function ProfilePage({ ctx }: any) {
+  const profile = ctx.profile || {};
+  const displayName = profile.buyerName || ctx.buyerName || "采购用户";
+  const companyName = profile.companyName || "-";
+  const phone = profile.phone || "-";
+  const levelName = profile.levelName || "-";
+  const defaultAddress = (ctx.addresses || []).find((item: AnyRecord) => item.isDefault) || (ctx.addresses || [])[0];
+  const defaultTitle = (ctx.invoiceTitles || []).find((item: AnyRecord) => item.isDefault) || (ctx.invoiceTitles || [])[0];
+  const latestOrder = (ctx.orders || [])[0];
+  const latestOrderItem = latestOrder?.items?.[0] || null;
+  const latestOrderImage = latestOrderItem ? safeMallImageUrl(orderItemImage(latestOrderItem, ctx.products)) : "";
+  const latestOrderNo = latestOrder?.id ? `订单号：${latestOrder.id}` : "订单号：-";
+  const cartPreview = (ctx.cart || []).slice(0, 4).map((item: AnyRecord) => {
+    const product = cartProduct(ctx.products, item) || {};
+    const spec = product?.specs?.[Number(item.specIndex || 0)] || {};
+    return {
+      key: cartSkuRowKey(item),
+      item,
+      product,
+      spec,
+      title: product.name || `商品 #${item.productId}`,
+      image: safeMallImageUrl(spec.image || product.cardImage || product.image || product.mainImageUrl)
+    };
+  });
+  const orderStats = [
+    { key: "pendingPayment", label: "待付款", icon: <CreditCardOutlined />, count: ctx.orders.filter((item: AnyRecord) => item.key === "pendingPayment").length },
+    { key: "pendingShipment", label: "待发货", icon: <ShoppingOutlined />, count: ctx.orders.filter((item: AnyRecord) => item.key === "pendingShipment").length },
+    { key: "pendingReceipt", label: "待收货", icon: <ShoppingCartOutlined />, count: ctx.orders.filter((item: AnyRecord) => item.key === "pendingReceipt").length },
+    { key: "completed", label: "已完成", icon: <CheckOutlined />, count: ctx.orders.filter((item: AnyRecord) => item.key === "completed").length }
+  ];
+  const openLatestOrder = () => {
+    if (!latestOrder) {
+      ctx.go("orders");
+      return;
+    }
+    ctx.setCurrentOrder(latestOrder);
+    ctx.go("orderDetail");
+  };
+  return (
+    <div className="mall-account-page">
+      <aside className="mall-account-side">
+        <button type="button" className="mall-account-side-brand is-active" onClick={() => ctx.go("profile")}><UserOutlined />个人中心</button>
+        <section>
+          <h3><ProfileOutlined />订单中心</h3>
+          <button type="button" onClick={() => ctx.go("orders")}>我的订单</button>
+          <button type="button" onClick={() => ctx.go("cart")}>我的购物车</button>
+        </section>
+        <section>
+          <h3><AppstoreOutlined />账户管理</h3>
+          <button type="button" onClick={() => ctx.go("addresses")}>收货地址</button>
+          <button type="button" onClick={() => ctx.go("invoiceTitles")}>发票抬头</button>
+        </section>
+      </aside>
+
+      <section className="mall-account-content">
+        <div className="mall-account-hero">
+          <div className="mall-account-avatar" aria-hidden="true">{String(displayName).slice(0, 1) || "采"}</div>
+          <div className="mall-account-identity">
+            <h1>{displayName}</h1>
+            <button type="button" onClick={() => ctx.go("addresses")}><EnvironmentOutlined />收货地址管理</button>
+          </div>
+          <Button className="mall-account-hero-action" onClick={() => ctx.go("invoiceTitles")}>管理发票抬头</Button>
+        </div>
+
+        <div className="mall-account-grid">
+          <section className="mall-account-card mall-account-orders-card">
+            <header>
+              <h2>我的订单</h2>
+              <button type="button" onClick={() => ctx.go("orders")}>全部订单 <RightOutlined /></button>
+            </header>
+            <div className="mall-account-order-stats">
+              {orderStats.map(item => (
+                <button type="button" key={item.key} onClick={() => ctx.go("orders")}>
+                  <Badge count={item.count} size="small" offset={[2, 0]}>
+                    <span>{item.icon}</span>
+                  </Badge>
+                  <em>{item.label}</em>
+                </button>
+              ))}
+            </div>
+            {latestOrder ? (
+              <div className="mall-account-latest-order">
+                {latestOrderImage ? <img src={latestOrderImage} alt="" loading="lazy" decoding="async" /> : <span><PictureOutlined /></span>}
+                <div>
+                  <strong title={latestOrderNo}>{latestOrderNo}</strong>
+                  <p>{latestOrder.statusLabel || "-"} · {latestOrder.orderTime || "-"}</p>
+                </div>
+                <Button onClick={openLatestOrder}>查看详情</Button>
+              </div>
+            ) : (
+              <Empty className="mall-account-empty" image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无订单" />
+            )}
+          </section>
+
+          <section className="mall-account-card mall-account-info-card">
+            <header>
+              <h2>账户信息</h2>
+            </header>
+            <div className="mall-account-info-grid">
+              <span>买家名称</span><strong>{displayName}</strong>
+              <span>企业名称</span><strong>{companyName}</strong>
+              <span>手机号</span><strong>{phone}</strong>
+              <span>客户等级</span><strong>{levelName}</strong>
+            </div>
+          </section>
+
+          <section className="mall-account-card mall-account-cart-card">
+            <header>
+              <h2>购物车</h2>
+              <button type="button" onClick={() => ctx.go("cart")}>{ctx.cartCount || 0} 件商品 <RightOutlined /></button>
+            </header>
+            {cartPreview.length ? (
+              <div className="mall-account-product-strip">
+                {cartPreview.map(row => (
+                  <button type="button" key={row.key} onClick={() => row.product?.id ? ctx.go("detail", row.product) : ctx.go("cart")}>
+                    {row.image ? <img src={row.image} alt="" loading="lazy" decoding="async" /> : <span><PictureOutlined /></span>}
+                    <strong title={row.title}>{row.title}</strong>
+                    <em>×{Number(row.item.qty || 0)}</em>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <Empty className="mall-account-empty" image={Empty.PRESENTED_IMAGE_SIMPLE} description="购物车暂无商品" />
+            )}
+          </section>
+
+          <section className="mall-account-card mall-account-management-card">
+            <header>
+              <h2>账户管理</h2>
+            </header>
+            <div className="mall-account-management-list">
+              <button type="button" onClick={() => ctx.go("addresses")}>
+                <EnvironmentOutlined />
+                <span>
+                  <strong>收货地址</strong>
+                  <em>{defaultAddress ? `${defaultAddress.name || ""} ${defaultAddress.phone || ""}`.trim() || "已维护地址" : "暂无地址"}</em>
+                </span>
+                <RightOutlined />
+              </button>
+              <button type="button" onClick={() => ctx.go("invoiceTitles")}>
+                <ProfileOutlined />
+                <span>
+                  <strong>发票抬头</strong>
+                  <em>{defaultTitle?.title || "暂无抬头"}</em>
+                </span>
+                <RightOutlined />
+              </button>
+            </div>
+          </section>
+        </div>
+      </section>
+    </div>
   );
 }
 
