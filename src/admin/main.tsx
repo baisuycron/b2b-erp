@@ -1412,7 +1412,7 @@ const productColumnDefaults = [
   { key: "productName", label: "商品名称", width: 260 },
   { key: "categoryName", label: "商品分类", width: 150 },
   { key: "saleStatus", label: "是否淘汰", width: 120 },
-  { key: "skuName", label: "规格", width: 140 },
+  { key: "skuName", label: "规格", width: 190 },
   { key: "unit", label: "库存单位", width: 120 },
   { key: "brandName", label: "商品品牌", width: 140 },
   { key: "quoteType", label: "报价方式", width: 140 },
@@ -1438,12 +1438,13 @@ function loadProductColumnSettings() {
     return Object.fromEntries(productColumnDefaults.map(column => {
       const current = raw?.[column.key] || {};
       const width = Number(current.width);
+      const minWidth = column.key === "skuName" ? 180 : 70;
       const fixed = current.fixed === "left" || current.fixed === "right" ? current.fixed : undefined;
       return [
         column.key,
         {
           visible: current.visible !== false,
-          width: Number.isFinite(width) && width >= 70 ? width : column.width,
+          width: Number.isFinite(width) && width >= minWidth ? width : column.width,
           fixed
         }
       ];
@@ -1711,6 +1712,7 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
   const [batchDeleteBlockedOpen, setBatchDeleteBlockedOpen] = useState(false);
   const [batchDeleteBlockedRows, setBatchDeleteBlockedRows] = useState<AnyRecord[]>([]);
   const [specDetailProduct, setSpecDetailProduct] = useState<AnyRecord>();
+  const [specDetailLoading, setSpecDetailLoading] = useState(false);
   const [batchQueryText, setBatchQueryText] = useState("");
   const [batchKeywordsInput, setBatchKeywordsInput] = useState<string[]>([]);
   const [batchKeywords, setBatchKeywords] = useState<string[]>([]);
@@ -1730,6 +1732,18 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
       productForm(ctx, detailItem);
     } catch (error: any) {
       ctx.message.error(error.message || "商品详情加载失败");
+    }
+  };
+  const openSpecDetail = async (item: AnyRecord) => {
+    setSpecDetailProduct(normalizeProductRecord(item) || item);
+    setSpecDetailLoading(true);
+    try {
+      const detailItem = item?.id ? await requestProductDetail(item) : item;
+      setSpecDetailProduct(detailItem);
+    } catch (error: any) {
+      ctx.message.error(error.message || "商品规格加载失败");
+    } finally {
+      setSpecDetailLoading(false);
     }
   };
   const categoryTreeData = useMemo(() => buildCategoryTreeData(categories), [categories]);
@@ -2040,10 +2054,11 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
       render: (value, item) => {
         const skuRows = productSkuRows(item);
         const hasMultipleSpecs = skuRows.length > 1 || skuRows.some((sku: AnyRecord) => (sku.specValues || []).length > 1);
+        const canOpenDetail = Boolean(item?.id);
         return (
           <div className="product-spec-summary-cell">
-            <span>{value || "-"}</span>
-            {hasMultipleSpecs ? <Button type="link" onClick={() => setSpecDetailProduct(item)}>查看更多</Button> : null}
+            <span title={String(value || "")}>{value || "-"}</span>
+            {canOpenDetail || hasMultipleSpecs ? <Button type="link" onClick={() => void openSpecDetail(item)}>查看更多</Button> : null}
           </div>
         );
       }
@@ -2347,6 +2362,7 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
           size="small"
           rowKey="key"
           pagination={false}
+          loading={specDetailLoading}
           dataSource={specDetailRows}
           columns={specDetailColumns}
           scroll={{ x: "max-content", y: 420 }}
@@ -2531,32 +2547,6 @@ function compactSkuListImages(rows: AnyRecord[]) {
   }));
 }
 
-function collectSpecValueImagesFromSkuRows(rows: AnyRecord[]) {
-  const imageGroupId = getSpecImageGroupId(rows);
-  if (!imageGroupId) return [];
-  const imageMap = new Map<string, AnyRecord>();
-  for (const row of rows) {
-    const specValues = Array.isArray(row?.specValues) ? row.specValues : [];
-    for (const cell of specValues) {
-      if (String(cell?.groupId || "") !== imageGroupId) continue;
-      const key = specValueImageKey(cell);
-      const image = String(cell?.image || row?.skuImageUrl || "");
-      if (!image || imageMap.has(key)) continue;
-      imageMap.set(key, {
-        key,
-        groupName: cell.groupName || "",
-        value: cell.value || "",
-        image
-      });
-    }
-  }
-  return Array.from(imageMap.values());
-}
-
-function productSpecImages(item?: AnyRecord) {
-  return collectSpecValueImagesFromSkuRows(productSkuRows(item));
-}
-
 function normalizeSkuName(row: AnyRecord, fallback = "") {
   const explicit = String(row?.skuName || "").trim();
   if (explicit) return explicit;
@@ -2601,16 +2591,17 @@ function stripRichText(html: unknown) {
     .trim();
 }
 
-function productForm(ctx: Ctx, item?: AnyRecord, draftValues?: AnyRecord) {
+function productForm(ctx: Ctx, item?: AnyRecord, draftValues?: AnyRecord, options: { readOnly?: boolean } = {}) {
+  const readOnly = Boolean(options.readOnly);
   ctx.setDrawer({
-    title: item ? "编辑商品" : "新增商品",
+    title: readOnly ? "商品详情" : item ? "编辑商品" : "新增商品",
     width: 1320,
-    className: "product-form-drawer",
-    body: <ProductForm ctx={ctx} item={item} draftValues={draftValues} />
+    className: `product-form-drawer${readOnly ? " product-form-readonly-drawer" : ""}`,
+    body: <ProductForm ctx={ctx} item={item} draftValues={draftValues} readOnly={readOnly} />
   });
 }
 
-function ProductForm({ ctx, item, draftValues }: { ctx: Ctx; item?: AnyRecord; draftValues?: AnyRecord }) {
+function ProductForm({ ctx, item, draftValues, readOnly = false }: { ctx: Ctx; item?: AnyRecord; draftValues?: AnyRecord; readOnly?: boolean }) {
   const [form] = Form.useForm();
   const [previewImageUrl, setPreviewImageUrl] = useState("");
   const [product, setProduct] = useState<AnyRecord | undefined>(() => normalizeProductRecord(item));
@@ -2619,6 +2610,7 @@ function ProductForm({ ctx, item, draftValues }: { ctx: Ctx; item?: AnyRecord; d
   const [saleUnitInput, setSaleUnitInput] = useState("");
   const [saleUnitInputError, setSaleUnitInputError] = useState("");
   const [activeProductSection, setActiveProductSection] = useState("basic");
+  const [pendingProductSection, setPendingProductSection] = useState<string | null>(null);
   const productFormBodyRef = useRef<HTMLDivElement | null>(null);
   const quoteType = Form.useWatch("quoteType", form) || "INDEPENDENT_PRICE";
   const saleMode = Form.useWatch("saleMode", form) || "NORMAL";
@@ -3057,16 +3049,22 @@ function ProductForm({ ctx, item, draftValues }: { ctx: Ctx; item?: AnyRecord; d
     });
   };
 
-  const scrollToProductSection = (key: string) => {
+  const openProductSection = (key: string) => {
     setActiveProductSection(key);
-    window.setTimeout(() => {
+    setPendingProductSection(key);
+  };
+  useEffect(() => {
+    if (!pendingProductSection) return;
+    const frame = window.requestAnimationFrame(() => {
       const body = productFormBodyRef.current;
-      const target = body?.querySelector<HTMLElement>(`[data-product-section="${key}"]`);
+      const target = body?.querySelector<HTMLElement>(`[data-product-section="${pendingProductSection}"]`);
       if (!body || !target) return;
       const top = body.scrollTop + target.getBoundingClientRect().top - body.getBoundingClientRect().top - 64;
       body.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
-    }, 0);
-  };
+      setPendingProductSection(null);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [pendingProductSection]);
   const productFormAnchors = [
     { key: "basic", label: "基础信息" },
     { key: "spec", label: "商品规格" },
@@ -3075,7 +3073,12 @@ function ProductForm({ ctx, item, draftValues }: { ctx: Ctx; item?: AnyRecord; d
   ];
 
   return (
-    <Form className="product-form-layout" form={form} layout="vertical" initialValues={initial} onFinish={async values => {
+    <Form className={`product-form-layout${readOnly ? " is-readonly" : ""}`} form={form} layout="vertical" disabled={readOnly} initialValues={initial} onFinish={async values => {
+        values = {
+          ...initial,
+          ...form.getFieldsValue(true),
+          ...values
+        };
         const skuRows = compactSkuListImages(Array.isArray(values.skuList) ? values.skuList : []);
         const enabledRows = skuRows.filter((row: AnyRecord) => row.skuStatus !== "DISABLED");
         const enabledSku = enabledRows[0];
@@ -3172,7 +3175,7 @@ function ProductForm({ ctx, item, draftValues }: { ctx: Ctx; item?: AnyRecord; d
                 key={anchor.key}
                 type="button"
                 className={`product-form-anchor ${activeProductSection === anchor.key ? "is-active" : ""}`}
-                onClick={() => scrollToProductSection(anchor.key)}
+                onClick={() => openProductSection(anchor.key)}
               >
                 {anchor.label}
               </button>
@@ -3436,13 +3439,19 @@ function ProductForm({ ctx, item, draftValues }: { ctx: Ctx; item?: AnyRecord; d
                   </div>
         </div>
         <div className="product-form-submit-bar">
-          <Space>
-            <Button onClick={() => ctx.setDrawer(null)}>取消</Button>
-            <Button type="primary" htmlType="submit">保存</Button>
-          </Space>
-          <Space>
-            <Button onClick={openProductPreview}>预览</Button>
-          </Space>
+          {readOnly ? (
+            <Button type="primary" onClick={() => ctx.setDrawer(null)}>关闭</Button>
+          ) : (
+            <>
+              <Space>
+                <Button onClick={() => ctx.setDrawer(null)}>取消</Button>
+                <Button type="primary" htmlType="submit">保存</Button>
+              </Space>
+              <Space>
+                <Button onClick={openProductPreview}>预览</Button>
+              </Space>
+            </>
+          )}
         </div>
     </Form>
   );
@@ -3671,41 +3680,7 @@ async function productDetail(ctx: Ctx, item: AnyRecord) {
   try {
     const fullItem = await requestProductDetail(item);
     if (!fullItem) throw new Error("商品详情加载失败");
-    const detail = parseDetailContent(fullItem.detailContent);
-    const specImages = productSpecImages(fullItem);
-    ctx.setDrawer({
-      title: `商品详情 ${fullItem.productName || ""}`,
-      body: (
-        <Space direction="vertical" size={16} style={{ width: "100%" }}>
-          <Descriptions bordered column={2} items={[
-            { key: "code", label: "商品编码", children: fullItem.productCode },
-            { key: "sku", label: "SKU", children: fullItem.skuCode },
-            { key: "category", label: "分类", children: fullItem.categoryName },
-            { key: "brand", label: "品牌", children: fullItem.brandName },
-            { key: "price", label: "售价", children: money(fullItem.salePrice) },
-            { key: "stock", label: "库存", children: fullItem.stockQuantity },
-            { key: "status", label: "状态", children: tag(fullItem.saleStatus) }
-          ]} />
-          {fullItem.mainImageUrl ? <Image src={fullItem.mainImageUrl} className="detail-image" /> : null}
-          {specImages.length ? (
-            <Card title="规格图片">
-              <div className="product-detail-spec-images">
-                {specImages.map((spec: AnyRecord) => (
-                  <div className="product-detail-spec-image-item" key={spec.key}>
-                    <Image src={spec.image} className="product-detail-spec-image" />
-                    <div className="product-detail-spec-image-label">
-                      {spec.groupName ? `${spec.groupName}：` : ""}{spec.value || "-"}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </Card>
-          ) : null}
-          <Card title="图文详情"><div className="product-detail-render" dangerouslySetInnerHTML={{ __html: detail.text || "-" }} /></Card>
-          {detail.imageUrl ? <Image src={detail.imageUrl} className="detail-image" /> : null}
-        </Space>
-      )
-    });
+    productForm(ctx, fullItem, undefined, { readOnly: true });
   } catch (error: any) {
     ctx.message.error(error.message || "商品详情加载失败");
   }
