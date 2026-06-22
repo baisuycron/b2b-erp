@@ -28,6 +28,8 @@ public class ImageSearchService {
     private static final Set<String> SUPPORTED_TYPES = Set.of(
         "image/png", "image/jpeg", "image/jpg", "image/webp", "image/bmp"
     );
+    private static final double HIGH_CONFIDENCE_MINIMUM_SCORE = 0.96;
+    private static final double RELATIVE_SCORE_WINDOW = 0.04;
 
     private final ImageSearchProperties properties;
     private final ProductRepository productRepository;
@@ -52,7 +54,8 @@ public class ImageSearchService {
             List<Double> embedding = embedUploadedImage(file);
             ensureVectorCollection(embedding.size());
             List<VectorHit> hits = searchVectorDatabase(embedding, categoryId, brandId, properties.resolvedTopK(topK == null ? 0 : topK));
-            List<ProductImageSearchResult> results = hydrateProducts(hits);
+            List<VectorHit> verifiedHits = verifyCandidateImages(file, hits);
+            List<ProductImageSearchResult> results = hydrateProducts(verifiedHits);
             if (results.isEmpty()) {
                 throw new ApiException(HttpStatus.NOT_FOUND, "未找到相似商品，请更换图片后重试");
             }
@@ -77,10 +80,30 @@ public class ImageSearchService {
             reset = 0;
         }
         int max = limit == null || limit <= 0 ? 100 : Math.min(limit, 500);
+        VectorizeStats stats = vectorizeImages(imageVectorRepository.listPending(max));
+        return Map.of("success", stats.success(), "failed", stats.failed(), "skipped", stats.skipped(), "limit", max, "queued", queued, "reset", reset);
+    }
+
+    public void syncProductImages(Product product) {
+        if (product == null || !properties.configured()) {
+            return;
+        }
+        try {
+            deleteProductVectors(product.id());
+            int queued = imageVectorRepository.syncFromProduct(product);
+            if (queued > 0) {
+                vectorizeImages(imageVectorRepository.listPendingByProduct(product.id(), Math.max(queued, 1)));
+            }
+        } catch (Exception ignored) {
+            // Product save should not fail when the optional image-search service is temporarily unavailable.
+        }
+    }
+
+    private VectorizeStats vectorizeImages(List<ProductImageVector> images) {
         int success = 0;
         int failed = 0;
         int skipped = 0;
-        for (ProductImageVector image : imageVectorRepository.listPending(max)) {
+        for (ProductImageVector image : images) {
             try {
                 EmbeddingResponse embeddingResponse = embedImageUrl(image.imageUrl());
                 if (Boolean.FALSE.equals(embeddingResponse.indexable())) {
@@ -99,11 +122,7 @@ public class ImageSearchService {
                 failed += 1;
             }
         }
-        return Map.of("success", success, "failed", failed, "skipped", skipped, "limit", max, "queued", queued, "reset", reset);
-    }
-
-    public void syncProductImages(Product product) {
-        imageVectorRepository.syncFromProduct(product);
+        return new VectorizeStats(success, failed, skipped);
     }
 
     private void validateImageFile(MultipartFile file) {
@@ -151,6 +170,9 @@ public class ImageSearchService {
         if (response == null || response.embedding() == null || response.embedding().isEmpty()) {
             throw new ApiException(HttpStatus.BAD_GATEWAY, "图片搜索失败，请稍后重试");
         }
+        if (Boolean.FALSE.equals(response.indexable())) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Please upload a product image and try again");
+        }
         return response.embedding();
     }
 
@@ -160,7 +182,7 @@ public class ImageSearchService {
         }
         String collectionUrl = trimRight(properties.qdrantUrl()) + "/collections/" + properties.collection();
         try {
-            restClient.get()
+            Map<String, Object> collection = restClient.get()
                 .uri(collectionUrl)
                 .headers(headers -> {
                     if (properties.qdrantApiKey() != null && !properties.qdrantApiKey().isBlank()) {
@@ -168,9 +190,14 @@ public class ImageSearchService {
                     }
                 })
                 .retrieve()
-                .toBodilessEntity();
-            collectionReady = true;
-            return;
+                .body(Map.class);
+            Integer existingSize = collectionVectorSize(collection);
+            if (existingSize != null && existingSize != vectorSize) {
+                deleteVectorCollection();
+            } else {
+                collectionReady = true;
+                return;
+            }
         } catch (RestClientResponseException ex) {
             if (ex.getStatusCode().value() != 404) {
                 throw ex;
@@ -189,6 +216,53 @@ public class ImageSearchService {
             .retrieve()
             .toBodilessEntity();
         collectionReady = true;
+    }
+
+    private Integer collectionVectorSize(Map<String, Object> collection) {
+        Object result = collection == null ? null : collection.get("result");
+        if (!(result instanceof Map<?, ?> resultMap)) return null;
+        Object config = resultMap.get("config");
+        if (!(config instanceof Map<?, ?> configMap)) return null;
+        Object params = configMap.get("params");
+        if (!(params instanceof Map<?, ?> paramsMap)) return null;
+        Object vectors = paramsMap.get("vectors");
+        if (vectors instanceof Map<?, ?> vectorsMap) {
+            Object size = vectorsMap.get("size");
+            if (size instanceof Number number) return number.intValue();
+            if (size instanceof String stringValue) {
+                try {
+                    return Integer.parseInt(stringValue);
+                } catch (NumberFormatException ignored) {
+                    return null;
+                }
+            }
+        }
+        return null;
+    }
+
+    private void deleteProductVectors(Long productId) {
+        collectionReady = false;
+        String deleteUrl = trimRight(properties.qdrantUrl()) + "/collections/" + properties.collection() + "/points/delete";
+        try {
+            restClient.post()
+                .uri(deleteUrl)
+                .headers(headers -> {
+                    if (properties.qdrantApiKey() != null && !properties.qdrantApiKey().isBlank()) {
+                        headers.set("api-key", properties.qdrantApiKey());
+                    }
+                })
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of(
+                    "filter", Map.of("must", List.of(Map.of("key", "productId", "match", Map.of("value", productId))))
+                ))
+                .retrieve()
+                .toBodilessEntity();
+            collectionReady = true;
+        } catch (RestClientResponseException ex) {
+            if (ex.getStatusCode().value() != 404) {
+                throw ex;
+            }
+        }
     }
 
     private void deleteVectorCollection() {
@@ -216,7 +290,7 @@ public class ImageSearchService {
         request.put("vector", embedding);
         request.put("limit", topK);
         request.put("with_payload", true);
-        double minimumScore = properties.resolvedMinimumScore();
+        double minimumScore = effectiveMinimumScore();
         if (minimumScore > -1) {
             request.put("score_threshold", minimumScore);
         }
@@ -252,7 +326,55 @@ public class ImageSearchService {
             if (similarity < minimumScore) continue;
             hits.add(new VectorHit(productId, similarity, text(payload.get("imageUrl"))));
         }
-        return hits;
+        return filterCloseMatches(hits);
+    }
+
+    private List<VectorHit> filterCloseMatches(List<VectorHit> hits) {
+        if (hits.isEmpty()) {
+            return hits;
+        }
+        double best = hits.stream().mapToDouble(VectorHit::similarity).max().orElse(0);
+        double floor = Math.max(effectiveMinimumScore(), best - RELATIVE_SCORE_WINDOW);
+        return hits.stream()
+            .filter(hit -> hit.similarity() >= floor)
+            .toList();
+    }
+
+    private List<VectorHit> verifyCandidateImages(MultipartFile file, List<VectorHit> hits) {
+        if (hits.isEmpty()) {
+            return hits;
+        }
+        List<VectorHit> verified = new ArrayList<>();
+        for (VectorHit hit : hits) {
+            if (verifyCandidateImage(file, hit.imageUrl())) {
+                verified.add(hit);
+            }
+        }
+        return verified;
+    }
+
+    private boolean verifyCandidateImage(MultipartFile file, String imageUrl) {
+        if (imageUrl == null || imageUrl.isBlank()) {
+            return false;
+        }
+        try {
+            MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+            body.add("file", new MultipartInputStreamResource(file));
+            body.add("imageUrl", imageUrl);
+            VerificationResponse response = restClient.post()
+                .uri(trimRight(properties.embeddingServiceUrl()) + "/compare/image-url")
+                .contentType(MediaType.MULTIPART_FORM_DATA)
+                .body(body)
+                .retrieve()
+                .body(VerificationResponse.class);
+            return response != null && Boolean.TRUE.equals(response.verified());
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private double effectiveMinimumScore() {
+        return Math.max(HIGH_CONFIDENCE_MINIMUM_SCORE, properties.resolvedMinimumScore());
     }
 
     private void upsertVector(Long vectorId, List<Double> embedding, ProductImageVector image) {
@@ -319,7 +441,7 @@ public class ImageSearchService {
             results.add(new ProductImageSearchResult(
                 product.id(),
                 product.productName(),
-                product.mainImageUrl(),
+                productRepository.findMallProductCardImageUrl(product.id()),
                 product.salePrice() == null ? BigDecimal.ZERO : product.salePrice(),
                 product.categoryName(),
                 product.brandName(),
@@ -361,6 +483,12 @@ public class ImageSearchService {
     }
 
     private record VectorHit(Long productId, double similarity, String imageUrl) {
+    }
+
+    private record VectorizeStats(int success, int failed, int skipped) {
+    }
+
+    private record VerificationResponse(Boolean verified, Double score) {
     }
 
     private static class MultipartInputStreamResource extends InputStreamResource {

@@ -28,11 +28,13 @@ public class ProductImageVectorRepository {
         this.jdbcClient = jdbcClient;
     }
 
-    public void syncFromProduct(Product product) {
+    public int syncFromProduct(Product product) {
         jdbcClient.sql("DELETE FROM product_image_vectors WHERE product_id = :productId")
             .param("productId", product.id())
             .update();
+        int before = countByProduct(product.id());
         saveImages(product);
+        return Math.max(0, countByProduct(product.id()) - before);
     }
 
     public int syncMissingFromProducts(List<Product> products) {
@@ -82,6 +84,21 @@ public class ProductImageVectorRepository {
             .list();
     }
 
+    public List<ProductImageVector> listPendingByProduct(Long productId, int limit) {
+        return jdbcClient.sql("""
+            SELECT id, product_id, sku_id, image_url, image_type, vector_id, vector_status
+            FROM product_image_vectors
+            WHERE product_id = :productId
+              AND vector_status IN ('PENDING', 'FAILED')
+            ORDER BY updated_at ASC, id ASC
+            LIMIT :limit
+            """)
+            .param("productId", productId)
+            .param("limit", Math.max(1, Math.min(limit, 100)))
+            .query(this::mapVector)
+            .list();
+    }
+
     public int resetAllToPending() {
         return jdbcClient.sql("""
             UPDATE product_image_vectors
@@ -115,9 +132,9 @@ public class ProductImageVectorRepository {
 
     private void saveImages(Product product) {
         Set<String> seen = new LinkedHashSet<>();
-        saveImage(product.id(), null, product.mainImageUrl(), "MAIN", seen);
-        for (String imageUrl : detailImages(product.detailContent())) {
-            saveImage(product.id(), null, imageUrl, "DETAIL", seen);
+        saveImage(product.id(), null, searchableMainImageUrl(product), "MAIN", seen);
+        for (String imageUrl : galleryImages(product.detailContent())) {
+            saveImage(product.id(), null, imageUrl, "GALLERY", seen);
         }
         for (Map<String, Object> sku : skuRows(product.skuListJson())) {
             String skuId = text(sku.get("skuCode"));
@@ -125,6 +142,26 @@ public class ProductImageVectorRepository {
                 saveImage(product.id(), skuId, imageUrl, "SKU", seen);
             }
         }
+    }
+
+    private String searchableMainImageUrl(Product product) {
+        String fallback = text(product.mainImageUrl());
+        return jdbcClient.sql("""
+            SELECT COALESCE(
+                NULLIF(COALESCE(main_image_card_url, ''), ''),
+                NULLIF(COALESCE(main_image_thumbnail_url, ''), ''),
+                NULLIF(COALESCE(main_image_url, ''), ''),
+                ''
+            )
+            FROM products
+            WHERE id = :id
+            """)
+            .param("id", product.id())
+            .query(String.class)
+            .optional()
+            .map(this::text)
+            .filter(value -> !value.isBlank())
+            .orElse(fallback);
     }
 
     private void saveImage(Long productId, String skuId, String imageUrl, String imageType) {
@@ -147,7 +184,7 @@ public class ProductImageVectorRepository {
             .update();
     }
 
-    private List<String> detailImages(String raw) {
+    private List<String> galleryImages(String raw) {
         Set<String> images = new LinkedHashSet<>();
         String text = text(raw);
         if (text.isBlank()) {
@@ -156,13 +193,10 @@ public class ProductImageVectorRepository {
         try {
             Map<String, Object> parsed = objectMapper.readValue(text, new TypeReference<>() {});
             collectImageValue(parsed.get("imageUrl"), images);
-            collectImageValue(parsed.get("detailImageUrl"), images);
+            collectImageValue(parsed.get("mainImageUrl"), images);
             collectImageValue(parsed.get("carouselImages"), images);
-            collectHtmlImages(text(parsed.get("html")), images);
-            collectHtmlImages(text(parsed.get("text")), images);
-            collectHtmlImages(text(parsed.get("detailText")), images);
         } catch (Exception ignored) {
-            collectHtmlImages(text, images);
+            return List.of();
         }
         return List.copyOf(images);
     }
@@ -225,6 +259,8 @@ public class ProductImageVectorRepository {
         return lower.startsWith("data:image/")
             || lower.startsWith("http://")
             || lower.startsWith("https://")
+            || lower.startsWith("/api/public/product-images/")
+            || lower.startsWith("/api/public/product-thumbnails/")
             || lower.startsWith("/uploads/")
             || lower.startsWith("uploads/");
     }

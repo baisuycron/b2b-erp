@@ -106,6 +106,23 @@ public class ProductRepository {
             .orElse("");
     }
 
+    public String findMallProductCardImageUrl(Long id) {
+        return jdbcClient.sql("""
+            SELECT COALESCE(
+                NULLIF(CASE WHEN LOWER(COALESCE(main_image_card_url, '')) LIKE 'data:image%' THEN '' ELSE COALESCE(main_image_card_url, '') END, ''),
+                NULLIF(CASE WHEN LOWER(COALESCE(main_image_thumbnail_url, '')) LIKE 'data:image%' THEN '' ELSE COALESCE(main_image_thumbnail_url, '') END, ''),
+                NULLIF(CASE WHEN LOWER(COALESCE(main_image_url, '')) LIKE 'data:image%' THEN '' ELSE COALESCE(main_image_url, '') END, ''),
+                ''
+            )
+            FROM products
+            WHERE id = :id
+            """)
+            .param("id", id)
+            .query(String.class)
+            .optional()
+            .orElse("");
+    }
+
     public List<Product> findMallProducts(String keyword, Long categoryId, String categoryName, Long brandId, String brandName) {
         String resolvedCategoryName = clean(categoryName, "");
         if (categoryId != null) {

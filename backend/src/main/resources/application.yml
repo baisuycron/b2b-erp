@@ -37,8 +37,8 @@ b2b:
     qdrant-api-key: ${QDRANT_API_KEY:}
     collection: ${IMAGE_VECTOR_COLLECTION:product-images}
     top-k-default: ${IMAGE_SEARCH_TOP_K_DEFAULT:20}
-    minimum-score: ${IMAGE_SEARCH_MINIMUM_SCORE:0.72}
-    embedding-model: ${IMAGE_EMBEDDING_MODEL:b2b-visual-signature-v2}
+    minimum-score: ${IMAGE_SEARCH_MINIMUM_SCORE:0.96}
+    embedding-model: ${IMAGE_EMBEDDING_MODEL:b2b-visual-signature-v4}
   ai:
     mode: ${AI_MODE:rule}
     openai-api-key: ${OPENAI_API_KEY:}

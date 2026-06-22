@@ -60,7 +60,7 @@ import "antd/dist/reset.css";
 import zhCN from "antd/locale/zh_CN";
 import "../shared/styles.css";
 import GlobalLoadingMask from "../shared/GlobalLoadingMask";
-import { AnyRecord, buyerAccountKey, buyerTokenKey, dateText, money, parseDetailContent, parseRows, request, statusText } from "../shared/api";
+import { AnyRecord, buyerAccountKey, buyerTokenKey, dateText, imageToCompressedDataUrl, money, parseDetailContent, parseRows, request, statusText } from "../shared/api";
 
 const phonePattern = /^1[3-9]\d{9}$/;
 const formValidateMessages = {
@@ -77,6 +77,7 @@ const formValidateMessages = {
 };
 const mallImageSearchTypes = ["image/png", "image/jpeg", "image/jpg", "image/webp", "image/bmp"];
 const mallImageSearchMaxSize = 5 * 1024 * 1024;
+const mallImageSearchUploadMaxBytes = 600 * 1024;
 const mallListPageSize = 10;
 const mallPageSnapshotKey = "b2b-erp-mall-page-snapshot";
 const mallPageSnapshotMaxAge = 10 * 60 * 1000;
@@ -885,11 +886,13 @@ function MallRoot() {
   const searchProductsByImage = async (file: File) => {
     if (!file || imageSearchRequestRef.current) return;
     imageSearchRequestRef.current = true;
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("topK", "20");
     setImageSearchLoading(true);
     try {
+      const normalizedFile = await normalizeMallImageSearchFile(file, page, selectedProduct);
+      const uploadFile = await prepareMallImageSearchFile(normalizedFile);
+      const formData = new FormData();
+      formData.append("file", uploadFile);
+      formData.append("topK", "20");
       const response = await request<any>("/api/mall/products/search-by-image", { method: "POST", data: formData });
       const rows = Array.isArray(response) ? response : Array.isArray(response?.data) ? response.data : [];
       const mapped = rows
@@ -909,6 +912,10 @@ function MallRoot() {
       const text = String(error?.message || "");
       if (/404|501|暂未接入|not implemented/i.test(text)) {
         message.open({ type: "warning", content: "图片搜索能力暂未接入，请联系管理员配置图片搜索服务", key: "mall-image-search-error", duration: 2 });
+      } else if (/product image|LOW_COLOR_DOCUMENT_LIKE|RED_DOCUMENT_LIKE|请上传商品图片/i.test(text)) {
+        message.open({ type: "warning", content: "请上传商品图片后重试", key: "mall-image-search-error", duration: 2 });
+      } else if (/413|payload too large|request entity too large/i.test(text)) {
+        message.open({ type: "error", content: "图片过大，请压缩后重试", key: "mall-image-search-error", duration: 2 });
       } else {
         message.open({ type: "error", content: text || "图片搜索失败，请稍后重试", key: "mall-image-search-error", duration: 2 });
       }
@@ -1134,6 +1141,69 @@ function mallProductCardImageSrc(item: AnyRecord) {
   if (!src) return "";
   if (src.toLowerCase().startsWith("data:image")) return "";
   return src;
+}
+
+function dataUrlToFile(dataUrl: string, filename: string) {
+  const [meta = "", payload = ""] = String(dataUrl || "").split(",");
+  const mime = meta.match(/^data:([^;]+);base64$/i)?.[1] || "image/jpeg";
+  const binary = atob(payload);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return new File([bytes], filename, { type: mime });
+}
+
+function imageFileSize(file: File): Promise<{ width: number; height: number }> {
+  return new Promise(resolve => {
+    const imageUrl = URL.createObjectURL(file);
+    const image = new window.Image();
+    image.onload = () => {
+      URL.revokeObjectURL(imageUrl);
+      resolve({ width: image.naturalWidth || 0, height: image.naturalHeight || 0 });
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(imageUrl);
+      resolve({ width: 0, height: 0 });
+    };
+    image.src = imageUrl;
+  });
+}
+
+async function imageUrlToSearchFile(imageUrl: string, filename: string) {
+  const src = safeMallImageUrl(imageUrl);
+  if (!src) return null;
+  const response = await fetch(src);
+  if (!response.ok) return null;
+  const blob = await response.blob();
+  if (!blob.type.startsWith("image/")) return null;
+  return new File([blob], filename, { type: blob.type || "image/jpeg" });
+}
+
+async function normalizeMallImageSearchFile(file: File, page: Page, product: AnyRecord | null) {
+  const { width, height } = await imageFileSize(file);
+  const looksLikePageScreenshot = width >= 1000 && height >= 700 && width / Math.max(height, 1) > 1.15;
+  const productImage = String(product?.image || product?.cardImage || "").trim();
+  if (page === "detail" && looksLikePageScreenshot && productImage) {
+    const fallback = await imageUrlToSearchFile(productImage, `product-${product?.id || "detail"}-search.jpg`);
+    if (fallback) return fallback;
+  }
+  return file;
+}
+
+async function prepareMallImageSearchFile(file: File) {
+  if (file.size <= mallImageSearchUploadMaxBytes) return file;
+  const dataUrl = await imageToCompressedDataUrl(file, {
+    maxInputBytes: mallImageSearchMaxSize,
+    maxOutputBytes: mallImageSearchUploadMaxBytes
+  });
+  return dataUrlToFile(dataUrl, file.name.replace(/\.[^.]+$/, "") + "-search.jpg");
+}
+
+function htmlContainsImageSrc(html: string, imageUrl: string) {
+  const target = String(imageUrl || "").trim();
+  if (!target) return false;
+  const imageSources = Array.from(String(html || "").matchAll(/<img\b[^>]*?\bsrc=["']([^"']+)["']/gi))
+    .map(match => String(match[1] || "").trim());
+  return imageSources.some(src => src === target);
 }
 
 function MallProductCardCover({ product }: { product: AnyRecord }) {
@@ -2083,6 +2153,7 @@ function DetailPage({ ctx }: any) {
     .map((spec: AnyRecord, index: number) => ({ ...spec, originalIndex: index }))
     .filter((spec: AnyRecord) => specMatchesSelection(spec, selectedSpecValues, selectionGroups, p));
   const priceTiers = tierRowsForProduct(p);
+  const detailImageAlreadyRendered = htmlContainsImageSrc(p.detailText || "", p.detailImageUrl || "");
 
   const setSkuQty = (specIndex: number, value: any) => {
     const spec = p.specs?.[specIndex] || {};
@@ -2267,7 +2338,7 @@ function DetailPage({ ctx }: any) {
       <ProductAttributeCard attributes={p.customAttributes || []} />
       <Card title="商品详情">
         <div className="product-detail-render" dangerouslySetInnerHTML={{ __html: p.detailText || "暂无详情" }} />
-        {p.detailImageUrl ? <Image src={p.detailImageUrl} className="detail-image" /> : null}
+        {p.detailImageUrl && !detailImageAlreadyRendered ? <Image src={p.detailImageUrl} className="detail-image" /> : null}
       </Card>
     </Space>
   );
@@ -3978,6 +4049,9 @@ function MallAiAssistant({ ctx }: any) {
 function BrowseHistoryPage({ ctx }: any) {
   const [rows, setRows] = useState<AnyRecord[]>([]);
   const [loading, setLoading] = useState(false);
+  const [quickBuyOpen, setQuickBuyOpen] = useState(false);
+  const [quickBuyLoading, setQuickBuyLoading] = useState(false);
+  const [quickBuyProduct, setQuickBuyProduct] = useState<AnyRecord | null>(null);
 
   const loadHistory = async () => {
     setLoading(true);
@@ -4023,15 +4097,24 @@ function BrowseHistoryPage({ ctx }: any) {
     });
   };
 
-  const addToCart = async (item: AnyRecord, event: React.MouseEvent) => {
+  const openQuickBuy = async (item: AnyRecord, event: React.MouseEvent) => {
     event.stopPropagation();
-    await ctx.apiGuard(async () => {
-      const product = productFromApi(await request<AnyRecord>(`/api/mall/products/${item.productId}`));
-      const quantity = Math.max(1, Number(product.specs?.[0]?.min || product.raw?.minOrderQuantity || 1));
-      await request("/api/mall/cart/items", { method: "POST", data: { productId: Number(item.productId), quantity, specIndex: 0 } });
-      await ctx.hydrateCart();
-      ctx.message.success("已加入购物车");
-    });
+    if (!ctx.isLoggedIn) {
+      ctx.requireLogin(`/product/${item.productId}`);
+      return;
+    }
+    setQuickBuyProduct(null);
+    setQuickBuyOpen(true);
+    setQuickBuyLoading(true);
+    try {
+      const product = ctx.products.find((row: AnyRecord) => String(row.id) === String(item.productId)) || item;
+      setQuickBuyProduct(await ctx.loadProductDetail(product));
+    } catch (error: any) {
+      setQuickBuyOpen(false);
+      ctx.message.error(error?.message || "商品详情加载失败，请稍后重试");
+    } finally {
+      setQuickBuyLoading(false);
+    }
   };
 
   return (
@@ -4069,7 +4152,16 @@ function BrowseHistoryPage({ ctx }: any) {
                     <strong title={item.name}>{item.name}</strong>
                     <div className="mall-history-price-row">
                       <span>{money(price)}</span>
-                      <Button type="primary" size="small" className="mall-product-cart-icon" icon={<ShoppingCartOutlined />} disabled={unavailable} onClick={(event) => addToCart(item, event)} />
+                      <Button
+                        type="primary"
+                        size="small"
+                        className="mall-product-cart-icon"
+                        icon={<ShoppingCartOutlined />}
+                        aria-label="选择规格并购买"
+                        title="选择规格并购买"
+                        disabled={unavailable}
+                        onClick={(event) => openQuickBuy(item, event)}
+                      />
                     </div>
                   </article>
                 );
@@ -4078,6 +4170,13 @@ function BrowseHistoryPage({ ctx }: any) {
           </section>
         ))
       )}
+      <QuickBuyModal
+        ctx={ctx}
+        open={quickBuyOpen}
+        loading={quickBuyLoading}
+        product={quickBuyProduct}
+        onClose={() => setQuickBuyOpen(false)}
+      />
     </div>
   );
 }
