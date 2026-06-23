@@ -124,6 +124,40 @@ public class OrderRepository {
             .update();
     }
 
+    public int markPaid(Long id, String paymentNo) {
+        return jdbcClient.sql("""
+            UPDATE sales_orders
+            SET order_status = 'WAIT_SHIP',
+                payment_status = 'PAID',
+                fulfillment_status = 'UNSHIPPED',
+                payment_time = COALESCE(payment_time, CURRENT_TIMESTAMP(6)),
+                payment_no = COALESCE(NULLIF(payment_no, ''), :paymentNo)
+            WHERE id = :id
+            """)
+            .param("id", id)
+            .param("paymentNo", paymentNo)
+            .update();
+    }
+
+    public int completeOrder(Long id, String orderStatus, String paymentStatus) {
+        return jdbcClient.sql("""
+            UPDATE sales_orders
+            SET order_status = :orderStatus,
+                payment_status = :paymentStatus,
+                fulfillment_status = 'RECEIVED',
+                receive_time = COALESCE(receive_time, CURRENT_TIMESTAMP(6)),
+                completed_time = CASE
+                  WHEN :orderStatus = 'COMPLETED' THEN COALESCE(completed_time, CURRENT_TIMESTAMP(6))
+                  ELSE completed_time
+                END
+            WHERE id = :id
+            """)
+            .param("id", id)
+            .param("orderStatus", orderStatus)
+            .param("paymentStatus", paymentStatus)
+            .update();
+    }
+
     public List<SalesOrder> findExpiredUnpaidOrders(LocalDateTime expireBefore) {
         return jdbcClient.sql("""
             SELECT id, order_no, customer_id, customer_name, order_status, payment_status, fulfillment_status,

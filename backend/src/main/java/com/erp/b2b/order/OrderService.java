@@ -123,18 +123,20 @@ public class OrderService {
         if (!List.of("WAIT_PAY", "WAIT_CONFIRM").contains(order.orderStatus())) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "Only unpaid orders can be marked paid");
         }
-        orderRepository.updateStatus(id, "WAIT_SHIP", "PAID", "UNSHIPPED");
+        orderRepository.markPaid(id, "PAY" + order.orderNo().replace("SO", ""));
         return getOrder(id);
     }
 
     @Transactional
     public SalesOrder ship(Long id, ShipOrderRequest request) {
         SalesOrder order = getOrder(id);
-        if (!"WAIT_SHIP".equals(order.orderStatus())) {
+        if (!List.of("WAIT_SHIP", "PART_SHIPPED", "PARTIAL_SHIPPED").contains(order.orderStatus())
+            && !List.of("PART_SHIPPED", "PARTIAL_SHIPPED").contains(order.fulfillmentStatus())) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "Only wait-ship orders can be shipped");
         }
         orderRepository.markItemsShipped(id);
-        orderRepository.updateStatus(id, "WAIT_RECEIVE", order.paymentStatus(), "SHIPPED");
+        String nextFulfillmentStatus = "NO_LOGISTICS".equalsIgnoreCase(request.shipmentMethod()) ? "NO_LOGISTICS" : "SHIPPED";
+        orderRepository.updateStatus(id, "WAIT_RECEIVE", order.paymentStatus(), nextFulfillmentStatus);
         return getOrder(id);
     }
 
@@ -146,7 +148,7 @@ public class OrderService {
         }
         String nextOrderStatus = "SHIP_AFTER_PAY".equals(order.paymentMethod()) ? "WAIT_PAY" : "COMPLETED";
         String nextPaymentStatus = "SHIP_AFTER_PAY".equals(order.paymentMethod()) ? "UNPAID" : order.paymentStatus();
-        orderRepository.updateStatus(id, nextOrderStatus, nextPaymentStatus, "RECEIVED");
+        orderRepository.completeOrder(id, nextOrderStatus, nextPaymentStatus);
         return getOrder(id);
     }
 

@@ -7,6 +7,9 @@ public record ProductImageSearchResult(
     String productName,
     String imageUrl,
     BigDecimal price,
+    Integer stockQuantity,
+    Integer minOrderQuantity,
+    String skuCode,
     String categoryName,
     String brandName,
     Double similarity

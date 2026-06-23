@@ -443,6 +443,9 @@ public class ImageSearchService {
                 product.productName(),
                 productRepository.findMallProductCardImageUrl(product.id()),
                 product.salePrice() == null ? BigDecimal.ZERO : product.salePrice(),
+                product.stockQuantity() == null ? 0 : product.stockQuantity(),
+                product.minOrderQuantity() == null ? 1 : product.minOrderQuantity(),
+                productRepository.primarySkuCode(product),
                 product.categoryName(),
                 product.brandName(),
                 hit.similarity()

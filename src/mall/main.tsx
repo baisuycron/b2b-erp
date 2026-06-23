@@ -863,7 +863,7 @@ function MallRoot() {
       setSearchText("");
       setFilters({ category: "全部分类", brand: "全部品牌" });
       setSearchSummary({ type: "all", count: mapped.length });
-      replaceMallQuery(nextQuery);
+      replaceMallQuery(nextQuery, targetPage);
       setPage(targetPage);
     };
     const cached = productCacheRef.current.get("all");
@@ -1024,7 +1024,7 @@ function MallRoot() {
         </div>
       </div>
       <div className="mall-header">
-        <div className="mall-logo" onClick={() => go("home")}><div className="admin-logo" style={{ width: 36, height: 36, fontSize: 16 }}>B</div>夏至商城</div>
+        <div className="mall-logo" onClick={browseHomeAllProducts}><div className="admin-logo" style={{ width: 36, height: 36, fontSize: 16 }}>B</div>夏至商城</div>
         <MallSearchBar ctx={ctx} />
         <Button ref={aiButtonRef} className="mall-ai-header-button" type="primary" icon={<RobotOutlined />} onClick={openAiAssistant}>AI助手</Button>
       </div>
