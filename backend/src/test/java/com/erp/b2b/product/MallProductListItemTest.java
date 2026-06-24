@@ -27,6 +27,7 @@ class MallProductListItemTest {
             new BigDecimal("12.50"),
             8,
             1,
+            "NORMAL",
             "ON_SALE",
             "/api/public/product-thumbnails/1-card.jpg",
             "/api/public/product-thumbnails/1-thumb.jpg",

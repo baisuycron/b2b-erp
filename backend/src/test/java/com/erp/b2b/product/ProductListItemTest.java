@@ -23,6 +23,7 @@ class ProductListItemTest {
             "INDEPENDENT_PRICE",
             new BigDecimal("12.50"),
             8,
+            "NORMAL",
             "ON_SALE",
             "/uploads/products/thumb/1.jpg",
             null

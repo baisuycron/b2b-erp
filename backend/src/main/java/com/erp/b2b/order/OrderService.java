@@ -46,6 +46,9 @@ public class OrderService {
     public SalesOrder createOrder(CreateOrderRequest request) {
         Customer customer = customerRepository.findById(request.customerId())
             .orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST, "Customer not found"));
+        if ("DISABLED".equals(customer.auditStatus())) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "当前账号已停用，请联系管理员。");
+        }
         if (!"APPROVED".equals(customer.auditStatus())) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "Customer is not approved");
         }
@@ -194,6 +197,9 @@ public class OrderService {
     private void validateProductForOrder(CreateOrderItemRequest item, Product product) {
         if (!"ON_SALE".equals(product.saleStatus())) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "Product is not on sale: " + product.productName());
+        }
+        if ("DISABLED".equals(product.productStatus())) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Product is disabled: " + product.productName());
         }
         if (item.quantity() < product.minOrderQuantity()) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "Quantity is lower than minimum order quantity for " + product.productName());

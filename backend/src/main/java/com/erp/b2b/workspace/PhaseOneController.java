@@ -17,6 +17,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import java.math.BigDecimal;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -38,6 +39,9 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.BadSqlGrammarException;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.transaction.annotation.Transactional;
@@ -50,6 +54,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
 @RestController
 @RequestMapping("/api")
@@ -121,7 +126,7 @@ public class PhaseOneController {
             "pendingAfterSale", pendingAfterSale,
             "pendingInvoice", pendingInvoice,
             "todoCards", List.of(
-                row("module", "采购管理", "title", "待入库采购单", "count", count("SELECT COUNT(*) FROM purchase_orders WHERE purchase_status IN ('WAIT_STOCK_IN','PART_STOCK_IN')"), "target", "purchase"),
+                row("module", "采购管理", "title", "待审核采购入库单", "count", count("SELECT COUNT(*) FROM purchase_inbounds WHERE status = 'PENDING_REVIEW'"), "target", "purchase"),
                 row("module", "订单管理", "title", "待发货订单", "count", orders.stream().filter(order -> "WAIT_SHIP".equals(order.orderStatus())).count(), "target", "orders"),
                 row("module", "售后管理", "title", "待审核售后", "count", count("SELECT COUNT(*) FROM after_sale_orders WHERE after_sale_status IN ('PENDING_REVIEW','WAIT_AUDIT')"), "target", "afterSales"),
                 row("module", "开票管理", "title", "待开票申请", "count", pendingInvoice, "target", "invoices")
@@ -341,7 +346,7 @@ public class PhaseOneController {
         return List.of(
             permissionModule(DASHBOARD_PERMISSION_KEY, "首页工作台", List.of()),
             permissionModule("goods", "商品管理", List.of(row("key", "goods:product-list", "title", "商品档案"), row("key", "goods:product-category", "title", "商品分类"), row("key", "goods:product-brand", "title", "商品品牌"), row("key", "goods:product-attribute-template", "title", "商品属性模板"))),
-            permissionModule("purchase", "采购管理", List.of(row("key", "purchase:supplier", "title", "供应商管理"), row("key", "purchase:purchase-order", "title", "采购订单"), row("key", "purchase:purchase-inbound", "title", "采购入库记录"))),
+            permissionModule("purchase", "采购管理", List.of(row("key", "purchase:supplier", "title", "供应商管理"), row("key", "purchase:purchase-inbound", "title", "采购入库单"))),
             permissionModule("stock", "库存管理", List.of(row("key", "stock:stock-overview", "title", "库存总览"), row("key", "stock:stock-flow", "title", "库存流水"))),
             permissionModule("order", "订单管理", List.of()),
             permissionModule("aftersale", "售后管理", List.of()),
@@ -582,6 +587,7 @@ public class PhaseOneController {
             case "category" -> productRepository.batchUpdateCategory(productIds, requiredString(request, "categoryName"));
             case "brand" -> productRepository.batchUpdateBrand(productIds, requiredString(request, "brandName"));
             case "status" -> productRepository.batchUpdateSaleStatus(productIds, requiredString(request, "saleStatus"));
+            case "productStatus" -> productRepository.batchUpdateProductStatus(productIds, requiredString(request, "productStatus"));
             case "attributes" -> productRepository.batchUpdateAttributes(
                 productIds,
                 requiredLong(request, "attributeTemplateId"),
@@ -701,7 +707,10 @@ public class PhaseOneController {
             SELECT h.id, h.product_id, h.view_count, h.viewed_at,
                    p.product_code, p.sku_barcode, p.product_name, p.category_name, p.brand_name,
                    p.sku_name, p.unit, p.quote_type, p.sale_mode, p.sale_unit, p.sale_unit_ratio,
-                   p.sale_price, p.stock_quantity, p.min_order_quantity, p.sale_status,
+                   p.sale_price, p.stock_quantity, p.min_order_quantity,
+                   CASE WHEN p.product_status = 'NEW' AND p.created_at < DATE_SUB(NOW(), INTERVAL 30 DAY)
+                        THEN 'NORMAL' ELSE p.product_status END AS product_status,
+                   p.sale_status,
                    CASE
                      WHEN LOWER(COALESCE(p.main_image_card_url, '')) LIKE 'data:image%' THEN ''
                      ELSE COALESCE(p.main_image_card_url, '')
@@ -763,25 +772,52 @@ public class PhaseOneController {
     @PostMapping("/buyer/register")
     public Map<String, Object> buyerRegister(@RequestBody Map<String, Object> request) {
         String phone = string(request.getOrDefault("phone", request.get("account"))).trim();
+        String password = requiredPassword(request);
         if (phone.isBlank()) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "\u8bf7\u8f93\u5165\u624b\u673a\u53f7");
         }
         if (customerPhoneExists(phone)) {
-            throw new ApiException(HttpStatus.CONFLICT, "\u5f53\u524d\u624b\u673a\u53f7\u5df2\u88ab\u6ce8\u518c");
+            throw new ApiException(HttpStatus.CONFLICT, "该手机号已注册，请直接登录。");
         }
-        return row("buyerNo", "B" + System.currentTimeMillis() % 1000000, "phone", phone, "status", "ENABLED", "auditRequired", false);
+        String companyName = string(firstPresent(request.get("companyName"), request.get("buyerName"), request.get("contactName"), phone)).trim();
+        String contactName = string(firstPresent(request.get("contactName"), request.get("buyerName"), companyName)).trim();
+        String customerCode = "CUST-" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + System.currentTimeMillis() % 100000;
+        jdbcClient.sql("""
+            INSERT INTO customers (
+              customer_code, company_name, contact_name, contact_phone, login_phone, password_hash,
+              password_updated_at, address, audit_status, salesman_name, register_source, remark
+            )
+            VALUES (
+              :customerCode, :companyName, :contactName, :phone, :phone, :passwordHash,
+              NOW(), :address, 'APPROVED', '', 'BUYER_REGISTER', ''
+            )
+            """)
+            .param("customerCode", customerCode)
+            .param("companyName", companyName)
+            .param("contactName", contactName)
+            .param("phone", phone)
+            .param("passwordHash", passwordHash(password))
+            .param("address", string(request.getOrDefault("address", "")))
+            .update();
+        Map<String, Object> customer = one("SELECT id, customer_code, company_name, contact_name, contact_phone FROM customers WHERE customer_code = :code", "code", customerCode);
+        customerLog(longValue(customer.get("id")), "BUYER", phone, "CUSTOMER_REGISTER", "买家注册");
+        return row("buyerNo", customer.get("customerCode"), "phone", phone, "status", "ENABLED", "auditRequired", false);
     }
 
     @PostMapping("/buyer/login")
     public Map<String, Object> buyerLogin(@RequestBody Map<String, Object> request) {
         String phone = string(request.getOrDefault("phone", request.get("account"))).trim();
+        String password = string(request.get("password")).trim();
         if (phone.isBlank()) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "\u8bf7\u8f93\u5165\u624b\u673a\u53f7");
         }
+        if (password.isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "请输入密码");
+        }
         Map<String, Object> customer = jdbcClient.sql("""
-            SELECT id, company_name, contact_name, contact_phone, audit_status
+            SELECT id, customer_code, company_name, contact_name, contact_phone, login_phone, audit_status, password_hash
             FROM customers
-            WHERE contact_phone = :phone
+            WHERE contact_phone = :phone OR login_phone = :phone
             ORDER BY id DESC
             LIMIT 1
             """)
@@ -789,9 +825,17 @@ public class PhaseOneController {
             .query(this::mapRow)
             .optional()
             .orElseThrow(() -> new ApiException(HttpStatus.UNAUTHORIZED, "\u624b\u673a\u53f7\u6216\u5bc6\u7801\u9519\u8bef"));
-        if ("DISABLED".equals(customer.get("auditStatus"))) {
-            throw new ApiException(HttpStatus.FORBIDDEN, "\u5f53\u524d\u8d26\u53f7\u5df2\u88ab\u505c\u7528\uff0c\u8bf7\u8054\u7cfb\u5546\u5bb6");
+        if (string(customer.get("passwordHash")).isBlank() || !passwordHash(password).equals(customer.get("passwordHash"))) {
+            throw new ApiException(HttpStatus.UNAUTHORIZED, "手机号或密码错误。");
         }
+        if ("DISABLED".equals(customer.get("auditStatus"))) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "当前账号已停用，请联系管理员。");
+        }
+        Long customerId = longValue(customer.get("id"));
+        jdbcClient.sql("UPDATE customers SET last_login_at = NOW() WHERE id = :id")
+            .param("id", customerId)
+            .update();
+        customerLog(customerId, "BUYER", phone, "LOGIN", "买家登录");
         AuthTokenService.IssuedToken token = authTokenService.issue("BUYER", string(customer.get("id")));
         return row(
             "token", token.value(),
@@ -800,18 +844,44 @@ public class PhaseOneController {
             "phone", customer.get("contactPhone"),
             "buyerName", customer.get("contactName"),
             "companyName", customer.get("companyName"),
+            "customerCode", customer.get("customerCode"),
             "status", "ENABLED"
         );
     }
 
     @PostMapping("/buyer/password/update")
-    public Map<String, Object> updateBuyerPassword() {
+    public Map<String, Object> updateBuyerPassword(HttpServletRequest servletRequest, @RequestBody Map<String, Object> request) {
+        Long customerId = buyerCustomerId(servletRequest);
+        String oldPassword = string(firstPresent(request.get("oldPassword"), request.get("password"))).trim();
+        String newPassword = string(request.get("newPassword")).trim();
+        if (oldPassword.isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "请输入旧密码");
+        }
+        if (newPassword.length() < 6 || newPassword.length() > 20) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "新密码长度必须为 6-20 位");
+        }
+        Map<String, Object> customer = one("SELECT id, login_phone, contact_phone, password_hash FROM customers WHERE id = :id", "id", customerId);
+        if (!passwordHash(oldPassword).equals(customer.get("passwordHash"))) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "旧密码错误");
+        }
+        jdbcClient.sql("UPDATE customers SET password_hash = :passwordHash, password_updated_at = NOW() WHERE id = :id")
+            .param("passwordHash", passwordHash(newPassword))
+            .param("id", customerId)
+            .update();
+        customerLog(customerId, "BUYER", string(firstPresent(customer.get("loginPhone"), customer.get("contactPhone"), customerId)), "PASSWORD_UPDATE", "买家修改密码");
         return row("updated", true);
     }
 
     @GetMapping("/buyer/profile")
-    public Map<String, Object> buyerProfile() {
-        return row("buyerNo", "B000001", "buyerName", "杭州采购王", "companyName", "杭州某某商贸有限公司", "phone", "13800010001", "accountStatus", "ENABLED");
+    public Map<String, Object> buyerProfile(HttpServletRequest request) {
+        Long customerId = buyerCustomerId(request);
+        return one("""
+            SELECT customer_code AS buyer_no, contact_name AS buyer_name, company_name,
+                   COALESCE(login_phone, contact_phone) AS phone,
+                   CASE WHEN audit_status = 'DISABLED' THEN 'DISABLED' ELSE 'ENABLED' END AS account_status
+            FROM customers
+            WHERE id = :id
+            """, "id", customerId);
     }
 
     @GetMapping("/mall/cart")
@@ -830,7 +900,7 @@ public class PhaseOneController {
         int quantity = positiveInt(request, "quantity");
         int specIndex = request.containsKey("specIndex") ? nonNegativeInt(request, "specIndex") : 0;
         Product product = productRepository.findById(productId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
-        if (!"ON_SALE".equals(product.saleStatus())) {
+        if (!"ON_SALE".equals(product.saleStatus()) || "DISABLED".equals(product.productStatus())) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "Product is not on sale");
         }
         Map<String, Object> item = buyerCartItems.stream()
@@ -892,56 +962,101 @@ public class PhaseOneController {
     }
 
     @GetMapping("/mall/addresses")
-    public List<Map<String, Object>> mallAddresses() {
-        return buyerAddresses.stream().map(this::addressRow).toList();
+    public List<Map<String, Object>> mallAddresses(HttpServletRequest request) {
+        Long customerId = buyerCustomerId(request);
+        return rows("""
+            SELECT id, receiver_name, receiver_phone, region, detail_address, is_default, created_at, updated_at
+            FROM customer_addresses
+            WHERE customer_id = :customerId
+            ORDER BY is_default DESC, id DESC
+            """, "customerId", customerId);
     }
 
     @PostMapping("/mall/addresses")
-    public Map<String, Object> createAddress(@RequestBody Map<String, Object> request) {
-        Map<String, Object> item = row(
-            "id", addressSequence.incrementAndGet(),
-            "receiverName", requiredString(request, "receiverName"),
-            "receiverPhone", requiredString(request, "receiverPhone"),
-            "region", requiredString(request, "region"),
-            "detailAddress", requiredString(request, "detailAddress"),
-            "isDefault", Boolean.parseBoolean(String.valueOf(request.getOrDefault("isDefault", buyerAddresses.isEmpty())))
-        );
-        if (Boolean.parseBoolean(String.valueOf(item.get("isDefault")))) {
-            clearDefaultAddress();
+    public Map<String, Object> createAddress(HttpServletRequest servletRequest, @RequestBody Map<String, Object> request) {
+        Long customerId = buyerCustomerId(servletRequest);
+        boolean isDefault = Boolean.parseBoolean(String.valueOf(request.getOrDefault("isDefault", count("SELECT COUNT(*) FROM customer_addresses WHERE customer_id = :customerId", "customerId", customerId) == 0)));
+        if (isDefault) {
+            jdbcClient.sql("UPDATE customer_addresses SET is_default = false WHERE customer_id = :customerId")
+                .param("customerId", customerId)
+                .update();
         }
-        buyerAddresses.add(item);
-        ensureDefaultAddress();
-        return addressRow(item);
+        jdbcClient.sql("""
+            INSERT INTO customer_addresses (customer_id, receiver_name, receiver_phone, region, detail_address, is_default)
+            VALUES (:customerId, :receiverName, :receiverPhone, :region, :detailAddress, :isDefault)
+            """)
+            .param("customerId", customerId)
+            .param("receiverName", requiredString(request, "receiverName"))
+            .param("receiverPhone", requiredString(request, "receiverPhone"))
+            .param("region", requiredString(request, "region"))
+            .param("detailAddress", requiredString(request, "detailAddress"))
+            .param("isDefault", isDefault)
+            .update();
+        customerLog(customerId, "BUYER", String.valueOf(customerId), "ADDRESS_CREATE", "新增收货地址");
+        ensureDefaultAddress(customerId);
+        return rows("""
+            SELECT id, receiver_name, receiver_phone, region, detail_address, is_default, created_at, updated_at
+            FROM customer_addresses
+            WHERE customer_id = :customerId
+            ORDER BY id DESC
+            LIMIT 1
+            """, "customerId", customerId).get(0);
     }
 
     @PutMapping("/mall/addresses/{addressId}")
-    public Map<String, Object> updateAddress(@PathVariable Long addressId, @RequestBody Map<String, Object> request) {
-        Map<String, Object> item = findAddress(addressId);
-        item.put("receiverName", requiredString(request, "receiverName"));
-        item.put("receiverPhone", requiredString(request, "receiverPhone"));
-        item.put("region", requiredString(request, "region"));
-        item.put("detailAddress", requiredString(request, "detailAddress"));
-        if (Boolean.parseBoolean(String.valueOf(request.getOrDefault("isDefault", false)))) {
-            clearDefaultAddress();
-            item.put("isDefault", true);
+    public Map<String, Object> updateAddress(HttpServletRequest servletRequest, @PathVariable Long addressId, @RequestBody Map<String, Object> request) {
+        Long customerId = buyerCustomerId(servletRequest);
+        one("SELECT id FROM customer_addresses WHERE id = :id AND customer_id = :customerId", Map.of("id", addressId, "customerId", customerId));
+        boolean isDefault = Boolean.parseBoolean(String.valueOf(request.getOrDefault("isDefault", false)));
+        if (isDefault) {
+            jdbcClient.sql("UPDATE customer_addresses SET is_default = false WHERE customer_id = :customerId")
+                .param("customerId", customerId)
+                .update();
         }
-        ensureDefaultAddress();
-        return addressRow(item);
+        jdbcClient.sql("""
+            UPDATE customer_addresses
+            SET receiver_name = :receiverName,
+                receiver_phone = :receiverPhone,
+                region = :region,
+                detail_address = :detailAddress,
+                is_default = :isDefault
+            WHERE id = :id AND customer_id = :customerId
+            """)
+            .param("receiverName", requiredString(request, "receiverName"))
+            .param("receiverPhone", requiredString(request, "receiverPhone"))
+            .param("region", requiredString(request, "region"))
+            .param("detailAddress", requiredString(request, "detailAddress"))
+            .param("isDefault", isDefault)
+            .param("id", addressId)
+            .param("customerId", customerId)
+            .update();
+        ensureDefaultAddress(customerId);
+        return one("SELECT id, receiver_name, receiver_phone, region, detail_address, is_default, created_at, updated_at FROM customer_addresses WHERE id = :id", "id", addressId);
     }
 
     @DeleteMapping("/mall/addresses/{addressId}")
-    public Map<String, Object> deleteAddress(@PathVariable Long addressId) {
-        buyerAddresses.removeIf(item -> addressId.equals(Long.parseLong(String.valueOf(item.get("id")))));
-        ensureDefaultAddress();
+    public Map<String, Object> deleteAddress(HttpServletRequest servletRequest, @PathVariable Long addressId) {
+        Long customerId = buyerCustomerId(servletRequest);
+        jdbcClient.sql("DELETE FROM customer_addresses WHERE id = :id AND customer_id = :customerId")
+            .param("id", addressId)
+            .param("customerId", customerId)
+            .update();
+        ensureDefaultAddress(customerId);
         return row("deleted", true, "id", addressId);
     }
 
     @PutMapping("/mall/addresses/{addressId}/default")
-    public Map<String, Object> setDefaultAddress(@PathVariable Long addressId) {
-        Map<String, Object> item = findAddress(addressId);
-        clearDefaultAddress();
-        item.put("isDefault", true);
-        return addressRow(item);
+    public Map<String, Object> setDefaultAddress(HttpServletRequest servletRequest, @PathVariable Long addressId) {
+        Long customerId = buyerCustomerId(servletRequest);
+        one("SELECT id FROM customer_addresses WHERE id = :id AND customer_id = :customerId", Map.of("id", addressId, "customerId", customerId));
+        jdbcClient.sql("UPDATE customer_addresses SET is_default = false WHERE customer_id = :customerId")
+            .param("customerId", customerId)
+            .update();
+        jdbcClient.sql("UPDATE customer_addresses SET is_default = true WHERE id = :id AND customer_id = :customerId")
+            .param("id", addressId)
+            .param("customerId", customerId)
+            .update();
+        return one("SELECT id, receiver_name, receiver_phone, region, detail_address, is_default, created_at, updated_at FROM customer_addresses WHERE id = :id", "id", addressId);
     }
 
     @GetMapping("/admin/suppliers")
@@ -1037,6 +1152,253 @@ public class PhaseOneController {
         return row("deleted", true, "id", supplierId);
     }
 
+    @GetMapping("/admin/suppliers/options")
+    public List<Map<String, Object>> supplierOptions() {
+        return rows("""
+            SELECT id, supplier_name, supplier_status AS status
+            FROM suppliers
+            WHERE supplier_status = 'ENABLED'
+            ORDER BY supplier_name ASC, id ASC
+            """);
+    }
+
+    @GetMapping("/admin/products/options")
+    public List<Map<String, Object>> productOptions(@RequestParam(required = false) String keyword) {
+        String text = string(keyword).trim().toLowerCase();
+        String likeKeyword = "%" + text + "%";
+        return rows("""
+            SELECT id AS product_id, product_name, product_code, sale_status, product_status AS status
+            FROM products
+            WHERE COALESCE(product_status, 'NORMAL') NOT IN ('ARCHIVED','DISABLED')
+              AND sale_status = 'ON_SALE'
+              AND (:keyword = ''
+                OR LOWER(product_name) LIKE :likeKeyword
+                OR LOWER(product_code) LIKE :likeKeyword
+                OR LOWER(COALESCE(sku_barcode, '')) LIKE :likeKeyword
+                OR LOWER(COALESCE(sku_list_json, '')) LIKE :likeKeyword)
+            ORDER BY id DESC
+            LIMIT 50
+            """, Map.of("keyword", text, "likeKeyword", likeKeyword));
+    }
+
+    @GetMapping("/admin/products/{productId}/skus")
+    public List<Map<String, Object>> productSkuOptions(@PathVariable Long productId) {
+        Product product = productRepository.findById(productId)
+            .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "商品不存在"));
+        ensureProductSelectable(product);
+        return purchaseInboundSkuOptions(product);
+    }
+
+    @GetMapping("/admin/purchase-inbounds")
+    public Map<String, Object> purchaseInbounds(
+        @RequestParam(defaultValue = "1") int page,
+        @RequestParam(defaultValue = "10") int pageSize,
+        @RequestParam(required = false) String tab,
+        @RequestParam(required = false) String keyword,
+        @RequestParam(required = false) String status,
+        @RequestParam(required = false) Long supplierId,
+        @RequestParam(required = false) String createdStartDate,
+        @RequestParam(required = false) String createdEndDate,
+        @RequestParam(required = false) String inboundStartDate,
+        @RequestParam(required = false) String inboundEndDate
+    ) {
+        int safePage = Math.max(1, page);
+        int safePageSize = List.of(10, 20, 50).contains(pageSize) ? pageSize : 10;
+        Map<String, Object> params = new LinkedHashMap<>();
+        List<String> conditions = new ArrayList<>();
+        String normalizedStatus = purchaseInboundStatusFilter(status, tab);
+        if (!normalizedStatus.isBlank()) {
+            conditions.add("p.status = :status");
+            params.put("status", normalizedStatus);
+        }
+        if (supplierId != null) {
+            conditions.add("p.supplier_id = :supplierId");
+            params.put("supplierId", supplierId);
+        }
+        String keywordValue = string(keyword).trim().toLowerCase();
+        if (!keywordValue.isBlank()) {
+            conditions.add("""
+                (LOWER(p.inbound_no) LIKE :keyword
+                 OR LOWER(p.supplier_name) LIKE :keyword
+                 OR EXISTS (
+                   SELECT 1 FROM purchase_inbound_items i
+                   WHERE i.inbound_id = p.id
+                     AND (LOWER(i.product_name) LIKE :keyword OR LOWER(i.sku_code) LIKE :keyword)
+                 ))
+                """);
+            params.put("keyword", "%" + keywordValue + "%");
+        }
+        addDateCondition(conditions, params, "p.created_at", "createdStartDate", createdStartDate, ">=");
+        addDateCondition(conditions, params, "p.created_at", "createdEndDate", createdEndDate, "<=");
+        addDateCondition(conditions, params, "p.inbound_date", "inboundStartDate", inboundStartDate, ">=");
+        addDateCondition(conditions, params, "p.inbound_date", "inboundEndDate", inboundEndDate, "<=");
+        String where = conditions.isEmpty() ? "" : " WHERE " + String.join(" AND ", conditions);
+        Long totalValue = jdbcClient.sql("SELECT COUNT(*) FROM purchase_inbounds p" + where)
+            .params(params)
+            .query(Long.class)
+            .single();
+        long total = totalValue == null ? 0 : totalValue;
+        params.put("limit", safePageSize);
+        params.put("offset", (safePage - 1) * safePageSize);
+        List<Map<String, Object>> list = rows("""
+            SELECT p.id, p.inbound_no, p.supplier_id, p.supplier_name, p.inbound_date,
+                   COALESCE(COUNT(i.id), 0) AS item_count,
+                   p.total_quantity, p.total_amount, p.status, p.created_by, p.created_at,
+                   p.reviewed_by, p.reviewed_at, p.reject_reason, p.remark
+            FROM purchase_inbounds p
+            LEFT JOIN purchase_inbound_items i ON i.inbound_id = p.id
+            """ + where + """
+            GROUP BY p.id
+            ORDER BY p.created_at DESC, p.id DESC
+            LIMIT :limit OFFSET :offset
+            """, params);
+        return row("list", list, "total", total, "page", safePage, "pageSize", safePageSize);
+    }
+
+    @GetMapping("/admin/purchase-inbounds/{inboundId}")
+    public Map<String, Object> purchaseInboundDetail(@PathVariable Long inboundId) {
+        Map<String, Object> detail = one("SELECT * FROM purchase_inbounds WHERE id = :id", "id", inboundId);
+        List<Map<String, Object>> items = rows("""
+            SELECT i.*
+            FROM purchase_inbound_items i
+            WHERE i.inbound_id = :id
+            ORDER BY i.id ASC
+            """, "id", inboundId);
+        items.forEach(item -> fillPurchaseInboundExpectedStock(item, detail));
+        detail.put("items", items);
+        detail.put("logs", purchaseInboundLogs(inboundId));
+        detail.put("inventoryImpacts", purchaseInboundInventoryImpacts(detail, items));
+        return detail;
+    }
+
+    @PostMapping("/admin/purchase-inbounds")
+    @Transactional
+    public synchronized Map<String, Object> createPurchaseInbound(@RequestBody Map<String, Object> request) {
+        PurchaseInboundPayload payload = normalizePurchaseInboundPayload(request);
+        String inboundNo = "PI" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + String.format("%05d", System.currentTimeMillis() % 100000);
+        jdbcClient.sql("""
+            INSERT INTO purchase_inbounds (inbound_no, supplier_id, supplier_name, inbound_date, handler_name,
+              total_quantity, total_amount, status, remark, created_by)
+            VALUES (:inboundNo, :supplierId, :supplierName, :inboundDate, :handlerName,
+              :totalQuantity, :totalAmount, 'PENDING_REVIEW', :remark, :createdBy)
+            """)
+            .param("inboundNo", inboundNo)
+            .param("supplierId", payload.supplierId())
+            .param("supplierName", payload.supplierName())
+            .param("inboundDate", payload.inboundDate())
+            .param("handlerName", payload.handlerName())
+            .param("totalQuantity", payload.totalQuantity())
+            .param("totalAmount", payload.totalAmount())
+            .param("remark", payload.remark())
+            .param("createdBy", payload.handlerName())
+            .update();
+        Long inboundId = longValue(one("SELECT id FROM purchase_inbounds WHERE inbound_no = :inboundNo", "inboundNo", inboundNo).get("id"));
+        insertPurchaseInboundItems(inboundId, payload.items());
+        recordPurchaseInboundLog(inboundId, payload.handlerName(), "CREATE", "创建采购入库单 " + inboundNo);
+        logAs(payload.handlerName(), "采购管理", "创建采购入库单", inboundNo, "创建采购入库单 " + inboundNo);
+        return purchaseInboundDetail(inboundId);
+    }
+
+    @PutMapping("/admin/purchase-inbounds/{inboundId}")
+    @Transactional
+    public Map<String, Object> updatePurchaseInbound(@PathVariable Long inboundId, @RequestBody Map<String, Object> request) {
+        Map<String, Object> current = one("SELECT * FROM purchase_inbounds WHERE id = :id", "id", inboundId);
+        requirePurchaseInboundPending(current);
+        PurchaseInboundPayload payload = normalizePurchaseInboundPayload(request);
+        jdbcClient.sql("""
+            UPDATE purchase_inbounds
+            SET supplier_id = :supplierId,
+                supplier_name = :supplierName,
+                inbound_date = :inboundDate,
+                handler_name = :handlerName,
+                total_quantity = :totalQuantity,
+                total_amount = :totalAmount,
+                remark = :remark
+            WHERE id = :id
+            """)
+            .param("supplierId", payload.supplierId())
+            .param("supplierName", payload.supplierName())
+            .param("inboundDate", payload.inboundDate())
+            .param("handlerName", payload.handlerName())
+            .param("totalQuantity", payload.totalQuantity())
+            .param("totalAmount", payload.totalAmount())
+            .param("remark", payload.remark())
+            .param("id", inboundId)
+            .update();
+        jdbcClient.sql("DELETE FROM purchase_inbound_items WHERE inbound_id = :id").param("id", inboundId).update();
+        insertPurchaseInboundItems(inboundId, payload.items());
+        String inboundNo = string(current.get("inboundNo"));
+        recordPurchaseInboundLog(inboundId, payload.handlerName(), "EDIT", "编辑采购入库单 " + inboundNo);
+        logAs(payload.handlerName(), "采购管理", "编辑采购入库单", inboundNo, "编辑采购入库单");
+        return purchaseInboundDetail(inboundId);
+    }
+
+    @PostMapping("/admin/purchase-inbounds/{inboundId}/review")
+    @Transactional
+    public Map<String, Object> reviewPurchaseInbound(@PathVariable Long inboundId, @RequestBody Map<String, Object> request) {
+        String operatorName = requiredString(request, "operatorName");
+        validateAdminOperator(operatorName);
+        String action = string(request.getOrDefault("action", "APPROVE")).trim().toUpperCase();
+        Map<String, Object> inbound = one("SELECT * FROM purchase_inbounds WHERE id = :id FOR UPDATE", "id", inboundId);
+        requirePurchaseInboundPending(inbound);
+        String inboundNo = string(inbound.get("inboundNo"));
+        if ("REJECT".equals(action)) {
+            String rejectReason = requiredString(request, "rejectReason");
+            String remark = string(request.getOrDefault("remark", ""));
+            jdbcClient.sql("""
+                UPDATE purchase_inbounds
+                SET status = 'REJECTED', reviewed_by = :operatorName, reviewed_at = CURRENT_TIMESTAMP(6),
+                    reject_reason = :rejectReason, review_remark = :remark
+                WHERE id = :id AND status = 'PENDING_REVIEW'
+                """)
+                .param("operatorName", operatorName)
+                .param("rejectReason", rejectReason)
+                .param("remark", remark)
+                .param("id", inboundId)
+                .update();
+            recordPurchaseInboundLog(inboundId, operatorName, "REJECT", "审核驳回：" + rejectReason);
+            logAs(operatorName, "采购管理", "采购入库单审核驳回", inboundNo, rejectReason);
+            return purchaseInboundDetail(inboundId);
+        }
+        if (!"APPROVE".equals(action)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "审核结果不正确");
+        }
+        List<Map<String, Object>> items = rows("SELECT * FROM purchase_inbound_items WHERE inbound_id = :id ORDER BY id ASC", "id", inboundId);
+        if (items.isEmpty()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "商品明细不能为空");
+        }
+        for (Map<String, Object> item : items) {
+            Long productId = longObject(item.get("productId"));
+            int quantity = intValue(item.get("quantity"), 0);
+            String skuCode = string(item.get("skuCode"));
+            StockChange change = increasePurchaseInboundStock(productId, skuCode, quantity);
+            jdbcClient.sql("""
+                UPDATE purchase_inbound_items
+                SET before_stock = :beforeStock, after_stock = :afterStock
+                WHERE id = :id
+                """)
+                .param("beforeStock", change.beforeStock())
+                .param("afterStock", change.afterStock())
+                .param("id", item.get("id"))
+                .update();
+            inventoryRepository.insertMovement(productId, "PURCHASE_INBOUND", quantity, change.afterStock(), "PURCHASE_INBOUND", inboundNo, "采购入库审核通过");
+            recordPurchaseInboundLog(inboundId, operatorName, "STOCK_INCREASE", string(item.get("productName")) + " / " + skuCode + " 库存 +" + quantity);
+        }
+        jdbcClient.sql("""
+            UPDATE purchase_inbounds
+            SET status = 'IN_STOCK', reviewed_by = :operatorName, reviewed_at = CURRENT_TIMESTAMP(6),
+                review_remark = :remark
+            WHERE id = :id AND status = 'PENDING_REVIEW'
+            """)
+            .param("operatorName", operatorName)
+            .param("remark", string(request.getOrDefault("remark", "")))
+            .param("id", inboundId)
+            .update();
+        recordPurchaseInboundLog(inboundId, operatorName, "APPROVE", "审核入库 " + inboundNo);
+        logAs(operatorName, "采购管理", "采购入库单审核入库", inboundNo, "采购入库单审核通过并增加库存");
+        return purchaseInboundDetail(inboundId);
+    }
+
     @GetMapping("/admin/purchase-orders")
     public List<Map<String, Object>> purchaseOrders() {
         return rows("""
@@ -1061,6 +1423,7 @@ public class PhaseOneController {
         BigDecimal price = positiveMoney(request, "purchasePrice");
         Map<String, Object> supplier = one("SELECT * FROM suppliers WHERE id = :id", "id", supplierId);
         Product product = productRepository.findById(productId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
+        ensureProductPurchasable(product);
         String purchaseNo = "PO" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + System.currentTimeMillis() % 100000;
         jdbcClient.sql("""
             INSERT INTO purchase_orders (purchase_no, supplier_id, supplier_name, product_id, product_name, sku_code,
@@ -1100,6 +1463,7 @@ public class PhaseOneController {
         BigDecimal price = positiveMoney(request, "purchasePrice");
         Map<String, Object> supplier = one("SELECT * FROM suppliers WHERE id = :id", "id", supplierId);
         Product product = productRepository.findById(productId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
+        ensureProductPurchasable(product);
         jdbcClient.sql("""
             UPDATE purchase_orders
             SET supplier_id = :supplierId,
@@ -1153,6 +1517,7 @@ public class PhaseOneController {
             throw new ApiException(HttpStatus.BAD_REQUEST, "No quantity can be stocked in");
         }
         Product product = productRepository.findById(productId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Product not found"));
+        ensureProductPurchasable(product);
         productRepository.addStock(productId, quantity);
         Product latest = productRepository.findById(productId).orElseThrow();
         BigDecimal price = new BigDecimal(String.valueOf(order.get("purchasePrice")));
@@ -1315,7 +1680,7 @@ public class PhaseOneController {
         Map<String, Object> stats = rows("""
             SELECT
               COUNT(*) AS total,
-              COALESCE(SUM(CASE WHEN payment_status = 'UNPAID' OR order_status IN ('WAIT_PAY','PENDING_PAYMENT') THEN 1 ELSE 0 END), 0) AS unpaid,
+              COALESCE(SUM(CASE WHEN order_status NOT IN ('CANCELLED','CANCELED') AND (payment_status = 'UNPAID' OR order_status IN ('WAIT_PAY','PENDING_PAYMENT')) THEN 1 ELSE 0 END), 0) AS unpaid,
               COALESCE(SUM(CASE WHEN order_status NOT IN ('CANCELLED','COMPLETED')
                        AND fulfillment_status = 'UNSHIPPED'
                        AND (payment_status IN ('PAID','NOT_REQUIRED_BEFORE_RECEIPT') OR order_status IN ('WAIT_SHIP','PENDING_SHIPMENT'))
@@ -1506,7 +1871,12 @@ public class PhaseOneController {
     @PostMapping("/mall/payments")
     public Map<String, Object> createPayment(@RequestBody Map<String, Object> request) {
         Long orderId = requiredLong(request, "orderId");
+        String paymentMethod = normalizeOnlinePaymentMethod(request.get("paymentMethod"));
         var order = orderService.markPaid(orderId);
+        jdbcClient.sql("UPDATE sales_orders SET payment_method = :paymentMethod WHERE id = :id")
+            .param("id", orderId)
+            .param("paymentMethod", paymentMethod)
+            .update();
         String paymentNo = "PAY" + order.orderNo().replace("SO", "");
         log("财务管理", "支付成功", order.orderNo(), "订单支付成功 " + paymentNo);
         return row("paymentId", paymentNo, "orderId", orderId, "paymentStatus", order.paymentStatus(), "orderStatus", order.orderStatus(), "amount", order.totalAmount());
@@ -1962,30 +2332,63 @@ public class PhaseOneController {
     }
 
     @GetMapping("/admin/invoices")
-    public List<Map<String, Object>> adminInvoices() {
-        return rows("""
-            SELECT id, invoice_apply_no, order_no, buyer_name, invoice_type, title_type, invoice_title AS title,
-                   apply_amount AS amount, receive_email, invoice_status AS status, invoice_no, reject_reason, created_at, updated_at
-            FROM invoice_applies
-            ORDER BY id DESC
-            """);
+    public Map<String, Object> adminInvoices(
+        @RequestParam(defaultValue = "1") int page,
+        @RequestParam(defaultValue = "10") int pageSize,
+        @RequestParam(required = false) String tab,
+        @RequestParam(required = false) String keyword,
+        @RequestParam(required = false) String invoiceType,
+        @RequestParam(required = false) String invoiceStatus,
+        @RequestParam(required = false) String orderStatus,
+        @RequestParam(required = false) String afterSaleStatus,
+        @RequestParam(required = false) Boolean uploadedOnly,
+        @RequestParam(required = false) String applyStartDate,
+        @RequestParam(required = false) String applyEndDate,
+        @RequestParam(required = false) String timeoutStartDate,
+        @RequestParam(required = false) String timeoutEndDate
+    ) {
+        int safePage = Math.max(1, page);
+        int safePageSize = List.of(10, 20, 50).contains(pageSize) ? pageSize : 10;
+        Map<String, Object> params = new LinkedHashMap<>();
+        String where = adminInvoiceWhere(tab, keyword, invoiceType, invoiceStatus, orderStatus, afterSaleStatus, uploadedOnly, applyStartDate, applyEndDate, timeoutStartDate, timeoutEndDate, params);
+        Long total = jdbcClient.sql("SELECT COUNT(*) FROM (" + adminInvoiceListBaseSql() + where + ") x")
+            .params(params)
+            .query(Long.class)
+            .single();
+        params.put("limit", safePageSize);
+        params.put("offset", (safePage - 1) * safePageSize);
+        List<Map<String, Object>> list = rows(adminInvoiceListBaseSql() + where + " ORDER BY i.created_at DESC, i.id DESC LIMIT :limit OFFSET :offset", params)
+            .stream()
+            .map(this::normalizeInvoiceRow)
+            .toList();
+        return row("list", list, "total", total == null ? 0 : total, "page", safePage, "pageSize", safePageSize);
     }
 
     @GetMapping("/admin/invoices/{invoiceApplyId}")
     public Map<String, Object> adminInvoiceDetail(@PathVariable Long invoiceApplyId) {
-        Map<String, Object> detail = one("""
-            SELECT id, invoice_apply_no, order_no, buyer_name, invoice_type, title_type, invoice_title AS title,
-                   apply_amount AS amount, receive_email, invoice_status AS status, invoice_no, reject_reason, created_at, updated_at
-            FROM invoice_applies
-            WHERE id = :id
-            """, "id", invoiceApplyId);
+        List<Map<String, Object>> details = rows(adminInvoiceListBaseSql() + " WHERE i.id = :id", "id", invoiceApplyId);
+        if (details.isEmpty()) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "Data not found");
+        }
+        Map<String, Object> detail = normalizeInvoiceRow(details.get(0));
         detail.put("files", invoiceFiles(invoiceApplyId));
+        detail.put("logs", invoiceLogs(detail));
+        detail.put("progress", invoiceProgress(detail));
+        detail.put("order", invoiceOrderInfo(detail));
+        detail.put("buyer", invoiceBuyerInfo(detail));
+        detail.put("titleInfo", invoiceTitleInfo(detail));
+        detail.put("amountInfo", invoiceAmountInfo(detail));
+        detail.put("afterSaleImpact", invoiceAfterSaleImpact(detail));
+        detail.put("timeoutInfo", invoiceTimeoutInfo(detail));
         return detail;
     }
 
     @GetMapping("/mall/invoices")
-    public List<Map<String, Object>> mallInvoices() {
-        return adminInvoices();
+    public Map<String, Object> mallInvoices(
+        @RequestParam(defaultValue = "1") int page,
+        @RequestParam(defaultValue = "10") int pageSize
+    ) {
+        return adminInvoices(page, pageSize, null, null, null, null, null, null, null, null, null, null, null);
     }
 
     @GetMapping("/mall/invoices/{invoiceApplyId}")
@@ -1994,15 +2397,19 @@ public class PhaseOneController {
     }
 
     @PostMapping("/mall/invoices")
+    @Transactional
     public Map<String, Object> createInvoice(@RequestBody Map<String, Object> request) {
         String orderNo = requiredString(request, "orderNo");
-        Map<String, Object> order = one("SELECT id, total_amount, COALESCE(refunded_amount, 0) AS refunded_amount FROM sales_orders WHERE order_no = :orderNo", "orderNo", orderNo);
+        Map<String, Object> order = one("SELECT id, order_status, customer_name, total_amount, COALESCE(refunded_amount, 0) AS refunded_amount FROM sales_orders WHERE order_no = :orderNo", "orderNo", orderNo);
+        if (!"COMPLETED".equalsIgnoreCase(string(order.get("orderStatus")))) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "订单未完成，不允许申请开票");
+        }
         if (activeAfterSaleCount(orderNo) > 0) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "售后处理中，订单不允许申请开票");
         }
         String invoiceTitle = requiredString(request, request.containsKey("title") ? "title" : "invoiceTitle");
         BigDecimal amount = nonNegativeMoney(request, "amount");
-        BigDecimal invoiceableAmount = decimalValue(order.get("totalAmount"), BigDecimal.ZERO).subtract(decimalValue(order.get("refundedAmount"), BigDecimal.ZERO)).max(BigDecimal.ZERO);
+        BigDecimal invoiceableAmount = invoiceAvailableAmount(orderNo);
         if (invoiceableAmount.compareTo(BigDecimal.ZERO) <= 0) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "订单已全额退款，不允许申请开票");
         }
@@ -2010,109 +2417,241 @@ public class PhaseOneController {
             throw new ApiException(HttpStatus.BAD_REQUEST, "申请开票金额不能大于退款后可开票金额");
         }
         String email = requiredEmail(request, request.containsKey("email") ? "email" : "receiveEmail");
+        String titleType = normalizeTitleType(request.getOrDefault("titleType", "COMPANY"));
+        String invoiceType = normalizeInvoiceType(request.getOrDefault("invoiceType", "ELECTRONIC_NORMAL"));
+        if ("PERSONAL".equals(titleType) && !"ELECTRONIC_NORMAL".equals(invoiceType)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "个人抬头仅支持电子普通发票");
+        }
         String invoiceApplyNo = "INV" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + System.currentTimeMillis() % 100000;
         jdbcClient.sql("""
-            INSERT INTO invoice_applies (invoice_apply_no, order_no, buyer_name, invoice_type, title_type, invoice_title, apply_amount, receive_email, invoice_status)
-            VALUES (:invoiceApplyNo, :orderNo, :buyerName, :invoiceType, :titleType, :invoiceTitle, :amount, :email, 'WAIT_INVOICE')
+            INSERT INTO invoice_applies (invoice_apply_no, order_no, buyer_name, applicant_name, invoice_type, invoice_type_source, title_type, invoice_title, tax_no, apply_amount, receive_email, buyer_remark, invoice_status)
+            VALUES (:invoiceApplyNo, :orderNo, :buyerName, :applicantName, :invoiceType, :invoiceTypeSource, :titleType, :invoiceTitle, :taxNo, :amount, :email, :buyerRemark, 'PENDING_INVOICE')
             """)
             .param("invoiceApplyNo", invoiceApplyNo)
             .param("orderNo", orderNo)
             .param("buyerName", string(request.getOrDefault("buyerName", "杭州采购王")))
-            .param("invoiceType", string(request.getOrDefault("invoiceType", "E_NORMAL")))
-            .param("titleType", string(request.getOrDefault("titleType", "COMPANY")))
+            .param("applicantName", string(firstPresent(request.get("buyerAccount"), request.get("applicantName"), request.get("buyerName"), order.get("customerName"))))
+            .param("invoiceType", invoiceType)
+            .param("invoiceTypeSource", string(request.getOrDefault("invoiceTypeSource", "BUYER_SELECTED")))
+            .param("titleType", titleType)
             .param("invoiceTitle", invoiceTitle)
+            .param("taxNo", string(firstPresent(request.get("taxNo"), request.get("taxpayerNo"))))
             .param("amount", amount)
             .param("email", email)
+            .param("buyerRemark", string(request.getOrDefault("remark", "")))
             .update();
         log("开票管理", "提交开票申请", invoiceApplyNo, "提交开票申请");
         return one("SELECT * FROM invoice_applies WHERE invoice_apply_no = :invoiceApplyNo", "invoiceApplyNo", invoiceApplyNo);
     }
 
     @PostMapping("/admin/invoices/{invoiceApplyId}/confirm")
-    public Map<String, Object> confirmInvoice(@PathVariable Long invoiceApplyId) {
+    @Transactional
+    public Map<String, Object> confirmInvoice(@PathVariable Long invoiceApplyId, @RequestBody Map<String, Object> request) {
         Map<String, Object> apply = one("SELECT * FROM invoice_applies WHERE id = :id", "id", invoiceApplyId);
-        BigDecimal applyAmount = new BigDecimal(String.valueOf(apply.get("applyAmount")));
-        BigDecimal fileAmount = invoiceFileAmount(invoiceApplyId);
-        if (invoiceFileCount(invoiceApplyId) > 0 && fileAmount.compareTo(applyAmount) != 0) {
-            throw new ApiException(HttpStatus.BAD_REQUEST, "发票文件金额合计必须等于申请开票金额");
+        requireInvoiceStatus(apply, "PENDING_INVOICE", "只有待开票状态允许确认开票");
+        String operatorName = requiredString(request, "operatorName");
+        validateAdminOperator(operatorName);
+        String orderNo = string(apply.get("orderNo"));
+        Map<String, Object> order = one("SELECT order_status, total_amount, COALESCE(refunded_amount, 0) AS refunded_amount FROM sales_orders WHERE order_no = :orderNo", "orderNo", orderNo);
+        if (!"COMPLETED".equalsIgnoreCase(string(order.get("orderStatus")))) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "订单未完成，不允许开票");
         }
-        String invoiceNo = "FP" + System.currentTimeMillis() % 100000;
-        jdbcClient.sql("UPDATE invoice_applies SET invoice_status = 'INVOICED', invoice_no = :invoiceNo WHERE id = :id")
-            .param("invoiceNo", invoiceNo)
+        if (activeAfterSaleCount(orderNo) > 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "该订单存在售后处理中，暂不允许开票。");
+        }
+        BigDecimal applyAmount = decimalValue(apply.get("applyAmount"), BigDecimal.ZERO);
+        BigDecimal availableAmount = invoiceAvailableAmount(orderNo);
+        if (availableAmount.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "该订单已全额退款，不支持开票。");
+        }
+        if (applyAmount.compareTo(availableAmount) > 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "本次开票金额不能大于当前可开票金额");
+        }
+        long fileCount = invoiceFileCount(invoiceApplyId);
+        if (fileCount <= 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "确认开票前请至少上传 1 个发票文件");
+        }
+        BigDecimal fileAmount = invoiceFileAmount(invoiceApplyId);
+        if (fileAmount.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "发票金额合计必须大于 0");
+        }
+        if (fileAmount.compareTo(applyAmount) > 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "已上传发票金额合计不能超过申请金额");
+        }
+        ensureInvoiceFileNumbersUnique(invoiceApplyId);
+        jdbcClient.sql("""
+            UPDATE invoice_applies
+            SET invoice_status = 'INVOICED',
+                invoice_no = COALESCE(invoice_no, (SELECT invoice_no FROM invoice_files WHERE invoice_apply_id = :id AND invoice_no IS NOT NULL AND invoice_no <> '' ORDER BY id LIMIT 1)),
+                confirmed_by = :operatorName,
+                confirmed_at = NOW(),
+                admin_remark = :remark
+            WHERE id = :id
+            """)
+            .param("operatorName", operatorName)
+            .param("remark", string(request.getOrDefault("remark", "")))
             .param("id", invoiceApplyId)
             .update();
-        log("开票管理", "确认开票", String.valueOf(invoiceApplyId), "确认开票 " + invoiceNo);
-        return one("SELECT * FROM invoice_applies WHERE id = :id", "id", invoiceApplyId);
+        logAs(operatorName, "开票管理", "后台确认开票", string(apply.get("invoiceApplyNo")), "确认开票，发票金额合计 " + fileAmount);
+        return adminInvoiceDetail(invoiceApplyId);
     }
 
     @PostMapping("/admin/invoices/{invoiceApplyId}/files")
-    public Map<String, Object> uploadInvoiceFile(@PathVariable Long invoiceApplyId, @RequestBody Map<String, Object> request) {
-        one("SELECT * FROM invoice_applies WHERE id = :id", "id", invoiceApplyId);
-        jdbcClient.sql("""
-            INSERT INTO invoice_files (invoice_apply_id, file_name, invoice_no, invoice_type, invoice_amount, ocr_status, ocr_result)
-            VALUES (:invoiceApplyId, :fileName, :invoiceNo, :invoiceType, :invoiceAmount, 'WAIT_OCR', :ocrResult)
-            """)
-            .param("invoiceApplyId", invoiceApplyId)
-            .param("fileName", requiredString(request, "fileName"))
-            .param("invoiceNo", string(request.getOrDefault("invoiceNo", "")))
-            .param("invoiceType", string(request.getOrDefault("invoiceType", "E_NORMAL")))
-            .param("invoiceAmount", nonNegativeMoney(request, "invoiceAmount"))
-            .param("ocrResult", string(request.getOrDefault("ocrResult", "")))
-            .update();
-        log("开票管理", "上传发票", String.valueOf(invoiceApplyId), "上传发票文件");
-        return adminInvoiceDetail(invoiceApplyId);
-    }
-
-    @PostMapping("/admin/invoices/{invoiceApplyId}/ocr")
-    public Map<String, Object> ocrInvoice(@PathVariable Long invoiceApplyId, @RequestBody Map<String, Object> request) {
-        List<Map<String, Object>> files = invoiceFiles(invoiceApplyId);
-        if (files.isEmpty()) {
-            throw new ApiException(HttpStatus.BAD_REQUEST, "请先上传发票文件");
-        }
-        Long fileId = request.containsKey("fileId") ? requiredLong(request, "fileId") : Long.parseLong(String.valueOf(files.get(0).get("id")));
+    @Transactional
+    public Map<String, Object> uploadInvoiceFile(
+        @PathVariable Long invoiceApplyId,
+        @RequestParam(value = "files", required = false) List<MultipartFile> files,
+        @RequestParam(value = "invoiceNo", required = false) String invoiceNo,
+        @RequestParam(value = "invoiceCode", required = false) String invoiceCode,
+        @RequestParam(value = "invoiceDate", required = false) String invoiceDate,
+        @RequestParam(value = "invoiceAmount", required = false) BigDecimal invoiceAmount,
+        @RequestParam(value = "remark", required = false) String remark,
+        @RequestParam(value = "operatorName", required = false) String operatorName
+    ) {
         Map<String, Object> apply = one("SELECT * FROM invoice_applies WHERE id = :id", "id", invoiceApplyId);
-        jdbcClient.sql("""
-            UPDATE invoice_files
-            SET ocr_status = 'SUCCESS',
-                invoice_no = COALESCE(NULLIF(:invoiceNo, ''), invoice_no),
-                invoice_type = COALESCE(NULLIF(:invoiceType, ''), invoice_type),
-                invoice_amount = :invoiceAmount,
-                ocr_result = :ocrResult
-            WHERE id = :fileId AND invoice_apply_id = :invoiceApplyId
-            """)
-            .param("invoiceNo", string(request.getOrDefault("invoiceNo", "OCR" + System.currentTimeMillis() % 100000)))
-            .param("invoiceType", string(request.getOrDefault("invoiceType", apply.getOrDefault("invoiceType", "E_NORMAL"))))
-            .param("invoiceAmount", request.containsKey("invoiceAmount") ? nonNegativeMoney(request, "invoiceAmount") : new BigDecimal(String.valueOf(apply.get("applyAmount"))))
-            .param("ocrResult", string(request.getOrDefault("ocrResult", "OCR识别成功，结果已回填，可人工修改")))
-            .param("fileId", fileId)
-            .param("invoiceApplyId", invoiceApplyId)
-            .update();
-        log("开票管理", "OCR识别", String.valueOf(invoiceApplyId), "OCR识别发票文件");
+        requireInvoiceStatus(apply, "PENDING_INVOICE", "只有待开票状态允许上传发票");
+        String operator = string(operatorName).trim();
+        if (operator.isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "无法获取当前操作人，请重新登录");
+        }
+        validateAdminOperator(operator);
+        List<MultipartFile> uploadFiles = files == null ? List.of() : files.stream().filter(file -> file != null && !file.isEmpty()).toList();
+        if (uploadFiles.isEmpty()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "请选择 PDF 发票文件");
+        }
+        if (invoiceFileCount(invoiceApplyId) + uploadFiles.size() > 10) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "单个申请最多上传 10 个发票文件");
+        }
+        BigDecimal perFileAmount = invoiceAmount == null ? BigDecimal.ZERO : invoiceAmount;
+        if (perFileAmount.compareTo(BigDecimal.ZERO) < 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "发票金额不能小于 0");
+        }
+        BigDecimal nextAmount = invoiceFileAmount(invoiceApplyId).add(perFileAmount.multiply(BigDecimal.valueOf(uploadFiles.size())));
+        if (nextAmount.compareTo(decimalValue(apply.get("applyAmount"), BigDecimal.ZERO)) > 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "已上传发票金额合计不能超过申请金额");
+        }
+        String normalizedInvoiceNo = string(invoiceNo).trim();
+        if (!normalizedInvoiceNo.isBlank()) {
+            ensureInvoiceNoUnique(normalizedInvoiceNo, string(apply.get("orderNo")), invoiceApplyId);
+        }
+        for (MultipartFile file : uploadFiles) {
+            validateInvoicePdf(file);
+            ensureInvoiceFileNameUnique(invoiceApplyId, file.getOriginalFilename());
+            try {
+                jdbcClient.sql("""
+                    INSERT INTO invoice_files (invoice_apply_id, file_name, file_content, content_type, invoice_no, invoice_code, invoice_date, invoice_type, invoice_amount, uploaded_by, remark, ocr_status, ocr_result)
+                    VALUES (:invoiceApplyId, :fileName, :fileContent, :contentType, :invoiceNo, :invoiceCode, :invoiceDate, :invoiceType, :invoiceAmount, :uploadedBy, :remark, 'MANUAL', '')
+                    """)
+                    .param("invoiceApplyId", invoiceApplyId)
+                    .param("fileName", safeFileName(file.getOriginalFilename()))
+                    .param("fileContent", Base64.getEncoder().encodeToString(file.getBytes()))
+                    .param("contentType", firstPresent(file.getContentType(), "application/pdf"))
+                    .param("invoiceNo", normalizedInvoiceNo)
+                    .param("invoiceCode", string(invoiceCode).trim())
+                    .param("invoiceDate", string(invoiceDate).isBlank() ? null : string(invoiceDate).trim())
+                    .param("invoiceType", normalizeInvoiceType(apply.get("invoiceType")))
+                    .param("invoiceAmount", perFileAmount)
+                    .param("uploadedBy", operator)
+                    .param("remark", string(remark))
+                    .update();
+            } catch (IOException exception) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, "发票文件读取失败");
+            }
+        }
+        logAs(operator, "开票管理", "后台上传发票", string(apply.get("invoiceApplyNo")), "上传发票文件 " + uploadFiles.size() + " 个");
         return adminInvoiceDetail(invoiceApplyId);
     }
-
     @PostMapping("/admin/invoices/{invoiceApplyId}/reject")
+    @Transactional
     public Map<String, Object> rejectInvoice(@PathVariable Long invoiceApplyId, @RequestBody Map<String, Object> request) {
-        String reason = requiredString(request, "reason");
-        jdbcClient.sql("UPDATE invoice_applies SET invoice_status = 'REJECTED', reject_reason = :reason WHERE id = :id")
+        Map<String, Object> apply = one("SELECT * FROM invoice_applies WHERE id = :id", "id", invoiceApplyId);
+        requireInvoiceStatus(apply, "PENDING_INVOICE", "只有待开票状态允许驳回");
+        String operatorName = requiredString(request, "operatorName");
+        validateAdminOperator(operatorName);
+        String reason = requiredString(request, request.containsKey("rejectReason") ? "rejectReason" : "reason");
+        jdbcClient.sql("""
+            UPDATE invoice_applies
+            SET invoice_status = 'REJECTED',
+                reject_reason = :reason,
+                reject_remark = :remark,
+                rejected_by = :operatorName,
+                rejected_at = NOW()
+            WHERE id = :id
+            """)
             .param("reason", reason)
+            .param("remark", string(request.getOrDefault("remark", "")))
+            .param("operatorName", operatorName)
             .param("id", invoiceApplyId)
             .update();
-        log("开票管理", "驳回开票", String.valueOf(invoiceApplyId), "驳回开票申请");
-        return one("SELECT * FROM invoice_applies WHERE id = :id", "id", invoiceApplyId);
+        logAs(operatorName, "开票管理", "后台驳回申请", string(apply.get("invoiceApplyNo")), reason);
+        return adminInvoiceDetail(invoiceApplyId);
     }
 
+    @DeleteMapping("/admin/invoices/files/{fileId}")
+    @Transactional
+    public Map<String, Object> deleteInvoiceFile(@PathVariable Long fileId, @RequestBody(required = false) Map<String, Object> request) {
+        Map<String, Object> file = one("SELECT * FROM invoice_files WHERE id = :id", "id", fileId);
+        Long invoiceApplyId = longValue(file.get("invoiceApplyId"));
+        Map<String, Object> apply = one("SELECT * FROM invoice_applies WHERE id = :id", "id", invoiceApplyId);
+        requireInvoiceStatus(apply, "PENDING_INVOICE", "仅待开票状态允许删除发票文件");
+        String operatorName = string(request == null ? "" : request.get("operatorName")).trim();
+        if (operatorName.isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "无法获取当前操作人，请重新登录");
+        }
+        validateAdminOperator(operatorName);
+        jdbcClient.sql("DELETE FROM invoice_files WHERE id = :id").param("id", fileId).update();
+        logAs(operatorName, "开票管理", "后台删除发票", string(apply.get("invoiceApplyNo")), "删除发票文件 " + string(file.get("fileName")));
+        return row("deleted", true, "id", fileId);
+    }
+
+    @GetMapping("/admin/invoices/files/{fileId}/preview")
+    public ResponseEntity<byte[]> previewInvoiceFile(@PathVariable Long fileId) {
+        return invoiceFileResponse(fileId, false);
+    }
+
+    @GetMapping("/admin/invoices/files/{fileId}/download")
+    public ResponseEntity<byte[]> downloadInvoiceFile(@PathVariable Long fileId) {
+        return invoiceFileResponse(fileId, true);
+    }
+
+    @PostMapping("/mall/invoices/{invoiceApplyId}/cancel")
+    @Transactional
+    public Map<String, Object> cancelInvoice(@PathVariable Long invoiceApplyId, @RequestBody Map<String, Object> request) {
+        Map<String, Object> apply = one("SELECT * FROM invoice_applies WHERE id = :id", "id", invoiceApplyId);
+        requireInvoiceStatus(apply, "PENDING_INVOICE", "只有待开票状态允许撤销");
+        String reason = string(firstPresent(request.get("cancelReason"), request.get("reason"), "买家自行撤销"));
+        String buyerName = string(firstPresent(request.get("buyerName"), apply.get("buyerName"), apply.get("applicantName"), "buyer"));
+        jdbcClient.sql("""
+            UPDATE invoice_applies
+            SET invoice_status = 'CANCELLED',
+                cancelled_reason = :reason,
+                cancelled_by = :buyerName,
+                cancelled_at = NOW()
+            WHERE id = :id
+            """)
+            .param("reason", reason)
+            .param("buyerName", buyerName)
+            .param("id", invoiceApplyId)
+            .update();
+        logAs(buyerName, "开票管理", "买家撤销开票申请", string(apply.get("invoiceApplyNo")), reason);
+        return adminInvoiceDetail(invoiceApplyId);
+    }
     @GetMapping("/mall/invoice-titles")
-    public List<Map<String, Object>> invoiceTitles() {
+    public List<Map<String, Object>> invoiceTitles(HttpServletRequest request) {
+        Long customerId = buyerCustomerId(request);
         return rows("""
-            SELECT id, buyer_name, title_type, invoice_title AS title, tax_no, receive_email, is_default, created_at, updated_at
+            SELECT id, buyer_name, title_type, invoice_title AS title, tax_no,
+                   supported_invoice_types, default_invoice_type, receive_email, is_default, created_at, updated_at
             FROM invoice_titles
+            WHERE customer_id = :customerId
             ORDER BY is_default DESC, id
-            """);
+            """, "customerId", customerId);
     }
 
     @PostMapping("/mall/invoice-titles")
-    public Map<String, Object> createInvoiceTitle(@RequestBody Map<String, Object> request) {
+    public Map<String, Object> createInvoiceTitle(HttpServletRequest servletRequest, @RequestBody Map<String, Object> request) {
+        Long customerId = buyerCustomerId(servletRequest);
+        Map<String, Object> customer = one("SELECT company_name, contact_name FROM customers WHERE id = :id", "id", customerId);
         String invoiceTitle = requiredString(request, request.containsKey("title") ? "title" : "invoiceTitle");
         String email = requiredEmail(request, request.containsKey("email") ? "email" : "receiveEmail");
         String titleType = string(request.getOrDefault("titleType", "COMPANY"));
@@ -2120,21 +2659,40 @@ public class PhaseOneController {
         if ("COMPANY".equalsIgnoreCase(titleType) && taxNo.isBlank()) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "taxNo is required for company invoice title");
         }
+        boolean isDefault = Boolean.parseBoolean(String.valueOf(request.getOrDefault("isDefault", count("SELECT COUNT(*) FROM invoice_titles WHERE customer_id = :customerId", "customerId", customerId) == 0)));
+        if (isDefault) {
+            jdbcClient.sql("UPDATE invoice_titles SET is_default = false WHERE customer_id = :customerId")
+                .param("customerId", customerId)
+                .update();
+        }
         jdbcClient.sql("""
-            INSERT INTO invoice_titles (buyer_name, title_type, invoice_title, tax_no, receive_email, is_default)
-            VALUES (:buyerName, :titleType, :invoiceTitle, :taxNo, :email, false)
+            INSERT INTO invoice_titles (
+              customer_id, buyer_name, title_type, invoice_title, tax_no,
+              supported_invoice_types, default_invoice_type, receive_email, is_default
+            )
+            VALUES (
+              :customerId, :buyerName, :titleType, :invoiceTitle, :taxNo,
+              :supportedInvoiceTypes, :defaultInvoiceType, :email, :isDefault
+            )
             """)
-            .param("buyerName", string(request.getOrDefault("buyerName", "杭州采购王")))
+            .param("customerId", customerId)
+            .param("buyerName", string(firstPresent(customer.get("companyName"), customer.get("contactName"))))
             .param("titleType", titleType)
             .param("invoiceTitle", invoiceTitle)
             .param("taxNo", taxNo)
+            .param("supportedInvoiceTypes", string(request.getOrDefault("supportedInvoiceTypes", "")))
+            .param("defaultInvoiceType", string(request.getOrDefault("defaultInvoiceType", "")))
             .param("email", email)
+            .param("isDefault", isDefault)
             .update();
-        return rows("SELECT * FROM invoice_titles ORDER BY id DESC").get(0);
+        customerLog(customerId, "BUYER", String.valueOf(customerId), "INVOICE_TITLE_CREATE", "新增发票抬头");
+        return rows("SELECT * FROM invoice_titles WHERE customer_id = :customerId ORDER BY id DESC LIMIT 1", "customerId", customerId).get(0);
     }
 
     @PutMapping("/mall/invoice-titles/{titleId}")
-    public Map<String, Object> updateInvoiceTitle(@PathVariable Long titleId, @RequestBody Map<String, Object> request) {
+    public Map<String, Object> updateInvoiceTitle(HttpServletRequest servletRequest, @PathVariable Long titleId, @RequestBody Map<String, Object> request) {
+        Long customerId = buyerCustomerId(servletRequest);
+        one("SELECT * FROM invoice_titles WHERE id = :id AND customer_id = :customerId", Map.of("id", titleId, "customerId", customerId));
         String invoiceTitle = requiredString(request, request.containsKey("title") ? "title" : "invoiceTitle");
         String email = requiredEmail(request, request.containsKey("email") ? "email" : "receiveEmail");
         String titleType = string(request.getOrDefault("titleType", "COMPANY"));
@@ -2147,36 +2705,47 @@ public class PhaseOneController {
             SET title_type = :titleType,
                 invoice_title = :invoiceTitle,
                 tax_no = :taxNo,
+                supported_invoice_types = :supportedInvoiceTypes,
+                default_invoice_type = :defaultInvoiceType,
                 receive_email = :email
-            WHERE id = :id
+            WHERE id = :id AND customer_id = :customerId
             """)
             .param("titleType", titleType)
             .param("invoiceTitle", invoiceTitle)
             .param("taxNo", taxNo)
+            .param("supportedInvoiceTypes", string(request.getOrDefault("supportedInvoiceTypes", "")))
+            .param("defaultInvoiceType", string(request.getOrDefault("defaultInvoiceType", "")))
             .param("email", email)
             .param("id", titleId)
+            .param("customerId", customerId)
             .update();
         return one("SELECT * FROM invoice_titles WHERE id = :id", "id", titleId);
     }
 
     @DeleteMapping("/mall/invoice-titles/{titleId}")
-    public Map<String, Object> deleteInvoiceTitle(@PathVariable Long titleId) {
-        Map<String, Object> title = one("SELECT * FROM invoice_titles WHERE id = :id", "id", titleId);
+    public Map<String, Object> deleteInvoiceTitle(HttpServletRequest request, @PathVariable Long titleId) {
+        Long customerId = buyerCustomerId(request);
+        Map<String, Object> title = one("SELECT * FROM invoice_titles WHERE id = :id AND customer_id = :customerId", Map.of("id", titleId, "customerId", customerId));
         if (Boolean.parseBoolean(String.valueOf(title.getOrDefault("isDefault", false)))) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "默认抬头不能删除，请先设置其他默认抬头");
         }
-        jdbcClient.sql("DELETE FROM invoice_titles WHERE id = :id")
+        jdbcClient.sql("DELETE FROM invoice_titles WHERE id = :id AND customer_id = :customerId")
             .param("id", titleId)
+            .param("customerId", customerId)
             .update();
         return row("deleted", true, "id", titleId);
     }
 
     @PutMapping("/mall/invoice-titles/{titleId}/default")
-    public Map<String, Object> setDefaultInvoiceTitle(@PathVariable Long titleId) {
-        one("SELECT * FROM invoice_titles WHERE id = :id", "id", titleId);
-        jdbcClient.sql("UPDATE invoice_titles SET is_default = false").update();
-        jdbcClient.sql("UPDATE invoice_titles SET is_default = true WHERE id = :id")
+    public Map<String, Object> setDefaultInvoiceTitle(HttpServletRequest request, @PathVariable Long titleId) {
+        Long customerId = buyerCustomerId(request);
+        one("SELECT * FROM invoice_titles WHERE id = :id AND customer_id = :customerId", Map.of("id", titleId, "customerId", customerId));
+        jdbcClient.sql("UPDATE invoice_titles SET is_default = false WHERE customer_id = :customerId")
+            .param("customerId", customerId)
+            .update();
+        jdbcClient.sql("UPDATE invoice_titles SET is_default = true WHERE id = :id AND customer_id = :customerId")
             .param("id", titleId)
+            .param("customerId", customerId)
             .update();
         return one("SELECT * FROM invoice_titles WHERE id = :id", "id", titleId);
     }
@@ -2372,11 +2941,429 @@ public class PhaseOneController {
 
     private List<Map<String, Object>> invoiceFiles(Long invoiceApplyId) {
         return rows("""
-            SELECT id, invoice_apply_id, file_name, invoice_no, invoice_type, invoice_amount, ocr_status, ocr_result, created_at, updated_at
+            SELECT id, invoice_apply_id, file_name, file_url, invoice_no, invoice_code, invoice_date, invoice_type,
+                   invoice_amount, uploaded_by, remark, created_at, updated_at
             FROM invoice_files
             WHERE invoice_apply_id = :invoiceApplyId
             ORDER BY id
             """, "invoiceApplyId", invoiceApplyId);
+    }
+
+    private String adminInvoiceListBaseSql() {
+        return """
+            SELECT i.id, i.invoice_apply_no, i.order_no, o.id AS order_id, o.order_status, o.payment_status, o.fulfillment_status,
+                   CASE
+                     WHEN COALESCE(o.refunded_amount, 0) >= COALESCE(o.total_amount, 0) AND COALESCE(o.total_amount, 0) > 0 THEN 'REFUNDED'
+                     WHEN COALESCE(o.refunded_amount, 0) > 0 THEN 'PART_REFUNDED'
+                     ELSE COALESCE(o.payment_status, 'UNPAID')
+                   END AS refund_status,
+                   o.customer_id, i.buyer_name AS customer_name, c.contact_phone AS customer_phone, c.customer_code AS customer_account,
+                   c.contact_name AS contact_name, i.applicant_name, i.title_type, i.invoice_title, i.invoice_title AS title,
+                   i.tax_no AS taxpayer_no, i.invoice_type, i.invoice_type_source, i.apply_amount,
+                   COALESCE(o.refunded_amount, 0) AS refunded_amount,
+                   COALESCE(inv.invoiced_amount, 0) AS invoiced_amount,
+                   GREATEST(COALESCE(o.total_amount, 0) - COALESCE(o.refunded_amount, 0) - COALESCE(inv.invoiced_amount, 0), 0) AS available_invoice_amount,
+                   i.invoice_status, i.receive_email, i.buyer_remark, i.admin_remark, i.reject_reason AS rejected_reason,
+                   i.reject_remark, i.rejected_by, i.rejected_at, i.cancelled_reason, i.cancelled_by, i.cancelled_at,
+                   i.confirmed_by, i.confirmed_at, i.created_at AS apply_time,
+                   DATE_ADD(DATE(i.created_at), INTERVAL 11 DAY) AS invoice_timeout_date,
+                   COALESCE(file_stats.uploaded_file_count, 0) AS uploaded_file_count,
+                   COALESCE(file_stats.uploaded_invoice_amount, 0) AS uploaded_invoice_amount,
+                   CASE
+                     WHEN EXISTS (SELECT 1 FROM after_sale_orders a WHERE a.order_no = i.order_no AND a.after_sale_status NOT IN ('COMPLETED','REJECTED','CLOSED','CANCELLED')) THEN 'PROCESSING'
+                     WHEN COALESCE(o.refunded_amount, 0) >= COALESCE(o.total_amount, 0) AND COALESCE(o.total_amount, 0) > 0 THEN 'REFUNDED'
+                     WHEN EXISTS (SELECT 1 FROM after_sale_orders a WHERE a.order_no = i.order_no AND a.after_sale_status = 'COMPLETED') THEN 'COMPLETED'
+                     ELSE 'NONE'
+                   END AS after_sale_status,
+                   i.created_at, i.updated_at
+            FROM invoice_applies i
+            LEFT JOIN sales_orders o ON o.order_no = i.order_no
+            LEFT JOIN customers c ON c.id = o.customer_id
+            LEFT JOIN (
+                SELECT order_no, COALESCE(SUM(apply_amount), 0) AS invoiced_amount
+                FROM invoice_applies
+                WHERE invoice_status = 'INVOICED'
+                GROUP BY order_no
+            ) inv ON inv.order_no = i.order_no
+            LEFT JOIN (
+                SELECT invoice_apply_id, COUNT(*) AS uploaded_file_count, COALESCE(SUM(invoice_amount), 0) AS uploaded_invoice_amount
+                FROM invoice_files
+                GROUP BY invoice_apply_id
+            ) file_stats ON file_stats.invoice_apply_id = i.id
+            """;
+    }
+
+    private String adminInvoiceWhere(
+        String tab,
+        String keyword,
+        String invoiceType,
+        String invoiceStatus,
+        String orderStatus,
+        String afterSaleStatus,
+        Boolean uploadedOnly,
+        String applyStartDate,
+        String applyEndDate,
+        String timeoutStartDate,
+        String timeoutEndDate,
+        Map<String, Object> params
+    ) {
+        List<String> conditions = new ArrayList<>();
+        addInvoiceStatusCondition(conditions, params, "tabStatus", tab);
+        addInvoiceStatusCondition(conditions, params, "invoiceStatus", invoiceStatus);
+        String keywordValue = string(keyword).trim();
+        if (!keywordValue.isBlank()) {
+            params.put("keyword", "%" + keywordValue + "%");
+            conditions.add("(i.invoice_apply_no LIKE :keyword OR i.order_no LIKE :keyword OR i.buyer_name LIKE :keyword OR i.invoice_title LIKE :keyword OR i.tax_no LIKE :keyword)");
+        }
+        String type = normalizeInvoiceType(invoiceType);
+        if (!type.isBlank()) {
+            params.put("invoiceType", type);
+            conditions.add("i.invoice_type = :invoiceType");
+        }
+        String orderStatusValue = string(orderStatus).trim().toUpperCase();
+        if (!orderStatusValue.isBlank()) {
+            switch (orderStatusValue) {
+                case "COMPLETED" -> conditions.add("o.order_status = 'COMPLETED'");
+                case "REFUNDED" -> conditions.add("COALESCE(o.refunded_amount, 0) >= COALESCE(o.total_amount, 0) AND COALESCE(o.total_amount, 0) > 0");
+                case "PART_REFUNDED", "PARTIAL_REFUNDED" -> conditions.add("COALESCE(o.refunded_amount, 0) > 0 AND COALESCE(o.refunded_amount, 0) < COALESCE(o.total_amount, 0)");
+                default -> {
+                    params.put("orderStatus", orderStatusValue);
+                    conditions.add("o.order_status = :orderStatus");
+                }
+            }
+        }
+        String saleStatus = string(afterSaleStatus).trim().toUpperCase();
+        if (!saleStatus.isBlank()) {
+            switch (saleStatus) {
+                case "NONE" -> conditions.add("NOT EXISTS (SELECT 1 FROM after_sale_orders a WHERE a.order_no = i.order_no)");
+                case "PROCESSING" -> conditions.add("EXISTS (SELECT 1 FROM after_sale_orders a WHERE a.order_no = i.order_no AND a.after_sale_status NOT IN ('COMPLETED','REJECTED','CLOSED','CANCELLED'))");
+                case "COMPLETED" -> conditions.add("EXISTS (SELECT 1 FROM after_sale_orders a WHERE a.order_no = i.order_no AND a.after_sale_status = 'COMPLETED')");
+                case "REFUNDED" -> conditions.add("COALESCE(o.refunded_amount, 0) >= COALESCE(o.total_amount, 0) AND COALESCE(o.total_amount, 0) > 0");
+                default -> {
+                }
+            }
+        }
+        if (uploadedOnly != null) {
+            conditions.add(uploadedOnly ? "COALESCE(file_stats.uploaded_file_count, 0) > 0" : "COALESCE(file_stats.uploaded_file_count, 0) = 0");
+        }
+        addDateRangeCondition(conditions, params, "applyStartDate", "applyEndDate", "i.created_at", applyStartDate, applyEndDate);
+        addDateRangeCondition(conditions, params, "timeoutStartDate", "timeoutEndDate", "DATE_ADD(DATE(i.created_at), INTERVAL 11 DAY)", timeoutStartDate, timeoutEndDate);
+        return conditions.isEmpty() ? "" : " WHERE " + String.join(" AND ", conditions);
+    }
+
+    private void addDateRangeCondition(List<String> conditions, Map<String, Object> params, String startKey, String endKey, String column, String startDate, String endDate) {
+        if (!string(startDate).trim().isBlank()) {
+            params.put(startKey, string(startDate).trim());
+            conditions.add(column + " >= :" + startKey);
+        }
+        if (!string(endDate).trim().isBlank()) {
+            params.put(endKey, string(endDate).trim());
+            conditions.add(column + " < DATE_ADD(:" + endKey + ", INTERVAL 1 DAY)");
+        }
+    }
+
+    private void addInvoiceStatusCondition(List<String> conditions, Map<String, Object> params, String key, String value) {
+        String status = normalizeInvoiceStatus(value);
+        if (status.isBlank() || "ALL".equals(status)) return;
+        params.put(key, invoiceStatusValues(status));
+        conditions.add("i.invoice_status IN (:" + key + ")");
+    }
+
+    private List<String> invoiceStatusValues(String value) {
+        return switch (normalizeInvoiceStatus(value)) {
+            case "PENDING_INVOICE" -> List.of("PENDING_INVOICE", "WAIT_INVOICE", "APPLIED");
+            case "CANCELLED" -> List.of("CANCELLED", "CANCELED");
+            default -> List.of(normalizeInvoiceStatus(value));
+        };
+    }
+
+    private Map<String, Object> normalizeInvoiceRow(Map<String, Object> row) {
+        row.put("invoiceStatus", normalizeInvoiceStatus(firstPresent(row.get("invoiceStatus"), row.get("status"))));
+        row.put("status", row.get("invoiceStatus"));
+        row.put("invoiceType", normalizeInvoiceType(row.get("invoiceType")));
+        row.put("titleType", normalizeTitleType(row.get("titleType")));
+        row.put("invoiceTypeSource", normalizeInvoiceTypeSource(row.get("invoiceTypeSource")));
+        row.put("amount", decimalValue(firstPresent(row.get("amount"), row.get("applyAmount")), BigDecimal.ZERO));
+        row.put("applyAmount", row.get("amount"));
+        row.put("refundedAmount", decimalValue(row.get("refundedAmount"), BigDecimal.ZERO));
+        row.put("invoicedAmount", decimalValue(row.get("invoicedAmount"), BigDecimal.ZERO));
+        row.put("availableInvoiceAmount", decimalValue(row.get("availableInvoiceAmount"), BigDecimal.ZERO).max(BigDecimal.ZERO));
+        row.put("uploadedFileCount", intValue(row.get("uploadedFileCount"), 0));
+        row.put("uploadedInvoiceAmount", decimalValue(row.get("uploadedInvoiceAmount"), BigDecimal.ZERO));
+        row.put("timeoutText", invoiceTimeoutText(row.get("invoiceTimeoutDate")));
+        return row;
+    }
+
+    private String normalizeInvoiceStatus(Object value) {
+        return switch (string(value).trim().toUpperCase()) {
+            case "", "ALL" -> "";
+            case "WAIT_INVOICE", "APPLIED" -> "PENDING_INVOICE";
+            case "CANCELED" -> "CANCELLED";
+            default -> string(value).trim().toUpperCase();
+        };
+    }
+
+    private String normalizeInvoiceType(Object value) {
+        return switch (string(value).trim().toUpperCase()) {
+            case "", "ALL" -> "";
+            case "E_NORMAL", "NORMAL", "ELECTRONIC_GENERAL" -> "ELECTRONIC_NORMAL";
+            case "E_SPECIAL", "VAT_SPECIAL", "SPECIAL", "ELECTRONIC_SPECIAL" -> "ELECTRONIC_VAT_SPECIAL";
+            default -> string(value).trim().toUpperCase();
+        };
+    }
+
+    private String normalizeTitleType(Object value) {
+        return switch (string(value).trim().toUpperCase()) {
+            case "", "COMPANY", "ENTERPRISE" -> "COMPANY";
+            case "PERSON", "PERSONAL" -> "PERSONAL";
+            default -> string(value).trim().toUpperCase();
+        };
+    }
+
+    private String normalizeInvoiceTypeSource(Object value) {
+        return switch (string(value).trim().toUpperCase()) {
+            case "BUYER_DEFAULT", "DEFAULT" -> "BUYER_DEFAULT";
+            case "BUYER_SELECTED", "MANUAL", "BUYER_MANUAL" -> "BUYER_SELECTED";
+            default -> string(value).trim().isBlank() ? "OTHER" : string(value).trim().toUpperCase();
+        };
+    }
+
+    private String invoiceTimeoutText(Object timeoutDate) {
+        LocalDate timeout = localDate(timeoutDate);
+        if (timeout == null) return "NORMAL";
+        LocalDate today = LocalDate.now();
+        if (today.isBefore(timeout.minusDays(1))) return "NORMAL";
+        if (today.equals(timeout.minusDays(1))) return "NEARLY_TIMEOUT";
+        return "OVERDUE";
+    }
+
+    private Map<String, Object> invoiceTimeoutInfo(Map<String, Object> detail) {
+        LocalDate timeout = localDate(detail.get("invoiceTimeoutDate"));
+        long remainingDays = timeout == null ? 0 : java.time.temporal.ChronoUnit.DAYS.between(LocalDate.now(), timeout);
+        return row(
+            "applyTime", detail.get("applyTime"),
+            "invoiceTimeoutDate", detail.get("invoiceTimeoutDate"),
+            "timeoutText", detail.get("timeoutText"),
+            "remainingDays", Math.max(0, remainingDays)
+        );
+    }
+
+    private Map<String, Object> invoiceOrderInfo(Map<String, Object> detail) {
+        return row(
+            "orderId", detail.get("orderId"),
+            "orderNo", detail.get("orderNo"),
+            "orderStatus", detail.get("orderStatus"),
+            "paymentStatus", detail.get("paymentStatus"),
+            "fulfillmentStatus", detail.get("fulfillmentStatus"),
+            "refundStatus", detail.get("refundStatus"),
+            "paidAmount", decimalValue(detail.get("applyAmount"), BigDecimal.ZERO).add(decimalValue(detail.get("availableInvoiceAmount"), BigDecimal.ZERO)),
+            "refundedAmount", detail.get("refundedAmount"),
+            "invoicedAmount", detail.get("invoicedAmount"),
+            "availableInvoiceAmount", detail.get("availableInvoiceAmount"),
+            "afterSaleStatus", detail.get("afterSaleStatus")
+        );
+    }
+
+    private Map<String, Object> invoiceBuyerInfo(Map<String, Object> detail) {
+        return row(
+            "customerId", detail.get("customerId"),
+            "customerName", detail.get("customerName"),
+            "customerAccount", detail.get("customerAccount"),
+            "contactName", detail.get("contactName"),
+            "customerPhone", detail.get("customerPhone")
+        );
+    }
+
+    private Map<String, Object> invoiceTitleInfo(Map<String, Object> detail) {
+        return row(
+            "titleType", detail.get("titleType"),
+            "invoiceTitle", detail.get("invoiceTitle"),
+            "taxpayerNo", detail.get("taxpayerNo"),
+            "invoiceType", detail.get("invoiceType"),
+            "invoiceTypeSource", detail.get("invoiceTypeSource"),
+            "registeredAddress", null,
+            "registeredPhone", null,
+            "bankName", null,
+            "bankAccount", null,
+            "supportedInvoiceTypes", "COMPANY".equals(detail.get("titleType")) ? List.of("ELECTRONIC_NORMAL", "ELECTRONIC_VAT_SPECIAL") : List.of("ELECTRONIC_NORMAL"),
+            "defaultInvoiceType", detail.get("invoiceType")
+        );
+    }
+
+    private Map<String, Object> invoiceAmountInfo(Map<String, Object> detail) {
+        BigDecimal uploaded = decimalValue(detail.get("uploadedInvoiceAmount"), BigDecimal.ZERO);
+        BigDecimal applyAmount = decimalValue(detail.get("applyAmount"), BigDecimal.ZERO);
+        return row(
+            "paidAmount", decimalValue(detail.get("applyAmount"), BigDecimal.ZERO).add(decimalValue(detail.get("availableInvoiceAmount"), BigDecimal.ZERO)),
+            "refundedAmount", detail.get("refundedAmount"),
+            "invoicedAmount", detail.get("invoicedAmount"),
+            "applyAmount", applyAmount,
+            "availableInvoiceAmount", detail.get("availableInvoiceAmount"),
+            "uploadedInvoiceAmount", uploaded,
+            "remainingUploadAmount", applyAmount.subtract(uploaded).max(BigDecimal.ZERO)
+        );
+    }
+
+    private Map<String, Object> invoiceAfterSaleImpact(Map<String, Object> detail) {
+        BigDecimal refunded = decimalValue(detail.get("refundedAmount"), BigDecimal.ZERO);
+        BigDecimal available = decimalValue(detail.get("availableInvoiceAmount"), BigDecimal.ZERO);
+        String status = string(detail.get("afterSaleStatus"));
+        boolean processing = "PROCESSING".equals(status);
+        String tip = "";
+        if (processing) tip = "该订单存在售后处理中，暂不允许开票。";
+        else if ("REFUNDED".equals(status)) tip = "该订单已全额退款，不支持开票。";
+        else if (refunded.compareTo(BigDecimal.ZERO) > 0 && "INVOICED".equals(detail.get("invoiceStatus"))) tip = "已开票订单发生退款，后续需处理红冲。";
+        else if (refunded.compareTo(BigDecimal.ZERO) > 0) tip = "该订单已退款 ¥" + refunded + "，当前可开票金额为 ¥" + available + "。";
+        return row(
+            "afterSaleStatus", status,
+            "processing", processing,
+            "refundedAmount", refunded,
+            "invoiceableAmount", available,
+            "forbidInvoice", processing || "REFUNDED".equals(status) || available.compareTo(BigDecimal.ZERO) <= 0,
+            "tip", tip
+        );
+    }
+
+    private List<Map<String, Object>> invoiceLogs(Map<String, Object> detail) {
+        return rows("""
+            SELECT id, log_no, operator_name, module_name, operation_name AS operation_type,
+                   operation_content, operation_result, created_at
+            FROM operation_logs
+            WHERE related_no IN (:applyNo, :id)
+            ORDER BY id DESC
+            """, Map.of("applyNo", string(detail.get("invoiceApplyNo")), "id", string(detail.get("id"))));
+    }
+
+    private List<Map<String, Object>> invoiceProgress(Map<String, Object> detail) {
+        String status = string(detail.get("invoiceStatus"));
+        boolean hasFiles = intValue(detail.get("uploadedFileCount"), 0) > 0;
+        List<Map<String, Object>> steps = new ArrayList<>();
+        steps.add(row("key", "APPLY", "title", "提交申请", "time", detail.get("applyTime")));
+        if ("REJECTED".equals(status)) {
+            steps.add(row("key", "REJECTED", "title", "后台驳回", "time", firstPresent(detail.get("rejectedAt"), detail.get("updatedAt"))));
+        } else if ("CANCELLED".equals(status)) {
+            steps.add(row("key", "CANCELLED", "title", "买家撤销", "time", firstPresent(detail.get("cancelledAt"), detail.get("updatedAt"))));
+        } else {
+            steps.add(row("key", "PENDING", "title", "待开票", "time", detail.get("applyTime")));
+            steps.add(row("key", "UPLOAD", "title", "上传发票", "time", hasFiles ? detail.get("updatedAt") : null));
+            steps.add(row("key", "CONFIRM", "title", "确认开票", "time", detail.get("confirmedAt")));
+            steps.add(row("key", "DONE", "title", "开票完成", "time", "INVOICED".equals(status) ? firstPresent(detail.get("confirmedAt"), detail.get("updatedAt")) : null));
+        }
+        int current = switch (status) {
+            case "INVOICED" -> steps.size() - 1;
+            case "REJECTED", "CANCELLED" -> 1;
+            default -> hasFiles ? 3 : 1;
+        };
+        for (int i = 0; i < steps.size(); i++) {
+            steps.get(i).put("nodeStatus", i < current ? "DONE" : i == current ? "CURRENT" : "TODO");
+        }
+        if ("REJECTED".equals(status) || "CANCELLED".equals(status)) {
+            steps.get(steps.size() - 1).put("nodeStatus", "ABNORMAL");
+        }
+        return steps;
+    }
+
+    private BigDecimal invoiceAvailableAmount(String orderNo) {
+        Map<String, Object> row = rows("""
+            SELECT GREATEST(COALESCE(o.total_amount, 0) - COALESCE(o.refunded_amount, 0) - COALESCE(inv.invoiced_amount, 0), 0) AS amount
+            FROM sales_orders o
+            LEFT JOIN (
+                SELECT order_no, COALESCE(SUM(apply_amount), 0) AS invoiced_amount
+                FROM invoice_applies
+                WHERE invoice_status = 'INVOICED'
+                GROUP BY order_no
+            ) inv ON inv.order_no = o.order_no
+            WHERE o.order_no = :orderNo
+            """, "orderNo", orderNo).stream().findFirst().orElse(row("amount", BigDecimal.ZERO));
+        return decimalValue(row.get("amount"), BigDecimal.ZERO).max(BigDecimal.ZERO);
+    }
+
+    private void requireInvoiceStatus(Map<String, Object> apply, String expected, String message) {
+        if (!expected.equals(normalizeInvoiceStatus(apply.get("invoiceStatus")))) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, message);
+        }
+    }
+
+    private void ensureInvoiceNoUnique(String invoiceNo, String orderNo, Long invoiceApplyId) {
+        List<Map<String, Object>> duplicates = rows("""
+            SELECT f.invoice_no, i.order_no
+            FROM invoice_files f
+            JOIN invoice_applies i ON i.id = f.invoice_apply_id
+            WHERE f.invoice_no = :invoiceNo
+              AND f.invoice_apply_id <> :invoiceApplyId
+            LIMIT 1
+            """, Map.of("invoiceNo", invoiceNo, "invoiceApplyId", invoiceApplyId));
+        if (duplicates.isEmpty()) return;
+        String usedOrderNo = string(duplicates.get(0).get("orderNo"));
+        if (usedOrderNo.equals(orderNo)) {
+            throw new ApiException(HttpStatus.CONFLICT, "当前订单已上传该发票号码，请勿重复上传。");
+        }
+        throw new ApiException(HttpStatus.CONFLICT, "该发票号码已被订单 " + usedOrderNo + " 使用，请核对后再上传。");
+    }
+
+    private void ensureInvoiceFileNumbersUnique(Long invoiceApplyId) {
+        List<Map<String, Object>> duplicates = rows("""
+            SELECT invoice_no, COUNT(*) AS count
+            FROM invoice_files
+            WHERE invoice_apply_id = :invoiceApplyId
+              AND invoice_no IS NOT NULL
+              AND invoice_no <> ''
+            GROUP BY invoice_no
+            HAVING COUNT(*) > 1
+            """, "invoiceApplyId", invoiceApplyId);
+        if (!duplicates.isEmpty()) {
+            throw new ApiException(HttpStatus.CONFLICT, "当前订单已上传该发票号码，请勿重复上传。");
+        }
+    }
+
+    private void ensureInvoiceFileNameUnique(Long invoiceApplyId, String fileName) {
+        Long count = jdbcClient.sql("SELECT COUNT(*) FROM invoice_files WHERE invoice_apply_id = :invoiceApplyId AND file_name = :fileName")
+            .param("invoiceApplyId", invoiceApplyId)
+            .param("fileName", safeFileName(fileName))
+            .query(Long.class)
+            .single();
+        if (count != null && count > 0) {
+            throw new ApiException(HttpStatus.CONFLICT, "发票文件名已存在，请勿重复上传。");
+        }
+    }
+
+    private void validateInvoicePdf(MultipartFile file) {
+        String fileName = safeFileName(file.getOriginalFilename()).toLowerCase();
+        String contentType = string(file.getContentType()).toLowerCase();
+        if (!fileName.endsWith(".pdf") && !contentType.contains("pdf")) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "只能上传 PDF 发票文件");
+        }
+        if (file.getSize() > 10L * 1024L * 1024L) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "单个文件大小不能超过 10MB");
+        }
+    }
+
+    private String safeFileName(String fileName) {
+        String value = string(fileName).trim();
+        return value.isBlank() ? "invoice.pdf" : value.replaceAll("[\\\\/]+", "_");
+    }
+
+    private ResponseEntity<byte[]> invoiceFileResponse(Long fileId, boolean attachment) {
+        Map<String, Object> file = one("SELECT id, file_name, file_content, content_type, file_url FROM invoice_files WHERE id = :id", "id", fileId);
+        String content = string(file.get("fileContent"));
+        byte[] bytes = content.isBlank() ? new byte[0] : Base64.getDecoder().decode(content);
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_PDF);
+        if (attachment) {
+            headers.set(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + safeFileName(string(file.get("fileName"))) + "\"");
+        } else {
+            headers.set(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"" + safeFileName(string(file.get("fileName"))) + "\"");
+        }
+        return ResponseEntity.ok().headers(headers).body(bytes);
+    }
+
+    private LocalDate localDate(Object value) {
+        if (value == null) return null;
+        if (value instanceof LocalDate localDate) return localDate;
+        if (value instanceof LocalDateTime localDateTime) return localDateTime.toLocalDate();
+        String text = string(value).trim();
+        if (text.isBlank()) return null;
+        return LocalDate.parse(text.length() > 10 ? text.substring(0, 10) : text);
     }
 
     private Long findProductIdByName(String productName) {
@@ -2385,6 +3372,275 @@ public class PhaseOneController {
             .query(Long.class)
             .optional()
             .orElse(null);
+    }
+
+    private PurchaseInboundPayload normalizePurchaseInboundPayload(Map<String, Object> request) {
+        Long supplierId = requiredLong(request, "supplierId");
+        Map<String, Object> supplier = one("SELECT id, supplier_name, supplier_status FROM suppliers WHERE id = :id", "id", supplierId);
+        if (!"ENABLED".equals(supplier.get("supplierStatus"))) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "供应商已停用，不能选择");
+        }
+        LocalDate inboundDate = localDate(request.get("inboundDate"));
+        if (inboundDate == null) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "入库日期必填");
+        }
+        String handlerName = string(firstPresent(request.get("handlerName"), request.get("createdBy"), request.get("operatorName"), "admin")).trim();
+        String remark = string(request.getOrDefault("remark", ""));
+        List<Map<String, Object>> items = normalizePurchaseInboundItems(request.get("items"));
+        int totalQuantity = items.stream().mapToInt(item -> intValue(item.get("quantity"), 0)).sum();
+        BigDecimal totalAmount = items.stream()
+            .map(item -> decimalValue(item.get("lineAmount"), BigDecimal.ZERO))
+            .reduce(BigDecimal.ZERO, BigDecimal::add);
+        return new PurchaseInboundPayload(
+            supplierId,
+            string(supplier.get("supplierName")),
+            inboundDate,
+            handlerName,
+            remark,
+            items,
+            totalQuantity,
+            totalAmount
+        );
+    }
+
+    private List<Map<String, Object>> normalizePurchaseInboundItems(Object source) {
+        List<Map<String, Object>> requested = mapRows(source);
+        if (requested.isEmpty()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "商品明细不能为空");
+        }
+        List<Map<String, Object>> items = new ArrayList<>();
+        Set<String> duplicateKeys = new LinkedHashSet<>();
+        for (Map<String, Object> row : requested) {
+            Long productId = requiredLong(row, "productId");
+            Product product = productRepository.findById(productId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "商品不存在"));
+            ensureProductSelectable(product);
+            Map<String, Object> sku = purchaseInboundSkuByCode(product, string(firstPresent(row.get("skuCode"), row.get("skuId"))));
+            String skuCode = string(sku.get("skuCode"));
+            String duplicateKey = productId + "|" + skuCode;
+            if (!duplicateKeys.add(duplicateKey)) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, "存在重复商品规格，请合并后再提交。");
+            }
+            int quantity = positiveInt(row, "quantity");
+            BigDecimal purchasePrice = decimalValue(row.get("purchasePrice"), BigDecimal.ZERO);
+            if (purchasePrice.compareTo(BigDecimal.ZERO) < 0) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, "采购单价不能小于0");
+            }
+            BigDecimal lineAmount = purchasePrice.multiply(BigDecimal.valueOf(quantity));
+            items.add(row(
+                "productId", productId,
+                "productName", product.productName(),
+                "skuId", longObject(sku.get("skuId")),
+                "skuCode", skuCode,
+                "skuName", string(sku.get("skuName")),
+                "unit", string(sku.get("unit")),
+                "quantity", quantity,
+                "purchasePrice", purchasePrice,
+                "lineAmount", lineAmount,
+                "itemRemark", string(row.getOrDefault("itemRemark", ""))
+            ));
+        }
+        return items;
+    }
+
+    private void insertPurchaseInboundItems(Long inboundId, List<Map<String, Object>> items) {
+        for (Map<String, Object> item : items) {
+            jdbcClient.sql("""
+                INSERT INTO purchase_inbound_items (inbound_id, product_id, product_name, sku_id, sku_code, sku_name,
+                  unit, quantity, purchase_price, line_amount, item_remark)
+                VALUES (:inboundId, :productId, :productName, :skuId, :skuCode, :skuName,
+                  :unit, :quantity, :purchasePrice, :lineAmount, :itemRemark)
+                """)
+                .param("inboundId", inboundId)
+                .param("productId", item.get("productId"))
+                .param("productName", item.get("productName"))
+                .param("skuId", item.get("skuId"))
+                .param("skuCode", item.get("skuCode"))
+                .param("skuName", item.get("skuName"))
+                .param("unit", item.get("unit"))
+                .param("quantity", item.get("quantity"))
+                .param("purchasePrice", item.get("purchasePrice"))
+                .param("lineAmount", item.get("lineAmount"))
+                .param("itemRemark", item.get("itemRemark"))
+                .update();
+        }
+    }
+
+    private void ensureProductSelectable(Product product) {
+        ensureProductPurchasable(product);
+        if (!"ON_SALE".equals(product.saleStatus())) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "商品已下架，不能选择");
+        }
+    }
+
+    private List<Map<String, Object>> purchaseInboundSkuOptions(Product product) {
+        List<Map<String, Object>> rows = skuRows(product);
+        if (rows.isEmpty()) {
+            return List.of(row(
+                "skuId", product.id(),
+                "skuCode", productRepository.primarySkuCode(product),
+                "skuName", string(firstPresent(product.skuName(), "默认规格")),
+                "unit", product.unit(),
+                "currentStock", product.stockQuantity(),
+                "status", string(firstPresent(product.skuStatus(), "ENABLED"))
+            ));
+        }
+        List<Map<String, Object>> options = new ArrayList<>();
+        for (int i = 0; i < rows.size(); i++) {
+            Map<String, Object> sku = rows.get(i);
+            if ("DISABLED".equalsIgnoreCase(string(sku.get("skuStatus")))) continue;
+            options.add(row(
+                "skuId", i + 1,
+                "skuCode", skuString(sku, "skuCode", productRepository.primarySkuCode(product)),
+                "skuName", skuString(sku, "skuName", product.skuName()),
+                "unit", product.unit(),
+                "currentStock", intValue(sku.get("stockQuantity"), product.stockQuantity()),
+                "status", skuString(sku, "skuStatus", "ENABLED")
+            ));
+        }
+        if (options.isEmpty()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "商品没有可用SKU");
+        }
+        return options;
+    }
+
+    private Map<String, Object> purchaseInboundSkuByCode(Product product, String skuCodeValue) {
+        List<Map<String, Object>> options = purchaseInboundSkuOptions(product);
+        String skuCode = string(skuCodeValue).trim();
+        if (skuCode.isBlank() && options.size() == 1) {
+            return options.get(0);
+        }
+        return options.stream()
+            .filter(option -> skuCode.equals(string(option.get("skuCode"))) || skuCode.equals(string(option.get("skuId"))))
+            .findFirst()
+            .orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST, "请选择有效的SKU规格"));
+    }
+
+    private StockChange increasePurchaseInboundStock(Long productId, String skuCode, int quantity) {
+        if (productId == null || quantity <= 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "商品明细不正确");
+        }
+        one("SELECT id FROM products WHERE id = :id FOR UPDATE", "id", productId);
+        Product product = productRepository.findById(productId)
+            .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "商品不存在"));
+        ensureProductSelectable(product);
+        int beforeStock = purchaseInboundSkuCurrentStock(product, skuCode);
+        int updated = productRepository.addStock(productId, quantity);
+        if (updated != 1) {
+            throw new ApiException(HttpStatus.CONFLICT, "库存更新失败");
+        }
+        int afterStock = beforeStock + quantity;
+        updateProductSkuJsonStock(product, skuCode, afterStock);
+        return new StockChange(beforeStock, afterStock);
+    }
+
+    private int purchaseInboundSkuCurrentStock(Product product, String skuCode) {
+        for (Map<String, Object> sku : skuRows(product)) {
+            if (string(sku.get("skuCode")).equals(string(skuCode))) {
+                return intValue(sku.get("stockQuantity"), product.stockQuantity());
+            }
+        }
+        return product.stockQuantity();
+    }
+
+    private void updateProductSkuJsonStock(Product product, String skuCode, int afterStock) {
+        List<Map<String, Object>> rows = skuRows(product);
+        if (rows.isEmpty()) return;
+        boolean changed = false;
+        for (Map<String, Object> sku : rows) {
+            if (string(sku.get("skuCode")).equals(string(skuCode))) {
+                sku.put("stockQuantity", afterStock);
+                changed = true;
+            }
+        }
+        if (!changed) return;
+        try {
+            jdbcClient.sql("UPDATE products SET sku_list_json = :skuListJson WHERE id = :id")
+                .param("skuListJson", objectMapper.writeValueAsString(rows))
+                .param("id", product.id())
+                .update();
+        } catch (JsonProcessingException exception) {
+            throw new ApiException(HttpStatus.CONFLICT, "SKU库存更新失败");
+        }
+    }
+
+    private void fillPurchaseInboundExpectedStock(Map<String, Object> item, Map<String, Object> inbound) {
+        if (item.get("beforeStock") != null && item.get("afterStock") != null) return;
+        Product product = productRepository.findById(longObject(item.get("productId"))).orElse(null);
+        if (product == null) return;
+        int beforeStock = purchaseInboundSkuCurrentStock(product, string(item.get("skuCode")));
+        int afterStock = beforeStock + intValue(item.get("quantity"), 0);
+        if (!"IN_STOCK".equals(inbound.get("status"))) {
+            item.put("beforeStock", beforeStock);
+            item.put("afterStock", afterStock);
+        }
+    }
+
+    private List<Map<String, Object>> purchaseInboundInventoryImpacts(Map<String, Object> inbound, List<Map<String, Object>> items) {
+        if (!"IN_STOCK".equals(inbound.get("status"))) return List.of();
+        String inboundNo = string(inbound.get("inboundNo"));
+        return items.stream()
+            .map(item -> row(
+                "productName", item.get("productName"),
+                "skuCode", item.get("skuCode"),
+                "skuName", item.get("skuName"),
+                "quantity", item.get("quantity"),
+                "beforeStock", item.get("beforeStock"),
+                "afterStock", item.get("afterStock"),
+                "relatedFlow", inboundNo
+            ))
+            .toList();
+    }
+
+    private List<Map<String, Object>> purchaseInboundLogs(Long inboundId) {
+        return rows("""
+            SELECT id, operator_name, action_type, action_content, created_at
+            FROM purchase_inbound_logs
+            WHERE inbound_id = :inboundId
+            ORDER BY id DESC
+            """, "inboundId", inboundId);
+    }
+
+    private void recordPurchaseInboundLog(Long inboundId, String operatorName, String actionType, String actionContent) {
+        jdbcClient.sql("""
+            INSERT INTO purchase_inbound_logs (inbound_id, operator_name, action_type, action_content)
+            VALUES (:inboundId, :operatorName, :actionType, :actionContent)
+            """)
+            .param("inboundId", inboundId)
+            .param("operatorName", operatorName)
+            .param("actionType", actionType)
+            .param("actionContent", actionContent)
+            .update();
+    }
+
+    private void requirePurchaseInboundPending(Map<String, Object> inbound) {
+        if (!"PENDING_REVIEW".equals(inbound.get("status"))) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "只有待审核采购入库单允许该操作");
+        }
+    }
+
+    private String purchaseInboundStatusFilter(String status, String tab) {
+        String source = !string(status).trim().isBlank() && !"ALL".equalsIgnoreCase(string(status).trim())
+            ? status
+            : tab;
+        String normalized = string(source).trim().toUpperCase();
+        if (normalized.isBlank() || "ALL".equals(normalized)) return "";
+        return switch (normalized) {
+            case "PENDING_REVIEW", "IN_STOCK", "REJECTED" -> normalized;
+            default -> throw new ApiException(HttpStatus.BAD_REQUEST, "入库状态不正确");
+        };
+    }
+
+    private void addDateCondition(List<String> conditions, Map<String, Object> params, String column, String key, String value, String operator) {
+        String text = string(value).trim();
+        if (text.isBlank()) return;
+        LocalDate.parse(text.length() > 10 ? text.substring(0, 10) : text);
+        if ("<=".equals(operator)) {
+            conditions.add(column + " < DATE_ADD(:" + key + ", INTERVAL 1 DAY)");
+        } else {
+            conditions.add(column + " >= :" + key);
+        }
+        params.put(key, text.length() > 10 ? text.substring(0, 10) : text);
     }
 
     private List<Map<String, Object>> cartItemRows() {
@@ -2421,10 +3677,18 @@ public class PhaseOneController {
             "salePrice", skuMoney(sku, "salePrice", product.salePrice()),
             "stockQuantity", skuStockQuantity(product, specIndex),
             "minOrderQuantity", product.minOrderQuantity(),
+            "productStatus", product.productStatus(),
             "saleStatus", product.saleStatus(),
             "skuStatus", skuString(sku, "skuStatus", product.skuStatus()),
             "checked", Boolean.parseBoolean(String.valueOf(item.getOrDefault("checked", true)))
         );
+    }
+
+    private void ensureProductPurchasable(Product product) {
+        String status = string(product.productStatus()).toUpperCase();
+        if ("ARCHIVED".equals(status) || "DISABLED".equals(status)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Product cannot be purchased in archived or disabled status");
+        }
     }
 
     @SuppressWarnings("unchecked")
@@ -2509,6 +3773,28 @@ public class PhaseOneController {
     private void ensureDefaultAddress() {
         if (!buyerAddresses.isEmpty() && buyerAddresses.stream().noneMatch(item -> Boolean.parseBoolean(String.valueOf(item.getOrDefault("isDefault", false))))) {
             buyerAddresses.get(0).put("isDefault", true);
+        }
+    }
+
+    private void ensureDefaultAddress(Long customerId) {
+        Long defaultCount = jdbcClient.sql("SELECT COUNT(*) FROM customer_addresses WHERE customer_id = :customerId AND is_default = true")
+            .param("customerId", customerId)
+            .query(Long.class)
+            .single();
+        if (defaultCount != null && defaultCount > 0) {
+            return;
+        }
+        List<Map<String, Object>> addresses = rows("""
+            SELECT id
+            FROM customer_addresses
+            WHERE customer_id = :customerId
+            ORDER BY id
+            LIMIT 1
+            """, "customerId", customerId);
+        if (!addresses.isEmpty()) {
+            jdbcClient.sql("UPDATE customer_addresses SET is_default = true WHERE id = :id")
+                .param("id", addresses.get(0).get("id"))
+                .update();
         }
     }
 
@@ -3295,8 +4581,16 @@ public class PhaseOneController {
         return value == null ? "" : String.valueOf(value);
     }
 
+    private String normalizeOnlinePaymentMethod(Object value) {
+        String method = string(value).trim().toUpperCase();
+        if (List.of("ALIPAY", "ALI_PAY").contains(method)) {
+            return "ALIPAY";
+        }
+        return "WECHAT";
+    }
+
     private boolean customerPhoneExists(String phone) {
-        Long count = jdbcClient.sql("SELECT COUNT(*) FROM customers WHERE contact_phone = :phone")
+        Long count = jdbcClient.sql("SELECT COUNT(*) FROM customers WHERE contact_phone = :phone OR login_phone = :phone")
             .param("phone", phone)
             .query(Long.class)
             .single();
@@ -3416,7 +4710,7 @@ public class PhaseOneController {
         String normalizedTab = string(tab).trim().toUpperCase();
         switch (normalizedTab) {
             case "UNPAID", "WAIT_PAY", "PENDING_PAYMENT" ->
-                conditions.add("(o.payment_status = 'UNPAID' OR o.order_status IN ('WAIT_PAY','PENDING_PAYMENT'))");
+                conditions.add("(o.order_status NOT IN ('CANCELLED','CANCELED') AND (o.payment_status = 'UNPAID' OR o.order_status IN ('WAIT_PAY','PENDING_PAYMENT')))");
             case "PENDING_SHIPMENT", "WAIT_SHIP" ->
                 conditions.add("(o.order_status NOT IN ('CANCELLED','COMPLETED') AND o.fulfillment_status = 'UNSHIPPED' AND (o.payment_status IN ('PAID','NOT_REQUIRED_BEFORE_RECEIPT') OR o.order_status IN ('WAIT_SHIP','PENDING_SHIPMENT')))");
             case "PART_SHIPPED", "PARTIAL_SHIPPED" ->
@@ -3436,7 +4730,7 @@ public class PhaseOneController {
         if (!normalizedOrderStatus.isBlank()) {
             switch (normalizedOrderStatus) {
                 case "WAIT_PAY", "PENDING_PAYMENT" ->
-                    conditions.add("(o.order_status IN ('WAIT_PAY','PENDING_PAYMENT') OR o.payment_status = 'UNPAID')");
+                    conditions.add("(o.order_status NOT IN ('CANCELLED','CANCELED') AND (o.order_status IN ('WAIT_PAY','PENDING_PAYMENT') OR o.payment_status = 'UNPAID'))");
                 case "WAIT_SHIP", "PENDING_SHIPMENT" ->
                     conditions.add("(o.order_status IN ('WAIT_SHIP','PENDING_SHIPMENT') OR (o.payment_status IN ('PAID','NOT_REQUIRED_BEFORE_RECEIPT') AND o.fulfillment_status = 'UNSHIPPED'))");
                 case "WAIT_RECEIVE", "SHIPPED" ->
@@ -3591,6 +4885,21 @@ public class PhaseOneController {
             && !List.of("WAIT_PAY", "PENDING_PAYMENT", "CANCELLED").contains(orderStatus);
     }
 
+    private record PurchaseInboundPayload(
+        Long supplierId,
+        String supplierName,
+        LocalDate inboundDate,
+        String handlerName,
+        String remark,
+        List<Map<String, Object>> items,
+        int totalQuantity,
+        BigDecimal totalAmount
+    ) {
+    }
+
+    private record StockChange(int beforeStock, int afterStock) {
+    }
+
     private long longValue(Object value) {
         if (value instanceof Number number) {
             return number.longValue();
@@ -3622,6 +4931,14 @@ public class PhaseOneController {
     private Map<String, Object> one(String sql, String paramName, Object value) {
         return jdbcClient.sql(sql)
             .param(paramName, value)
+            .query(this::mapRow)
+            .optional()
+            .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Data not found"));
+    }
+
+    private Map<String, Object> one(String sql, Map<String, ?> params) {
+        return jdbcClient.sql(sql)
+            .params(params)
             .query(this::mapRow)
             .optional()
             .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Data not found"));
@@ -3663,6 +4980,19 @@ public class PhaseOneController {
             .param("operation", operation)
             .param("relatedNo", relatedNo)
             .param("content", content)
+            .update();
+    }
+
+    private void customerLog(Long customerId, String operatorType, String operatorName, String actionType, String content) {
+        jdbcClient.sql("""
+            INSERT INTO customer_operation_logs (customer_id, operator_type, operator_name, action_type, action_content)
+            VALUES (:customerId, :operatorType, :operatorName, :actionType, :content)
+            """)
+            .param("customerId", customerId)
+            .param("operatorType", operatorType)
+            .param("operatorName", operatorName == null || operatorName.isBlank() ? "SYSTEM" : operatorName)
+            .param("actionType", actionType)
+            .param("content", content == null || content.isBlank() ? actionType : content)
             .update();
     }
 

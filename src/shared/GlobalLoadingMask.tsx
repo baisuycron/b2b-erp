@@ -1,7 +1,21 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
+
+const loadingMaskDelayMs = 220;
 
 export default function GlobalLoadingMask({ visible }: { visible: boolean }) {
-  if (!visible) return null;
+  const [shouldRender, setShouldRender] = useState(false);
+
+  useEffect(() => {
+    if (!visible) {
+      setShouldRender(false);
+      return;
+    }
+
+    const timer = window.setTimeout(() => setShouldRender(true), loadingMaskDelayMs);
+    return () => window.clearTimeout(timer);
+  }, [visible]);
+
+  if (!visible || !shouldRender) return null;
 
   return (
     <div className="global-loading-mask" role="status" aria-live="polite" aria-label="页面加载中">

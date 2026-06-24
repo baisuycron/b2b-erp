@@ -231,7 +231,10 @@ public class AdminInventoryController {
     private List<Map<String, Object>> inventoryRows() {
         List<Map<String, Object>> products = jdbcClient.sql("""
                 SELECT p.id AS product_id, p.product_code, p.product_name, p.category_name, c.id AS category_id,
-                       p.brand_name, b.id AS brand_id, p.sale_status AS product_status, p.unit,
+                       p.brand_name, b.id AS brand_id,
+                       CASE WHEN p.product_status = 'NEW' AND p.created_at < DATE_SUB(NOW(), INTERVAL 30 DAY)
+                            THEN 'NORMAL' ELSE p.product_status END AS product_status,
+                       p.sale_status, p.unit,
                        CASE WHEN LOWER(COALESCE(p.main_image_thumbnail_url, '')) LIKE 'data:image%' THEN '' ELSE COALESCE(p.main_image_thumbnail_url, '') END AS product_image,
                        p.main_image_url, p.stock_quantity, p.inventory_warning_stock, p.sku_list_json,
                        p.pinyin_code, p.pinyin_full, p.initial_code
@@ -274,6 +277,7 @@ public class AdminInventoryController {
                     "productName", product.get("productName"),
                     "productImage", safeImage(firstPresent(product.get("productImage"), product.get("mainImageUrl"))),
                     "productStatus", product.get("productStatus"),
+                    "saleStatus", product.get("saleStatus"),
                     "categoryId", product.get("categoryId"),
                     "categoryName", product.get("categoryName"),
                     "brandId", product.get("brandId"),

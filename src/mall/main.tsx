@@ -1,4 +1,4 @@
-﻿// @ts-nocheck
+// @ts-nocheck
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -2574,8 +2574,10 @@ function cartSpecText(spec: AnyRecord) {
 }
 
 function cartRowInvalidReason(product: AnyRecord, row: AnyRecord) {
-  const rawSaleStatus = String(product?.raw?.saleStatus || product?.raw?.productStatus || "").toUpperCase();
+  const rawSaleStatus = String(product?.raw?.saleStatus || "").toUpperCase();
+  const rawProductStatus = String(product?.raw?.productStatus || "").toUpperCase();
   if (!product?.name || (rawSaleStatus && rawSaleStatus !== "ON_SALE")) return "商品已下架";
+  if (rawProductStatus === "DISABLED") return "商品已下架";
   const spec = product?.specs?.[Number(row?.specIndex || 0)];
   if (!spec) return "规格已停用";
   if (String(spec.status || "ENABLED").toUpperCase() === "DISABLED") return "规格已停用";
@@ -3628,7 +3630,7 @@ function OrderDetailPage({ ctx }: any) {
       <section className="mall-order-section">
         <div className="mall-order-section-head">
           <div className="mall-order-section-title">订单概况</div>
-          <Space>{order.key === "pendingPayment" ? <Button type="primary" onClick={() => ctx.go("pay")}>去支付</Button> : null}{order.key === "pendingReceipt" ? <Button type="primary" onClick={() => confirmReceipt(ctx, order)}>确认收货</Button> : null}<Button onClick={() => afterSaleModal(ctx, order)}>申请售后</Button>{order.key === "completed" ? <Button onClick={() => invoiceApplyModal(ctx, order)}>申请开票</Button> : null}</Space>
+          <Space>{order.key === "pendingPayment" ? <Button type="primary" onClick={() => ctx.go("pay")}>去支付</Button> : null}{order.key === "pendingReceipt" ? <Button type="primary" onClick={() => confirmReceipt(ctx, order)}>确认收货</Button> : null}<Button onClick={() => afterSaleModal(ctx, order)}>申请售后</Button><MallOrderInvoiceActions ctx={ctx} order={order} rawOrder={rawOrder} /></Space>
         </div>
         <div className="mall-order-overview">
           <div><span>订单状态：</span><strong className="is-orange">{order.statusLabel || "-"}</strong></div>
@@ -3678,6 +3680,36 @@ function paymentMethodLabel(value: any) {
   if (/支付宝/.test(raw)) return "支付宝支付";
   if (upper === "ONLINE_PAY") return "在线支付";
   return raw;
+}
+
+function MallOrderInvoiceActions({ ctx, order, rawOrder }: { ctx: any; order: AnyRecord; rawOrder: AnyRecord }) {
+  const invoice = rawOrder.invoice || order.invoice || null;
+  const status = String(invoice?.status || invoice?.invoiceStatus || "").toUpperCase();
+  if (invoice?.id && (status === "PENDING_INVOICE" || status === "WAIT_INVOICE" || status === "APPLIED")) {
+    return <Button onClick={() => cancelMallInvoiceApply(ctx, invoice)}>撤销申请</Button>;
+  }
+  if (order.key === "completed" && !invoice?.id) {
+    return <Button onClick={() => invoiceApplyModal(ctx, order)}>申请开票</Button>;
+  }
+  return null;
+}
+
+function cancelMallInvoiceApply(ctx: any, invoice: AnyRecord) {
+  Modal.confirm({
+    title: "确认撤销该开票申请吗？撤销后如需开票，需要重新提交申请。",
+    okText: "确认撤销",
+    cancelText: "取消",
+    onOk: async () => {
+      try {
+        await request(`/api/mall/invoices/${invoice.id}/cancel`, { method: "POST", data: { cancelReason: "买家自行撤销" } });
+        await ctx.hydrateOrders();
+        ctx.message.success("开票申请已撤销");
+      } catch (error: any) {
+        ctx.message.error(error.message);
+        return Promise.reject(error);
+      }
+    }
+  });
 }
 
 function orderItemImage(item: AnyRecord, products: AnyRecord[] = []) {
@@ -4139,8 +4171,9 @@ function BrowseHistoryPage({ ctx }: any) {
                 const image = safeMallImageUrl(item.cardImage || item.image || item.raw?.mainImageCardUrl || item.raw?.mainImageThumbnailUrl);
                 const stock = Number(item.specs?.[0]?.stock ?? item.raw?.stockQuantity ?? 0);
                 const offSale = item.raw?.saleStatus && item.raw.saleStatus !== "ON_SALE";
-                const unavailable = offSale || stock <= 0;
-                const unavailableText = offSale ? "下架" : stock <= 0 ? "无货" : "";
+                const disabled = String(item.raw?.productStatus || "").toUpperCase() === "DISABLED";
+                const unavailable = offSale || disabled || stock <= 0;
+                const unavailableText = offSale || disabled ? "下架" : stock <= 0 ? "无货" : "";
                 const price = Number(item.specs?.[0]?.price ?? item.raw?.salePrice ?? 0);
                 return (
                   <article className="mall-history-item" key={`${group.key}-${item.productId}`} onClick={() => openProduct(item)}>
@@ -4408,15 +4441,6 @@ function AuthPage({ ctx, type }: any) {
               const contactName = String(values.contactName || "").trim();
               const phone = String(values.phone || "").trim();
               await request("/api/buyer/register", { method: "POST", data: { phone, account: phone, password: values.password, buyerName: contactName, companyName, contactName } });
-              await request("/api/customers", {
-                method: "POST",
-                data: {
-                  companyName,
-                  contactName,
-                  contactPhone: phone,
-                  salesmanName: "网页商城注册"
-                }
-              });
               const result = await request<AnyRecord>("/api/buyer/login", { method: "POST", data: buyerLoginPayload(phone, values.password) });
               await ctx.completeLogin(result, contactName, "/mall", phone, true);
               ctx.message.success("注册成功");

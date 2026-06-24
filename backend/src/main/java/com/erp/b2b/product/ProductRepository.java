@@ -32,6 +32,10 @@ public class ProductRepository {
     private static final int MAX_MIN_ORDER_QUANTITY = 100;
     private static final int MAX_SALE_UNIT_LENGTH = 10;
     private static final BigDecimal MAX_PRICE = new BigDecimal("99999.99");
+    private static final String PRODUCT_STATUS_NEW = "NEW";
+    private static final String PRODUCT_STATUS_NORMAL = "NORMAL";
+    private static final String PRODUCT_STATUS_ARCHIVED = "ARCHIVED";
+    private static final String PRODUCT_STATUS_DISABLED = "DISABLED";
 
     private final JdbcClient jdbcClient;
     private final ProductSearchCodeGenerator searchCodeGenerator;
@@ -46,7 +50,9 @@ public class ProductRepository {
         return jdbcClient.sql("""
             SELECT id, product_code, sku_barcode, pinyin_code, pinyin_full, initial_code, product_name, category_name, brand_name, attribute_template_id, custom_attributes_json, sku_name, sku_status, unit,
                    quote_type, sale_mode, sale_unit, sale_unit_ratio, main_image_url, detail_content, sale_price, stock_quantity,
-                   min_order_quantity, sku_list_json, tier_prices_json, sale_status, created_at, updated_at
+                   min_order_quantity, sku_list_json, tier_prices_json,
+                   CASE WHEN product_status = 'NEW' AND created_at < DATE_SUB(NOW(), INTERVAL 30 DAY) THEN 'NORMAL' ELSE product_status END AS product_status,
+                   sale_status, created_at, updated_at
             FROM products
             ORDER BY id DESC
             """)
@@ -57,7 +63,9 @@ public class ProductRepository {
     public List<ProductListItem> findAdminList() {
         return jdbcClient.sql("""
             SELECT id, product_code, sku_barcode, product_name, category_name, brand_name,
-                   sku_name, unit, quote_type, sale_price, stock_quantity, sale_status,
+                   sku_name, unit, quote_type, sale_price, stock_quantity,
+                   CASE WHEN product_status = 'NEW' AND created_at < DATE_SUB(NOW(), INTERVAL 30 DAY) THEN 'NORMAL' ELSE product_status END AS product_status,
+                   sale_status,
                    main_image_thumbnail_url, updated_at
             FROM products
             ORDER BY id DESC
@@ -74,6 +82,7 @@ public class ProductRepository {
                 rs.getString("quote_type"),
                 rs.getBigDecimal("sale_price"),
                 rs.getInt("stock_quantity"),
+                rs.getString("product_status"),
                 rs.getString("sale_status"),
                 rs.getString("main_image_thumbnail_url"),
                 rs.getTimestamp("updated_at") == null ? null : rs.getTimestamp("updated_at").toLocalDateTime()
@@ -85,7 +94,9 @@ public class ProductRepository {
         return jdbcClient.sql("""
             SELECT id, product_code, sku_barcode, pinyin_code, pinyin_full, initial_code, product_name, category_name, brand_name, attribute_template_id, custom_attributes_json, sku_name, sku_status, unit,
                    quote_type, sale_mode, sale_unit, sale_unit_ratio, main_image_url, detail_content, sale_price, stock_quantity,
-                   min_order_quantity, sku_list_json, tier_prices_json, sale_status, created_at, updated_at
+                   min_order_quantity, sku_list_json, tier_prices_json,
+                   CASE WHEN product_status = 'NEW' AND created_at < DATE_SUB(NOW(), INTERVAL 30 DAY) THEN 'NORMAL' ELSE product_status END AS product_status,
+                   sale_status, created_at, updated_at
             FROM products
             WHERE id = :id
             """)
@@ -156,9 +167,12 @@ public class ProductRepository {
         return jdbcClient.sql("""
             SELECT id, product_code, sku_barcode, pinyin_code, pinyin_full, initial_code, product_name, category_name, brand_name, attribute_template_id, custom_attributes_json, sku_name, sku_status, unit,
                    quote_type, sale_mode, sale_unit, sale_unit_ratio, main_image_url, NULL AS detail_content, sale_price, stock_quantity,
-                   min_order_quantity, sku_list_json, tier_prices_json, sale_status, created_at, updated_at
+                   min_order_quantity, sku_list_json, tier_prices_json,
+                   CASE WHEN product_status = 'NEW' AND created_at < DATE_SUB(NOW(), INTERVAL 30 DAY) THEN 'NORMAL' ELSE product_status END AS product_status,
+                   sale_status, created_at, updated_at
             FROM products
             WHERE sale_status = 'ON_SALE'
+              AND COALESCE(product_status, 'NORMAL') <> 'DISABLED'
               AND (:categoryName = '' OR category_name = :categoryName)
               AND (:brandName = '' OR brand_name = :brandName)
               AND (
@@ -213,7 +227,9 @@ public class ProductRepository {
         return jdbcClient.sql("""
             SELECT id, product_code, sku_barcode, product_name, category_name, brand_name,
                    sku_name, unit, quote_type, sale_mode, sale_unit, sale_unit_ratio, sale_price,
-                   stock_quantity, min_order_quantity, sale_status,
+                   stock_quantity, min_order_quantity,
+                   CASE WHEN product_status = 'NEW' AND created_at < DATE_SUB(NOW(), INTERVAL 30 DAY) THEN 'NORMAL' ELSE product_status END AS product_status,
+                   sale_status,
                    CASE
                      WHEN LOWER(COALESCE(main_image_card_url, '')) LIKE 'data:image%' THEN ''
                      ELSE COALESCE(main_image_card_url, '')
@@ -225,6 +241,7 @@ public class ProductRepository {
                    updated_at
             FROM products
             WHERE sale_status = 'ON_SALE'
+              AND COALESCE(product_status, 'NORMAL') <> 'DISABLED'
               AND (:categoryName = '' OR category_name = :categoryName)
               AND (:brandName = '' OR brand_name = :brandName)
               AND (
@@ -258,6 +275,7 @@ public class ProductRepository {
                 rs.getBigDecimal("sale_price"),
                 rs.getObject("stock_quantity", Integer.class),
                 rs.getObject("min_order_quantity", Integer.class),
+                rs.getString("product_status"),
                 rs.getString("sale_status"),
                 rs.getString("main_image_card_url"),
                 rs.getString("main_image_thumbnail_url"),
@@ -276,9 +294,12 @@ public class ProductRepository {
         return jdbcClient.sql("""
             SELECT id, product_code, sku_barcode, pinyin_code, pinyin_full, initial_code, product_name, category_name, brand_name, attribute_template_id, custom_attributes_json, sku_name, sku_status, unit,
                    quote_type, sale_mode, sale_unit, sale_unit_ratio, main_image_url, detail_content, sale_price, stock_quantity,
-                   min_order_quantity, sku_list_json, tier_prices_json, sale_status, created_at, updated_at
+                   min_order_quantity, sku_list_json, tier_prices_json,
+                   CASE WHEN product_status = 'NEW' AND created_at < DATE_SUB(NOW(), INTERVAL 30 DAY) THEN 'NORMAL' ELSE product_status END AS product_status,
+                   sale_status, created_at, updated_at
             FROM products
             WHERE sale_status = 'ON_SALE'
+              AND COALESCE(product_status, 'NORMAL') <> 'DISABLED'
               AND (
                 LOWER(product_name) LIKE :likeKeyword
                 OR LOWER(COALESCE(category_name, '')) LIKE :likeKeyword
@@ -384,19 +405,19 @@ public class ProductRepository {
     @Transactional
     public Product create(CreateProductRequest request) {
         String productCode = reserveNextProductCode();
-        ProductPayload payload = normalizePayload(request, "SKU" + productCode, "ON_SALE");
+        ProductPayload payload = normalizePayload(request, "SKU" + productCode, "ON_SALE", PRODUCT_STATUS_NEW);
         ProductSearchCodeGenerator.SearchCodes searchCodes = searchCodeGenerator.generate(payload.productName());
         KeyHolder keyHolder = new GeneratedKeyHolder();
         jdbcClient.sql("""
             INSERT INTO products (
                 product_code, sku_barcode, pinyin_code, pinyin_full, initial_code, product_name, category_name, brand_name, attribute_template_id, custom_attributes_json, sku_name, sku_status, unit,
                 quote_type, sale_mode, sale_unit, sale_unit_ratio, main_image_url, detail_content, sale_price, stock_quantity,
-                min_order_quantity, sku_list_json, tier_prices_json, sale_status
+                min_order_quantity, sku_list_json, tier_prices_json, product_status, sale_status
             )
             VALUES (
                 :productCode, :skuBarcode, :pinyinCode, :pinyinFull, :initialCode, :productName, :categoryName, :brandName, :attributeTemplateId, :customAttributesJson, :skuName, :skuStatus, :unit,
                 :quoteType, :saleMode, :saleUnit, :saleUnitRatio, :mainImageUrl, :detailContent, :salePrice, :stockQuantity,
-                :minOrderQuantity, :skuListJson, :tierPricesJson, :saleStatus
+                :minOrderQuantity, :skuListJson, :tierPricesJson, :productStatus, :saleStatus
             )
             """)
             .param("productCode", productCode)
@@ -423,6 +444,7 @@ public class ProductRepository {
             .param("minOrderQuantity", payload.minOrderQuantity())
             .param("skuListJson", payload.skuListJson())
             .param("tierPricesJson", payload.tierPricesJson())
+            .param("productStatus", payload.productStatus())
             .param("saleStatus", payload.saleStatus())
             .update(keyHolder, "id");
         Long id = keyHolder.getKey().longValue();
@@ -432,7 +454,7 @@ public class ProductRepository {
     public Product update(Long productId, CreateProductRequest request) {
         Product existing = findById(productId)
             .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "商品不存在"));
-        ProductPayload payload = normalizePayload(request, primarySkuCode(existing), existing.saleStatus());
+        ProductPayload payload = normalizePayload(request, primarySkuCode(existing), existing.saleStatus(), existing.productStatus());
         ProductSearchCodeGenerator.SearchCodes searchCodes = searchCodeGenerator.generate(payload.productName());
         jdbcClient.sql("""
             UPDATE products
@@ -459,6 +481,7 @@ public class ProductRepository {
                 min_order_quantity = :minOrderQuantity,
                 sku_list_json = :skuListJson,
                 tier_prices_json = :tierPricesJson,
+                product_status = :productStatus,
                 sale_status = :saleStatus
             WHERE id = :productId
             """)
@@ -486,6 +509,7 @@ public class ProductRepository {
             .param("minOrderQuantity", payload.minOrderQuantity())
             .param("skuListJson", payload.skuListJson())
             .param("tierPricesJson", payload.tierPricesJson())
+            .param("productStatus", payload.productStatus())
             .param("saleStatus", payload.saleStatus())
             .update();
         return findById(productId).orElseThrow();
@@ -497,6 +521,7 @@ public class ProductRepository {
             SET stock_quantity = stock_quantity - :quantity
             WHERE id = :productId
               AND sale_status = 'ON_SALE'
+              AND COALESCE(product_status, 'NORMAL') <> 'DISABLED'
               AND stock_quantity >= :quantity
             """)
             .param("productId", productId)
@@ -557,6 +582,22 @@ public class ProductRepository {
             .update();
     }
 
+    public int batchUpdateProductStatus(List<Long> productIds, String productStatus) {
+        String normalizedStatus = normalizeProductStatus(productStatus, PRODUCT_STATUS_NORMAL);
+        String saleStatus = PRODUCT_STATUS_DISABLED.equals(normalizedStatus) ? "OFF_SALE" : null;
+        if (saleStatus != null) {
+            return jdbcClient.sql("UPDATE products SET product_status = :productStatus, sale_status = :saleStatus WHERE id IN (:productIds)")
+                .param("productStatus", normalizedStatus)
+                .param("saleStatus", saleStatus)
+                .param("productIds", productIds)
+                .update();
+        }
+        return jdbcClient.sql("UPDATE products SET product_status = :productStatus WHERE id IN (:productIds)")
+            .param("productStatus", normalizedStatus)
+            .param("productIds", productIds)
+            .update();
+    }
+
     public int batchUpdateAttributes(
         List<Long> productIds,
         Long attributeTemplateId,
@@ -603,6 +644,7 @@ public class ProductRepository {
             rs.getInt("min_order_quantity"),
             rs.getString("sku_list_json"),
             rs.getString("tier_prices_json"),
+            rs.getString("product_status"),
             rs.getString("sale_status"),
             rs.getTimestamp("created_at").toLocalDateTime(),
             rs.getTimestamp("updated_at").toLocalDateTime()
@@ -648,6 +690,7 @@ public class ProductRepository {
               AND COALESCE(category_name, '') <> ''
               AND COALESCE(brand_name, '') <> ''
               AND COALESCE(main_image_url, '') <> ''
+              AND COALESCE(product_status, 'NORMAL') <> 'DISABLED'
               AND sku_status = 'ENABLED'
               AND sale_price > 0
               AND stock_quantity >= 1
@@ -661,7 +704,7 @@ public class ProductRepository {
         }
     }
 
-    private ProductPayload normalizePayload(CreateProductRequest request, String fallbackSkuCode, String fallbackSaleStatus) {
+    private ProductPayload normalizePayload(CreateProductRequest request, String fallbackSkuCode, String fallbackSaleStatus, String fallbackProductStatus) {
         String productName = normalizeProductName(request.productName());
         String unit = normalizeUnit(request.unit());
         String quoteType = normalizeQuoteType(request.quoteType());
@@ -677,6 +720,7 @@ public class ProductRepository {
             throw new ApiException(HttpStatus.BAD_REQUEST, "阶梯报价至少需要配置一条阶梯价格");
         }
 
+        String productStatus = normalizeProductStatus(request.productStatus(), fallbackProductStatus);
         return new ProductPayload(
             productName,
             normalizeSkuText(string(firstSku.get("skuCode"), fallbackSkuCode), "SKU编码"),
@@ -699,7 +743,8 @@ public class ProductRepository {
             validateMinOrderQuantity(integer(firstSku.get("minOrderQuantity"), request.minOrderQuantity()), "最小起订量"),
             json(skuRows),
             json(tiers),
-            normalizeSaleStatus(request.saleStatus(), fallbackSaleStatus)
+            productStatus,
+            normalizeSaleStatus(request.saleStatus(), fallbackSaleStatus, productStatus)
         );
     }
 
@@ -943,9 +988,24 @@ public class ProductRepository {
         return "NORMAL";
     }
 
-    private String normalizeSaleStatus(String value, String fallback) {
+    private String normalizeSaleStatus(String value, String fallback, String productStatus) {
+        if (PRODUCT_STATUS_DISABLED.equals(productStatus)) {
+            return "OFF_SALE";
+        }
         String text = clean(value, fallback == null ? "ON_SALE" : fallback);
         return "OFF_SALE".equalsIgnoreCase(text) ? "OFF_SALE" : "ON_SALE";
+    }
+
+    private String normalizeProductStatus(String value, String fallback) {
+        String text = clean(value, fallback == null ? PRODUCT_STATUS_NORMAL : fallback).trim().toUpperCase();
+        if ("新品".equals(value)) return PRODUCT_STATUS_NEW;
+        if ("正常".equals(value)) return PRODUCT_STATUS_NORMAL;
+        if ("淘汰".equals(value)) return PRODUCT_STATUS_ARCHIVED;
+        if ("停用".equals(value)) return PRODUCT_STATUS_DISABLED;
+        return switch (text) {
+            case PRODUCT_STATUS_NEW, PRODUCT_STATUS_NORMAL, PRODUCT_STATUS_ARCHIVED, PRODUCT_STATUS_DISABLED -> text;
+            default -> throw new ApiException(HttpStatus.BAD_REQUEST, "商品状态不正确");
+        };
     }
 
     private String normalizeSkuStatus(Object value) {
@@ -1058,6 +1118,7 @@ public class ProductRepository {
         Integer minOrderQuantity,
         String skuListJson,
         String tierPricesJson,
+        String productStatus,
         String saleStatus
     ) {
     }

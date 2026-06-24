@@ -49,6 +49,7 @@ public record CreateProductRequest(
     String mainImageUrl,
     String detailContent,
     String skuStatus,
+    String productStatus,
     List<Map<String, Object>> skuList,
     List<Map<String, Object>> tierPrices
 ) {

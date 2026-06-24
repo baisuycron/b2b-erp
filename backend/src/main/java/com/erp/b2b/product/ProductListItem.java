@@ -15,6 +15,7 @@ public record ProductListItem(
     String quoteType,
     BigDecimal salePrice,
     Integer stockQuantity,
+    String productStatus,
     String saleStatus,
     String mainImageThumbnailUrl,
     LocalDateTime updatedAt

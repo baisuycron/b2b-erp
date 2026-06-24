@@ -19,6 +19,7 @@ public record MallProductListItem(
     BigDecimal salePrice,
     Integer stockQuantity,
     Integer minOrderQuantity,
+    String productStatus,
     String saleStatus,
     String mainImageCardUrl,
     String mainImageThumbnailUrl,

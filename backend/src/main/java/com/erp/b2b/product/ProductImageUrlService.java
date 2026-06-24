@@ -79,6 +79,7 @@ public class ProductImageUrlService {
         response.put("minOrderQuantity", product.minOrderQuantity());
         response.put("skuListJson", sanitizeJsonOrHtml(product.skuListJson(), product.id(), "sku"));
         response.put("tierPricesJson", product.tierPricesJson());
+        response.put("productStatus", product.productStatus());
         response.put("saleStatus", product.saleStatus());
         response.put("createdAt", product.createdAt());
         response.put("updatedAt", product.updatedAt());

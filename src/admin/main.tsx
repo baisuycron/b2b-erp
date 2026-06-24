@@ -150,6 +150,7 @@ const dashboardPermissionKey = "dashboard";
 function normalizePageKey(page?: PageKey | null): PageKey {
   if (!page) return "dashboard";
   if (page === "stock-adjust") return "stock-overview";
+  if (page === "purchase-inbound") return "purchase-order";
   return page;
 }
 
@@ -160,8 +161,8 @@ const pageTitles: Record<PageKey, [string, string]> = {
   "product-brand": ["商品品牌", "用于商品建档和商城品牌筛选。"],
   "product-attribute-template": ["商品属性模板", "维护商品档案可关联的自定义属性字段。"],
   supplier: ["供应商管理", "维护采购供应商基础资料。"],
-  "purchase-order": ["采购订单", "发起采购单并跟踪入库状态。"],
-  "purchase-inbound": ["采购入库记录", "查看采购入库明细和状态。"],
+  "purchase-order": ["采购入库单", "录入供应商到货明细，审核后直接增加库存。"],
+  "purchase-inbound": ["采购入库单", "录入供应商到货明细，审核后直接增加库存。"],
   "stock-overview": ["库存总览", "按 SKU 展示实际库存、冻结库存和可售库存。"],
   "stock-flow": ["库存盘点", "功能正在建设中。"],
   "stock-adjust": ["库存调整", "人工调增或调减 SKU 实际库存。"],
@@ -184,7 +185,7 @@ const endpoints: Record<string, string> = {
   brands: "/api/admin/product-brands",
   attributeTemplates: "/api/admin/product-attribute-templates",
   suppliers: "/api/admin/suppliers",
-  purchaseOrders: "/api/admin/purchase-orders",
+  purchaseOrders: "/api/admin/purchase-inbounds",
   purchaseStockIns: "/api/admin/purchase-stock-ins",
   inventory: "/api/admin/inventory",
   inventoryFlows: "/api/admin/inventory/flows",
@@ -239,7 +240,7 @@ const pagePermissionKeys: Record<PageKey, string[]> = {
   "product-brand": ["goods:product-brand"],
   "product-attribute-template": ["goods:product-attribute-template"],
   supplier: ["purchase:supplier"],
-  "purchase-order": ["purchase:purchase-order"],
+  "purchase-order": ["purchase:purchase-inbound", "purchase:purchase-order"],
   "purchase-inbound": ["purchase:purchase-inbound"],
   "stock-overview": ["stock:stock-overview"],
   "stock-flow": ["stock:stock-flow"],
@@ -556,8 +557,7 @@ function AdminRoot() {
       label: "采购管理",
       children: [
         { key: "supplier", label: "供应商管理" },
-        { key: "purchase-order", label: "采购订单" },
-        { key: "purchase-inbound", label: "采购入库记录" }
+        { key: "purchase-order", label: "采购入库单" }
       ]
     },
     {
@@ -674,7 +674,7 @@ function AdminRoot() {
         </Header>
         <Content className="admin-content">
           <div
-            className={`page-wrap ${page === "product-list" || page === "stock-overview" || page === "supplier" ? "page-wrap-product-list" : ""} ${page === "order" || page === "aftersale" ? "page-wrap-order" : ""} ${page === "product-category" || page === "product-brand" || page === "product-attribute-template" ? "page-wrap-management-board" : ""}`}
+            className={`page-wrap ${page === "product-list" || page === "stock-overview" || page === "supplier" ? "page-wrap-product-list" : ""} ${page === "order" || page === "aftersale" || page === "purchase-order" || page === "purchase-inbound" ? "page-wrap-order" : ""} ${page === "product-category" || page === "product-brand" || page === "product-attribute-template" ? "page-wrap-management-board" : ""}`}
           >
             <PageRenderer page={page} ctx={ctx} loading={false} />
           </div>
@@ -828,8 +828,7 @@ function PageRenderer({ page, ctx, loading }: { page: PageKey; ctx: Ctx; loading
   if (page === "product-brand") return <BrandPage ctx={ctx} loading={loading} />;
   if (page === "product-attribute-template") return <AttributeTemplatePage ctx={ctx} loading={loading} />;
   if (page === "supplier") return <SupplierPage ctx={ctx} loading={loading} />;
-  if (page === "purchase-order") return <PurchaseOrderPage ctx={ctx} loading={loading} />;
-  if (page === "purchase-inbound") return <SimpleTablePage loading={loading} rows={ctx.data.purchaseStockIns || []} columns={purchaseInboundColumns()} />;
+  if (page === "purchase-order" || page === "purchase-inbound") return <PurchaseOrderPage ctx={ctx} loading={loading} />;
   if (page === "stock-overview" || page === "stock-adjust") return <InventoryPage ctx={ctx} loading={loading} />;
   if (page === "stock-flow") return <SimpleTablePage loading={loading} rows={ctx.data.inventoryFlows || []} columns={stockFlowColumns()} />;
   if (page === "order") return <OrderPage ctx={ctx} loading={loading} />;
@@ -864,9 +863,9 @@ function Dashboard({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
   const summary = ctx.data.summary || {};
   const orders = Array.isArray(ctx.data.orders) ? ctx.data.orders : (ctx.data.orders?.list || []);
   const inventory = ctx.data.inventory || [];
-  const purchaseOrders = ctx.data.purchaseOrders || [];
+  const purchaseOrders = Array.isArray(ctx.data.purchaseOrders) ? ctx.data.purchaseOrders : (ctx.data.purchaseOrders?.list || []);
   const afterSales = Array.isArray(ctx.data.afterSales) ? ctx.data.afterSales : (ctx.data.afterSales?.list || []);
-  const invoices = ctx.data.invoices || [];
+  const invoices = Array.isArray(ctx.data.invoices) ? ctx.data.invoices : (ctx.data.invoices?.list || []);
   const payments = ctx.data.payments || [];
   const refunds = ctx.data.refunds || [];
   const buyers = ctx.data.buyers || [];
@@ -885,7 +884,7 @@ function Dashboard({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
     .length);
   const stockWarning = Number(summary.stockWarning ?? inventory.filter((item: AnyRecord) => Number(item.availableQuantity ?? item.stockQuantity ?? 0) <= 0).length);
   const waitShip = orders.filter((x: AnyRecord) => x.orderStatus === "WAIT_SHIP").length;
-  const waitPurchaseIn = purchaseOrders.filter((x: AnyRecord) => ["WAIT_IN", "WAIT_STOCK_IN", "PENDING", "CREATED"].includes(String(x.status))).length;
+  const waitPurchaseIn = purchaseOrders.filter((x: AnyRecord) => ["PENDING_REVIEW", "WAIT_IN", "WAIT_STOCK_IN", "PENDING", "CREATED"].includes(String(x.status))).length;
   const waitAfterSale = Number(summary.pendingAfterSale ?? afterSales.filter((x: AnyRecord) => x.status === "WAIT_AUDIT").length);
   const waitInvoice = Number(summary.pendingInvoice ?? invoices.filter((x: AnyRecord) => x.status === "WAIT_INVOICE").length);
   const todoCards = (summary.todoCards || []).length ? summary.todoCards : [
@@ -988,8 +987,7 @@ function dashboardShortcutOptions() {
     { key: "product-brand", label: "商品品牌", icon: <AppstoreOutlined /> },
     { key: "product-attribute-template", label: "商品属性模板", icon: <TagsOutlined /> },
     { key: "supplier", label: "供应商管理", icon: <TeamOutlined /> },
-    { key: "purchase-order", label: "采购订单", icon: <InboxOutlined /> },
-    { key: "purchase-inbound", label: "采购入库", icon: <InboxOutlined /> },
+    { key: "purchase-order", label: "采购入库单", icon: <InboxOutlined /> },
     { key: "stock-overview", label: "库存总览", icon: <BarcodeOutlined /> },
     { key: "order", label: "订单管理", icon: <FileTextOutlined /> },
     { key: "aftersale", label: "售后管理", icon: <AuditOutlined /> },
@@ -1412,12 +1410,39 @@ function collectCategoryNames(node?: AnyRecord) {
   return Array.from(names);
 }
 
+const productSaleStatusOptions = [{ value: "ON_SALE", label: "已上架" }, { value: "OFF_SALE", label: "已下架" }];
+const productBusinessStatusOptions = [
+  { value: "NEW", label: "新品" },
+  { value: "NORMAL", label: "正常" },
+  { value: "ARCHIVED", label: "淘汰" },
+  { value: "DISABLED", label: "停用" }
+];
+
+function normalizeProductBusinessStatus(value: any) {
+  const text = String(value || "").trim().toUpperCase();
+  if (text === "新品") return "NEW";
+  if (text === "正常") return "NORMAL";
+  if (text === "淘汰") return "ARCHIVED";
+  if (text === "停用") return "DISABLED";
+  return ["NEW", "NORMAL", "ARCHIVED", "DISABLED"].includes(text) ? text : "NORMAL";
+}
+
+function productBusinessStatusText(value: any) {
+  const status = normalizeProductBusinessStatus(value);
+  return productBusinessStatusOptions.find(item => item.value === status)?.label || status || "-";
+}
+
+function productSaleStatusText(value: any) {
+  return String(value || "").toUpperCase() === "OFF_SALE" ? "已下架" : "已上架";
+}
+
 const productColumnDefaults = [
   { key: "index", label: "序号", width: 72 },
   { key: "productCode", label: "商品编码", width: 150 },
   { key: "productName", label: "商品名称", width: 260 },
   { key: "categoryName", label: "商品分类", width: 150 },
-  { key: "saleStatus", label: "是否淘汰", width: 120 },
+  { key: "saleStatus", label: "上架状态", width: 120 },
+  { key: "productStatus", label: "商品状态", width: 120 },
   { key: "skuName", label: "规格", width: 190 },
   { key: "unit", label: "库存单位", width: 120 },
   { key: "brandName", label: "商品品牌", width: 140 },
@@ -1574,6 +1599,7 @@ function normalizeProductRecord(item?: AnyRecord) {
     skuListJson: firstPresent(item.skuListJson, item.skuList, item.sku_list_json),
     tierPrices: firstPresent(item.tierPrices, item.tierPricesJson, item.tier_prices_json),
     tierPricesJson: firstPresent(item.tierPricesJson, item.tierPrices, item.tier_prices_json),
+    productStatus: firstPresent(item.productStatus, item.product_status),
     saleStatus: firstPresent(item.saleStatus, item.sale_status),
     updatedAt: firstPresent(item.updatedAt, item.updated_at),
     createdAt: firstPresent(item.createdAt, item.created_at)
@@ -1683,6 +1709,7 @@ function buildProductUpdatePayload(item: AnyRecord, patch: AnyRecord = {}) {
     saleMode: normalizedItem?.saleMode || "NORMAL",
     saleUnit: normalizedItem?.saleMode === "BATCH" ? normalizedItem?.saleUnit || null : null,
     saleUnitRatio: normalizedItem?.saleMode === "BATCH" ? Number(normalizedItem?.saleUnitRatio) || null : null,
+    productStatus: patch.productStatus ?? normalizedItem?.productStatus ?? "NEW",
     saleStatus: patch.saleStatus ?? normalizedItem?.saleStatus ?? "ON_SALE",
     mainImageUrl: normalizedItem?.mainImageUrl || "",
     detailContent: normalizedItem?.detailContent || "",
@@ -1707,8 +1734,8 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
   const [productTag, setProductTag] = useState<string>();
   const [saleStatusInput, setSaleStatusInput] = useState<string>();
   const [saleStatus, setSaleStatus] = useState<string>();
-  const [archiveStatusInput, setArchiveStatusInput] = useState<string>();
-  const [archiveStatus, setArchiveStatus] = useState<string>();
+  const [productStatusInput, setProductStatusInput] = useState<string>();
+  const [productStatus, setProductStatus] = useState<string>();
   const [batchQueryOpen, setBatchQueryOpen] = useState(false);
   const [batchEditOpen, setBatchEditOpen] = useState(false);
   const [batchEditType, setBatchEditType] = useState<string>();
@@ -1809,18 +1836,19 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
       && (!brandName || item.brandName === brandName)
       && (!productTag || !itemTags.length || itemTags.includes(productTag))
       && (!saleStatus || item.saleStatus === saleStatus)
-      && (!archiveStatus || item.saleStatus === (archiveStatus === "YES" ? "OFF_SALE" : "ON_SALE"))
+      && (!productStatus || normalizeProductBusinessStatus(item.productStatus) === productStatus)
       && batchMatched;
   });
   const brandOptions = Array.from(new Set(brands.map((x: AnyRecord) => x.brandName).filter(Boolean))).map(value => ({ value, label: value }));
   const attributeTemplates = batchAttributeTemplates.length ? batchAttributeTemplates : (ctx.data.attributeTemplates || []);
   const tagOptions = [{ value: "重点商品", label: "重点商品" }, { value: "常规商品", label: "常规商品" }];
-  const saleStatusOptions = [{ value: "ON_SALE", label: "已上架" }, { value: "OFF_SALE", label: "已下架" }];
-  const archiveStatusOptions = [{ value: "YES", label: "是" }, { value: "NO", label: "否" }];
+  const saleStatusOptions = productSaleStatusOptions;
+  const productStatusOptions = productBusinessStatusOptions;
   const batchEditTitles: AnyRecord = {
     category: "批量修改商品分类",
     brand: "批量修改商品品牌",
-    status: "批量修改商品状态",
+    status: "批量修改上架状态",
+    productStatus: "批量修改商品状态",
     attributes: "批量修改商品属性"
   };
   const selectedCategoryKey = categoryName ? `category:${categoryName}` : "category:__all__";
@@ -1829,7 +1857,8 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
     productCode: (a, b) => String(a.productCode || "").localeCompare(String(b.productCode || "")),
     productName: (a, b) => String(a.productName || "").localeCompare(String(b.productName || "")),
     categoryName: (a, b) => String(a.categoryName || "").localeCompare(String(b.categoryName || "")),
-    saleStatus: (a, b) => String(a.saleStatus || "").localeCompare(String(b.saleStatus || ""))
+    saleStatus: (a, b) => String(a.saleStatus || "").localeCompare(String(b.saleStatus || "")),
+    productStatus: (a, b) => String(a.productStatus || "").localeCompare(String(b.productStatus || ""))
   };
   const sortedRows = productSort.key && productSort.order && productSortComparers[productSort.key]
     ? [...filteredRows].sort((a, b) => {
@@ -1906,7 +1935,7 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
     setBrandName(brandNameInput);
     setProductTag(productTagInput);
     setSaleStatus(saleStatusInput);
-    setArchiveStatus(archiveStatusInput);
+    setProductStatus(productStatusInput);
     setBatchKeywords(batchKeywordsInput);
   };
   const resetFilters = () => {
@@ -1918,8 +1947,8 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
     setProductTag(undefined);
     setSaleStatusInput(undefined);
     setSaleStatus(undefined);
-    setArchiveStatusInput(undefined);
-    setArchiveStatus(undefined);
+    setProductStatusInput(undefined);
+    setProductStatus(undefined);
     setBatchQueryText("");
     setBatchKeywordsInput([]);
     setBatchKeywords([]);
@@ -1960,10 +1989,12 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
     const values = await batchEditForm.validateFields();
     const patch = batchEditType === "category"
       ? { categoryName: values.categoryName }
-      : batchEditType === "brand"
-        ? { brandName: values.brandName }
+        : batchEditType === "brand"
+          ? { brandName: values.brandName }
         : batchEditType === "status"
           ? { saleStatus: values.saleStatus }
+          : batchEditType === "productStatus"
+            ? { productStatus: values.productStatus }
           : batchEditType === "attributes"
             ? { attributeTemplateId: values.attributeTemplateId, customAttributes: values.customAttributes || [] }
             : {};
@@ -2051,7 +2082,8 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
     { key: "productCode", title: "商品编码", dataIndex: "productCode", width: 150, align: "left", className: "product-code-column", render: (v, item) => <Button className="product-code-link" type="link" onClick={() => void productDetail(ctx, item)}>{v || "-"}</Button> },
     { key: "productName", title: "商品名称", dataIndex: "productName", width: 260, render: renderProductNameCell },
     { key: "categoryName", title: "商品分类", dataIndex: "categoryName", width: 150 },
-    { key: "saleStatus", title: "是否淘汰", dataIndex: "saleStatus", width: 120, render: v => <span className={v === "OFF_SALE" ? "archive-danger-text" : ""}>{v === "OFF_SALE" ? "是" : "否"}</span> },
+    { key: "saleStatus", title: "上架状态", dataIndex: "saleStatus", width: 120, render: v => <Tag color={v === "ON_SALE" ? "green" : "default"}>{productSaleStatusText(v)}</Tag> },
+    { key: "productStatus", title: "商品状态", dataIndex: "productStatus", width: 120, render: v => <Tag color={normalizeProductBusinessStatus(v) === "DISABLED" ? "red" : normalizeProductBusinessStatus(v) === "ARCHIVED" ? "orange" : normalizeProductBusinessStatus(v) === "NEW" ? "blue" : "green"}>{productBusinessStatusText(v)}</Tag> },
     {
       key: "skuName",
       title: "规格",
@@ -2059,12 +2091,11 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
       width: 140,
       render: (value, item) => {
         const skuRows = productSkuRows(item);
-        const hasMultipleSpecs = skuRows.length > 1 || skuRows.some((sku: AnyRecord) => (sku.specValues || []).length > 1);
-        const canOpenDetail = Boolean(item?.id);
+        const hasSpecType = skuRows.some((sku: AnyRecord) => (sku.specValues || []).some((spec: AnyRecord) => String(firstPresent(spec.groupName, spec.groupId) || "").trim()));
         return (
           <div className="product-spec-summary-cell">
             <span title={String(value || "")}>{value || "-"}</span>
-            {canOpenDetail || hasMultipleSpecs ? <Button type="link" onClick={() => void openSpecDetail(item)}>查看更多</Button> : null}
+            {hasSpecType ? <Button type="link" onClick={() => void openSpecDetail(item)}>查看更多</Button> : null}
           </div>
         );
       }
@@ -2100,7 +2131,7 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
       render: (_, item) => (
         <Space size={7} className="product-action-links">
           <Button type="link" icon={<EditOutlined />} onClick={() => void openProductForm(item)}>编辑</Button>
-          <Button type="link" onClick={() => productSale(ctx, item)}>{item.saleStatus === "ON_SALE" ? "下架" : "上架"}</Button>
+          <Button type="link" disabled={normalizeProductBusinessStatus(item.productStatus) === "DISABLED"} onClick={() => productSale(ctx, item)}>{item.saleStatus === "ON_SALE" ? "下架" : "上架"}</Button>
         </Space>
       )
     }
@@ -2192,8 +2223,8 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
               </div>
             </label>
             <label>
-              <span>商品状态</span>
-              <Select allowClear placeholder="请选择商品状态" value={saleStatusInput} options={saleStatusOptions} onChange={setSaleStatusInput} />
+              <span>上架状态</span>
+              <Select allowClear placeholder="请选择上架状态" value={saleStatusInput} options={saleStatusOptions} onChange={setSaleStatusInput} />
             </label>
           </div>
           <label>
@@ -2206,8 +2237,8 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
           </label>
           <div className="product-archive-filter-actions-stack">
             <label>
-              <span>是否淘汰</span>
-              <Select allowClear placeholder="请选择" value={archiveStatusInput} options={archiveStatusOptions} onChange={setArchiveStatusInput} />
+              <span>商品状态</span>
+              <Select allowClear placeholder="请选择商品状态" value={productStatusInput} options={productStatusOptions} onChange={setProductStatusInput} />
             </label>
             <div className="product-archive-query-actions">
               <Button type="primary" onClick={applyFilters}>查询</Button>
@@ -2226,7 +2257,8 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
               items: [
                 { key: "category", label: "批量修改商品分类" },
                 { key: "brand", label: "批量修改商品品牌" },
-                { key: "status", label: "批量修改商品状态" },
+                { key: "status", label: "批量修改上架状态" },
+                { key: "productStatus", label: "批量修改商品状态" },
                 { key: "attributes", label: "批量修改商品属性" }
               ],
               onClick: ({ key }) => void openBatchEditModal(String(key))
@@ -2286,8 +2318,13 @@ function ProductPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
             </Form.Item>
           ) : null}
           {batchEditType === "status" ? (
-            <Form.Item name="saleStatus" label="商品状态" rules={[{ required: true, message: "请选择商品状态" }]} style={{ marginTop: 16 }}>
-              <Select placeholder="请选择商品状态" options={saleStatusOptions} />
+            <Form.Item name="saleStatus" label="上架状态" rules={[{ required: true, message: "请选择上架状态" }]} style={{ marginTop: 16 }}>
+              <Select placeholder="请选择上架状态" options={saleStatusOptions} />
+            </Form.Item>
+          ) : null}
+          {batchEditType === "productStatus" ? (
+            <Form.Item name="productStatus" label="商品状态" rules={[{ required: true, message: "请选择商品状态" }]} style={{ marginTop: 16 }}>
+              <Select placeholder="请选择商品状态" options={productStatusOptions} />
             </Form.Item>
           ) : null}
           {batchEditType === "attributes" ? (
@@ -2622,6 +2659,7 @@ function ProductForm({ ctx, item, draftValues, readOnly = false }: { ctx: Ctx; i
   const quoteType = Form.useWatch("quoteType", form) || "INDEPENDENT_PRICE";
   const saleMode = Form.useWatch("saleMode", form) || "NORMAL";
   const saleUnit = Form.useWatch("saleUnit", form) || "";
+  const formProductStatus = Form.useWatch("productStatus", form) || "NEW";
   const baseUnit = Form.useWatch("unit", form) || product?.unit || "件";
   const isTierPrice = quoteType === "TIER_PRICE";
   const isBatchSale = saleMode === "BATCH";
@@ -2659,6 +2697,7 @@ function ProductForm({ ctx, item, draftValues, readOnly = false }: { ctx: Ctx; i
         attributeTemplates
       ),
       unit: product?.unit || "件",
+      productStatus: product?.productStatus || "NEW",
       saleStatus: product?.saleStatus || "ON_SALE",
       quoteType: product?.quoteType || "INDEPENDENT_PRICE",
       saleMode: product?.saleMode || "NORMAL",
@@ -2689,6 +2728,12 @@ function ProductForm({ ctx, item, draftValues, readOnly = false }: { ctx: Ctx; i
     form.resetFields();
     form.setFieldsValue(initial);
   }, [form, initial]);
+
+  useEffect(() => {
+    if (formProductStatus === "DISABLED" && form.getFieldValue("saleStatus") !== "OFF_SALE") {
+      form.setFieldValue("saleStatus", "OFF_SALE");
+    }
+  }, [form, formProductStatus]);
 
   const applyAttributeTemplate = (templateId?: React.Key) => {
     const template = attributeTemplates.find((item: AnyRecord) => String(item.id) === String(templateId));
@@ -3246,8 +3291,14 @@ function ProductForm({ ctx, item, draftValues, readOnly = false }: { ctx: Ctx; i
                         </div>
                         <div className="product-form-basic-label is-required">商品状态</div>
                         <div className="product-form-basic-control">
-                          <Form.Item name="saleStatus" rules={[{ required: true, message: "请选择商品状态" }]}>
-                            <Select options={[{ value: "ON_SALE", label: "已上架" }, { value: "OFF_SALE", label: "已下架" }]} />
+                          <Form.Item name="productStatus" rules={[{ required: true, message: "请选择商品状态" }]}>
+                            <Select options={productBusinessStatusOptions} />
+                          </Form.Item>
+                        </div>
+                        <div className="product-form-basic-label is-required">上架状态</div>
+                        <div className="product-form-basic-control">
+                          <Form.Item name="saleStatus" rules={[{ required: true, message: "请选择上架状态" }]}>
+                            <Select options={productSaleStatusOptions.map(option => ({ ...option, disabled: option.value === "ON_SALE" && formProductStatus === "DISABLED" }))} />
                           </Form.Item>
                         </div>
                       <div className="product-form-basic-label is-required">报价方式</div>
@@ -3674,9 +3725,13 @@ function ProductEditPreview({ values, sourceProduct, onExit }: { values: AnyReco
 }
 
 async function productSale(ctx: Ctx, item: AnyRecord) {
+  if (normalizeProductBusinessStatus(item.productStatus) === "DISABLED" && item.saleStatus !== "ON_SALE") {
+    ctx.message.warning("停用商品不能再次上架");
+    return;
+  }
   try {
     await request(`/api/admin/products/${item.id}/${item.saleStatus === "ON_SALE" ? "off-sale" : "on-sale"}`, { method: "PUT" });
-    ctx.message.success("商品状态已更新");
+    ctx.message.success("上架状态已更新");
     ctx.reload();
   } catch (error: any) {
     ctx.message.error(error.message);
@@ -4180,58 +4235,602 @@ function genericForm(ctx: Ctx, title: string, item: AnyRecord | undefined, field
   });
 }
 
+const purchaseInboundStatusOptions = [
+  { value: "ALL", label: "全部" },
+  { value: "PENDING_REVIEW", label: "待审核" },
+  { value: "IN_STOCK", label: "已入库" },
+  { value: "REJECTED", label: "已驳回" }
+];
+
+const purchaseInboundStatusMeta: AnyRecord = {
+  PENDING_REVIEW: { text: "待审核", color: "blue" },
+  IN_STOCK: { text: "已入库", color: "green" },
+  REJECTED: { text: "已驳回", color: "red" }
+};
+
+function purchaseInboundStatusTag(value: any) {
+  const meta = purchaseInboundStatusMeta[value] || { text: value || "-", color: "default" };
+  return <Tag color={meta.color}>{meta.text}</Tag>;
+}
+
 function PurchaseOrderPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
+  const [form] = Form.useForm();
+  const [activeTab, setActiveTab] = useState("ALL");
+  const [rows, setRows] = useState<AnyRecord[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [filters, setFilters] = useState<AnyRecord>({});
+  const [listLoading, setListLoading] = useState(false);
+  const [refreshTick, setRefreshTick] = useState(0);
+
+  const refresh = () => setRefreshTick(value => value + 1);
+
+  useEffect(() => {
+    let alive = true;
+    const params = new URLSearchParams();
+    params.set("page", String(page));
+    params.set("pageSize", String(pageSize));
+    if (activeTab !== "ALL") params.set("tab", activeTab);
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && String(value).trim() !== "") {
+        params.set(key, String(value).trim());
+      }
+    });
+    setListLoading(true);
+    request(`/api/admin/purchase-inbounds?${params.toString()}`)
+      .then(result => {
+        if (!alive) return;
+        setRows(Array.isArray(result?.list) ? result.list : []);
+        setTotal(Number(result?.total || 0));
+      })
+      .catch((error: Error) => alive && ctx.message.error(error.message))
+      .finally(() => alive && setListLoading(false));
+    return () => {
+      alive = false;
+    };
+  }, [activeTab, page, pageSize, JSON.stringify(filters), refreshTick]);
+
+  const applyFilters = (values: AnyRecord) => {
+    const createdRange = values.createdDateRange || [];
+    const inboundRange = values.inboundDateRange || [];
+    const status = values.status && values.status !== "ALL" ? values.status : undefined;
+    setFilters({
+      keyword: values.keyword,
+      status,
+      supplierId: values.supplierId,
+      createdStartDate: createdRange[0]?.format?.("YYYY-MM-DD"),
+      createdEndDate: createdRange[1]?.format?.("YYYY-MM-DD"),
+      inboundStartDate: inboundRange[0]?.format?.("YYYY-MM-DD"),
+      inboundEndDate: inboundRange[1]?.format?.("YYYY-MM-DD")
+    });
+    if (status) setActiveTab(status);
+    setPage(1);
+  };
+
+  const resetFilters = () => {
+    form.resetFields();
+    setFilters({});
+    setActiveTab("ALL");
+    setPage(1);
+  };
+
+  const suppliers = ctx.data.suppliers || [];
+  const tabItems = purchaseInboundStatusOptions.map(item => ({
+    key: item.value,
+    label: item.value === activeTab ? `${item.label} ${total}` : item.label
+  }));
+
   return (
-    <Card title="采购订单" extra={<Button type="primary" icon={<PlusOutlined />} onClick={() => purchaseOrderForm(ctx)}>新增采购单</Button>}>
-      <AdminTable loading={loading} rowKey="id" dataSource={ctx.data.purchaseOrders || []} columns={[
-        { title: "采购单号", dataIndex: "purchaseOrderNo" },
-        { title: "供应商", dataIndex: "supplierName" },
-        { title: "采购金额", dataIndex: "totalAmount", render: money },
-        { title: "预计到货", dataIndex: "expectedArrivalDate", render: dateText },
-        { title: "状态", dataIndex: "status", render: tag },
-        { title: "操作", render: (_, item) => <Space><Button type="link" onClick={() => detailDrawer(ctx, "采购订单详情", item)}>详情</Button><Button type="link" onClick={() => request(`/api/admin/purchase-orders/${item.id}/stock-in`, { method: "POST" }).then(ctx.reload).then(() => ctx.message.success("采购入库成功")).catch((e: Error) => ctx.message.error(e.message))}>入库</Button></Space> }
-      ]} />
-    </Card>
+    <div className="admin-order-workbench purchase-inbound-workbench">
+      <Card className="admin-order-card admin-order-filter-card purchase-inbound-filter-card" bodyStyle={{ paddingBottom: 0 }}>
+        <div className="purchase-inbound-toolbar">
+          <Tabs
+            className="admin-order-status-tabs purchase-inbound-status-tabs"
+            activeKey={activeTab}
+            onChange={key => {
+              setActiveTab(key);
+              setPage(1);
+              form.setFieldValue("status", "ALL");
+              setFilters(current => ({ ...current, status: undefined }));
+            }}
+            items={tabItems}
+          />
+          <Space className="purchase-inbound-actions">
+            <Button onClick={() => ctx.message.info("导出功能待接入")}>导出</Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => openPurchaseInboundForm(ctx, undefined, refresh)}>新增采购入库单</Button>
+          </Space>
+        </div>
+        <Form form={form} className="admin-order-filters product-archive-filters purchase-inbound-filters" initialValues={{ status: "ALL" }} onFinish={applyFilters}>
+          <div className="product-archive-filter-stack">
+            <label className="product-archive-filter-keyword">
+              <span>关键词</span>
+              <Form.Item name="keyword" noStyle>
+                <Input className="product-archive-keyword-search" allowClear placeholder="入库单号 / 供应商名称 / 商品名称 / SKU编码" />
+              </Form.Item>
+            </label>
+            <label>
+              <span>单据状态</span>
+              <Form.Item name="status" noStyle>
+                <Select options={purchaseInboundStatusOptions} />
+              </Form.Item>
+            </label>
+          </div>
+          <div className="product-archive-filter-stack">
+            <label>
+              <span>供应商</span>
+              <Form.Item name="supplierId" noStyle>
+                <Select
+                  allowClear
+                  showSearch
+                  optionFilterProp="label"
+                  placeholder="全部供应商"
+                  options={suppliers.map((s: AnyRecord) => ({ value: s.id, label: s.supplierName }))}
+                  notFoundContent="暂无可用供应商，请先维护供应商"
+                />
+              </Form.Item>
+            </label>
+            <label>
+              <span>入库日期</span>
+              <Form.Item name="inboundDateRange" noStyle>
+                <RangePicker placeholder={["入库开始", "入库结束"]} />
+              </Form.Item>
+            </label>
+          </div>
+          <div className="product-archive-filter-stack">
+            <label>
+              <span>创建时间</span>
+              <Form.Item name="createdDateRange" noStyle>
+                <RangePicker placeholder={["创建开始", "创建结束"]} />
+              </Form.Item>
+            </label>
+            <div className="product-archive-query-actions admin-order-filter-actions purchase-inbound-filter-actions">
+              <Button type="primary" htmlType="submit">查询</Button>
+              <Button onClick={resetFilters}>重置</Button>
+              <Button onClick={() => ctx.message.info("导出功能待接入")}>导出</Button>
+            </div>
+          </div>
+        </Form>
+      </Card>
+
+      <Card className="admin-order-card admin-order-table-card">
+        <div className="admin-order-list-table product-archive-table anchored-pagination-table purchase-inbound-list-table">
+          <AdminTable
+            loading={loading || listLoading}
+            rowKey="id"
+            dataSource={rows}
+            scroll={{ x: "max-content", y: "100%" }}
+            locale={{ emptyText: <Empty description="暂无采购入库单" /> }}
+            pagination={{
+              className: "product-archive-pagination",
+              current: page,
+              pageSize,
+              total,
+              pageSizeOptions: ["10", "20", "50"],
+              showSizeChanger: true,
+              showTotal: (value: number) => `共 ${value} 条`,
+              onChange: (nextPage: number, nextPageSize: number) => {
+                setPage(nextPage);
+                setPageSize(nextPageSize);
+              }
+            }}
+            columns={[
+              {
+                title: "入库单信息",
+                width: 190,
+                render: (_, item) => (
+                  <div className="admin-order-primary">
+                    <Button type="link" className="admin-order-no" onClick={() => openPurchaseInboundDetail(ctx, item.id, refresh)}>{emptyText(item.inboundNo)}</Button>
+                    <span>创建 {dateText(item.createdAt)}</span>
+                  </div>
+                )
+              },
+              {
+                title: "供应商",
+                width: 220,
+                render: (_, item) => (
+                  <div className="admin-order-buyer-cell">
+                    <strong>{emptyText(item.supplierName)}</strong>
+                    <span>创建人 {emptyText(item.createdBy)}</span>
+                  </div>
+                )
+              },
+              {
+                title: "入库概况",
+                width: 250,
+                render: (_, item) => (
+                  <div className="purchase-inbound-summary-cell">
+                    <strong>{dateText(item.inboundDate)}</strong>
+                    <span>商品 {numberText(item.itemCount)} 种 / 数量 {numberText(item.totalQuantity)}</span>
+                    <small>{formatOrderMoney(item.totalAmount)}</small>
+                  </div>
+                )
+              },
+              { title: "状态", dataIndex: "status", width: 110, align: "center", render: purchaseInboundStatusTag },
+              {
+                title: "审核信息",
+                width: 200,
+                render: (_, item) => (
+                  <div className="purchase-inbound-summary-cell">
+                    <span>审核人 {emptyText(item.reviewedBy)}</span>
+                    <span>{dateText(item.reviewedAt)}</span>
+                    {item.rejectReason ? <small>{compactText(item.rejectReason)}</small> : null}
+                  </div>
+                )
+              },
+              {
+                title: "备注",
+                dataIndex: "remark",
+                width: 180,
+                render: compactText
+              },
+              {
+                title: "操作",
+                width: 180,
+                align: "center",
+                className: "admin-order-action-shadow",
+                onHeaderCell: () => ({ className: "admin-order-action-shadow", width: 180 }),
+                render: (_, item) => (
+                  <Space className="admin-order-action-links">
+                    <Button type="link" onClick={() => openPurchaseInboundDetail(ctx, item.id, refresh)}>详情</Button>
+                    {item.status === "PENDING_REVIEW" && <Button type="link" onClick={() => openPurchaseInboundForm(ctx, item.id, refresh)}>编辑</Button>}
+                    {item.status === "PENDING_REVIEW" && <Button type="link" onClick={() => openPurchaseInboundReview(ctx, item, refresh)}>审核</Button>}
+                  </Space>
+                )
+              }
+            ]}
+          />
+        </div>
+      </Card>
+    </div>
   );
 }
 
-function purchaseOrderForm(ctx: Ctx) {
-  const products = ctx.data.products || [];
-  const suppliers = ctx.data.suppliers || [];
+function emptyText(value: any) {
+  return value === null || value === undefined || value === "" ? "-" : value;
+}
+
+function numberText(value: any) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) ? number.toLocaleString() : "0";
+}
+
+function openPurchaseInboundForm(ctx: Ctx, inboundId?: number, onSaved?: () => void) {
   ctx.setDrawer({
-    title: "新增采购单",
-    width: 860,
-    body: (
-      <Form layout="vertical" initialValues={{ items: [{ quantity: 1 }] }} onFinish={async values => {
-        try {
-          await request("/api/admin/purchase-orders", { method: "POST", data: values });
-          ctx.message.success("采购单已新增");
-          ctx.setDrawer(null);
-          ctx.reload();
-        } catch (error: any) {
-          ctx.message.error(error.message);
+    title: inboundId ? "编辑采购入库单" : "新增采购入库单",
+    width: "86vw",
+    body: <PurchaseInboundForm ctx={ctx} inboundId={inboundId} onSaved={onSaved} />
+  });
+}
+
+function PurchaseInboundForm({ ctx, inboundId, onSaved }: { ctx: Ctx; inboundId?: number; onSaved?: () => void }) {
+  const [form] = Form.useForm();
+  const [submitting, setSubmitting] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [supplierOptions, setSupplierOptions] = useState<AnyRecord[]>([]);
+  const [productOptions, setProductOptions] = useState<AnyRecord[]>([]);
+  const [skuCache, setSkuCache] = useState<Record<string, AnyRecord[]>>({});
+  const watchedItems = Form.useWatch("items", form) || [];
+
+  const loadSkus = async (productId: any) => {
+    if (!productId) return [];
+    const key = String(productId);
+    if (skuCache[key]) return skuCache[key];
+    const rows = await request(`/api/admin/products/${productId}/skus`);
+    const list = Array.isArray(rows) ? rows : [];
+    setSkuCache(prev => ({ ...prev, [key]: list }));
+    return list;
+  };
+
+  const fillSku = (index: number, sku: AnyRecord) => {
+    form.setFieldValue(["items", index, "skuId"], sku.skuId);
+    form.setFieldValue(["items", index, "skuCode"], sku.skuCode);
+    form.setFieldValue(["items", index, "skuName"], sku.skuName);
+    form.setFieldValue(["items", index, "unit"], sku.unit);
+    form.setFieldValue(["items", index, "currentStock"], sku.currentStock);
+  };
+
+  useEffect(() => {
+    setLoading(true);
+    Promise.all([
+      request("/api/admin/suppliers/options"),
+      request("/api/admin/products/options")
+    ])
+      .then(async ([suppliers, products]) => {
+        setSupplierOptions(Array.isArray(suppliers) ? suppliers : []);
+        setProductOptions(Array.isArray(products) ? products : []);
+        if (inboundId) {
+          const detail = await request(`/api/admin/purchase-inbounds/${inboundId}`);
+          form.setFieldsValue({
+            supplierId: detail.supplierId,
+            inboundDate: String(detail.inboundDate || "").slice(0, 10),
+            handlerName: detail.handlerName || currentAdminOperatorName(),
+            remark: detail.remark,
+            items: (detail.items || []).map((item: AnyRecord) => ({
+              productId: item.productId,
+              productName: item.productName,
+              skuId: item.skuId,
+              skuCode: item.skuCode,
+              skuName: item.skuName,
+              unit: item.unit,
+              currentStock: item.beforeStock,
+              quantity: item.quantity,
+              purchasePrice: item.purchasePrice,
+              itemRemark: item.itemRemark
+            }))
+          });
+          await Promise.all((detail.items || []).map((item: AnyRecord) => loadSkus(item.productId)));
+        } else {
+          form.setFieldsValue({
+            inboundDate: new Date().toLocaleDateString("sv-SE"),
+            handlerName: currentAdminOperatorName(),
+            items: [{ quantity: 1, purchasePrice: 0 }]
+          });
         }
-      }}>
-        <Form.Item name="supplierId" label="供应商" rules={[{ required: true }]}><Select options={suppliers.map((s: AnyRecord) => ({ value: s.id, label: s.supplierName }))} /></Form.Item>
-        <Form.Item name="expectedArrivalDate" label="预计到货日期"><Input placeholder="YYYY-MM-DD" /></Form.Item>
-        <Form.List name="items">
-          {(fields, { add, remove }) => (
-            <Space direction="vertical" style={{ width: "100%" }}>
-              {fields.map(field => (
-                <Space key={field.key} align="baseline" wrap>
-                  <Form.Item {...field} name={[field.name, "productId"]} rules={[{ required: true }]}><Select style={{ width: 260 }} placeholder="采购商品" options={products.map((p: AnyRecord) => ({ value: p.id, label: `${p.productName} / ${p.skuName}` }))} /></Form.Item>
-                  <Form.Item {...field} name={[field.name, "quantity"]} rules={[{ required: true }]}><InputNumber min={1} precision={0} placeholder="数量" /></Form.Item>
-                  <Form.Item {...field} name={[field.name, "purchasePrice"]} rules={[{ required: true }]}><InputNumber min={0.01} precision={2} placeholder="采购价" /></Form.Item>
-                  <Button danger icon={<DeleteOutlined />} onClick={() => fields.length > 1 ? remove(field.name) : null} />
-                </Space>
-              ))}
-              <Button onClick={() => add({ quantity: 1 })}>添加采购商品</Button>
-            </Space>
-          )}
-        </Form.List>
-        <Space style={{ marginTop: 20 }}><Button onClick={() => ctx.setDrawer(null)}>取消</Button><Button type="primary" htmlType="submit">提交</Button></Space>
-      </Form>
-    )
+      })
+      .catch((error: any) => ctx.message.error(error.message))
+      .finally(() => setLoading(false));
+  }, [inboundId]);
+
+  const submit = async () => {
+    try {
+      const values = await form.validateFields();
+      const rows = values.items || [];
+      const seen = new Set<string>();
+      for (const item of rows) {
+        const key = `${item.productId}|${item.skuCode}`;
+        if (seen.has(key)) {
+          ctx.message.error("存在重复商品规格，请合并后再提交。");
+          return;
+        }
+        seen.add(key);
+      }
+      setSubmitting(true);
+      await request(inboundId ? `/api/admin/purchase-inbounds/${inboundId}` : "/api/admin/purchase-inbounds", {
+        method: inboundId ? "PUT" : "POST",
+        data: values
+      });
+      ctx.message.success(inboundId ? "采购入库单已保存" : "采购入库单已提交审核");
+      ctx.setDrawer(null);
+      onSaved?.();
+    } catch (error: any) {
+      if (error?.errorFields) return;
+      ctx.message.error(error.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Form form={form} layout="vertical" disabled={loading}>
+      <Space direction="vertical" size={18} style={{ width: "100%", paddingBottom: 76 }}>
+        <Card size="small" title="基础信息">
+          <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr", gap: 16 }}>
+            <Form.Item name="supplierId" label="供应商" rules={[{ required: true, message: "请选择供应商" }]}>
+              <Select
+                showSearch
+                optionFilterProp="label"
+                placeholder={supplierOptions.length ? "请选择供应商" : "暂无可用供应商，请先维护供应商"}
+                options={supplierOptions.map(item => ({ value: item.id, label: item.supplierName }))}
+                notFoundContent="暂无可用供应商，请先维护供应商"
+              />
+            </Form.Item>
+            <Form.Item name="inboundDate" label="入库日期" rules={[{ required: true, message: "请输入入库日期" }]}>
+              <Input placeholder="YYYY-MM-DD" />
+            </Form.Item>
+            <Form.Item name="handlerName" label="经办人" rules={[{ required: true, message: "缺少经办人，请重新登录" }]}>
+              <Input readOnly />
+            </Form.Item>
+          </div>
+          <Form.Item name="remark" label="备注">
+            <Input.TextArea rows={2} maxLength={500} />
+          </Form.Item>
+        </Card>
+        <Card size="small" title="商品明细" extra={<Button icon={<PlusOutlined />} onClick={() => form.setFieldValue("items", [...(form.getFieldValue("items") || []), { quantity: 1, purchasePrice: 0 }])}>添加商品</Button>}>
+          <Form.List name="items" rules={[{ validator: async (_, value) => Array.isArray(value) && value.length ? undefined : Promise.reject(new Error("商品明细不能为空")) }]}>
+            {(fields, { remove }) => (
+              <div style={{ overflowX: "auto" }}>
+                <table className="purchase-inbound-items-table" style={{ width: "100%", minWidth: 1120, borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr>
+                      {["序号", "商品", "SKU规格", "SKU编码", "规格名称", "单位", "当前库存", "入库数量", "采购单价", "入库金额", "备注", "操作"].map(title => <th key={title} style={{ textAlign: "left", padding: "8px 6px", borderBottom: "1px solid #f0f0f0" }}>{title}</th>)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {fields.map((field, index) => {
+                      const item = watchedItems[field.name] || {};
+                      const skus = skuCache[String(item.productId)] || [];
+                      const lineAmount = Number(item.quantity || 0) * Number(item.purchasePrice || 0);
+                      return (
+                        <tr key={field.key}>
+                          <td style={{ padding: 6 }}>{index + 1}</td>
+                          <td style={{ padding: 6 }}>
+                            <Form.Item name={[field.name, "productId"]} rules={[{ required: true, message: "请选择商品" }]} style={{ margin: 0 }}>
+                              <Select
+                                showSearch
+                                optionFilterProp="label"
+                                style={{ width: 220 }}
+                                placeholder="搜索商品"
+                                options={productOptions.map(product => ({ value: product.productId, label: `${product.productName} / ${product.productCode}` }))}
+                                onChange={async value => {
+                                  const product = productOptions.find(item => item.productId === value);
+                                  form.setFieldValue(["items", field.name, "productName"], product?.productName);
+                                  form.setFieldValue(["items", field.name, "skuCode"], undefined);
+                                  form.setFieldValue(["items", field.name, "skuName"], undefined);
+                                  form.setFieldValue(["items", field.name, "unit"], undefined);
+                                  form.setFieldValue(["items", field.name, "currentStock"], undefined);
+                                  const nextSkus = await loadSkus(value);
+                                  if (nextSkus.length === 1) fillSku(field.name, nextSkus[0]);
+                                }}
+                              />
+                            </Form.Item>
+                          </td>
+                          <td style={{ padding: 6 }}>
+                            <Form.Item name={[field.name, "skuCode"]} rules={[{ required: true, message: "请选择SKU" }]} style={{ margin: 0 }}>
+                              <Select
+                                style={{ width: 180 }}
+                                placeholder="选择SKU"
+                                options={skus.map(sku => ({ value: sku.skuCode, label: `${sku.skuName || sku.skuCode}` }))}
+                                onChange={value => fillSku(field.name, skus.find(sku => sku.skuCode === value) || {})}
+                              />
+                            </Form.Item>
+                          </td>
+                          <td style={{ padding: 6 }}><Input readOnly value={item.skuCode || ""} style={{ width: 120 }} /></td>
+                          <td style={{ padding: 6 }}><Input readOnly value={item.skuName || ""} style={{ width: 120 }} /></td>
+                          <td style={{ padding: 6 }}><Input readOnly value={item.unit || ""} style={{ width: 70 }} /></td>
+                          <td style={{ padding: 6 }}><InputNumber readOnly value={item.currentStock ?? 0} style={{ width: 90 }} /></td>
+                          <td style={{ padding: 6 }}><Form.Item name={[field.name, "quantity"]} rules={[{ required: true, message: "请输入入库数量" }]} style={{ margin: 0 }}><InputNumber min={1} precision={0} style={{ width: 100 }} /></Form.Item></td>
+                          <td style={{ padding: 6 }}><Form.Item name={[field.name, "purchasePrice"]} rules={[{ type: "number", min: 0, message: "采购单价不能小于0" }]} style={{ margin: 0 }}><InputNumber min={0} precision={2} style={{ width: 110 }} /></Form.Item></td>
+                          <td style={{ padding: 6 }}>{money(lineAmount)}</td>
+                          <td style={{ padding: 6 }}><Form.Item name={[field.name, "itemRemark"]} style={{ margin: 0 }}><Input style={{ width: 140 }} /></Form.Item></td>
+                          <td style={{ padding: 6 }}><Button danger icon={<DeleteOutlined />} disabled={fields.length <= 1} onClick={() => remove(field.name)} /></td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Form.List>
+        </Card>
+      </Space>
+      <div style={{ position: "sticky", bottom: 0, margin: "0 -24px -24px", padding: "12px 24px", background: "#fff", borderTop: "1px solid #f0f0f0", textAlign: "right" }}>
+        <Space>
+          <Button onClick={() => ctx.setDrawer(null)}>取消</Button>
+          <Button type="primary" loading={submitting} onClick={submit}>提交审核</Button>
+        </Space>
+      </div>
+    </Form>
+  );
+}
+
+function openPurchaseInboundDetail(ctx: Ctx, inboundId: number, onChanged?: () => void) {
+  ctx.setDrawer({
+    title: "采购入库单详情",
+    width: "82vw",
+    body: <PurchaseInboundDetail ctx={ctx} inboundId={inboundId} onChanged={onChanged} />
+  });
+}
+
+function PurchaseInboundDetail({ ctx, inboundId, onChanged }: { ctx: Ctx; inboundId: number; onChanged?: () => void }) {
+  const [detail, setDetail] = useState<AnyRecord | null>(null);
+  const [loading, setLoading] = useState(true);
+  const reload = () => {
+    setLoading(true);
+    request(`/api/admin/purchase-inbounds/${inboundId}`)
+      .then(setDetail)
+      .catch((error: any) => ctx.message.error(error.message))
+      .finally(() => setLoading(false));
+  };
+  useEffect(() => reload(), [inboundId]);
+  if (loading || !detail) return <GlobalLoadingMask visible />;
+  const items = detail.items || [];
+  const logs = detail.logs || [];
+  const impacts = detail.inventoryImpacts || [];
+  return (
+    <Space direction="vertical" size={16} style={{ width: "100%" }}>
+      <Space>
+        {detail.status === "PENDING_REVIEW" && <Button onClick={() => openPurchaseInboundForm(ctx, inboundId, () => { onChanged?.(); reload(); })}>编辑</Button>}
+        {detail.status === "PENDING_REVIEW" && <Button type="primary" onClick={() => openPurchaseInboundReview(ctx, detail, () => { onChanged?.(); reload(); })}>审核</Button>}
+        <Button onClick={() => ctx.setDrawer(null)}>返回</Button>
+      </Space>
+      <Descriptions bordered column={3} size="small" title="基础信息">
+        <Descriptions.Item label="入库单号">{emptyText(detail.inboundNo)}</Descriptions.Item>
+        <Descriptions.Item label="供应商">{emptyText(detail.supplierName)}</Descriptions.Item>
+        <Descriptions.Item label="入库日期">{dateText(detail.inboundDate)}</Descriptions.Item>
+        <Descriptions.Item label="经办人">{emptyText(detail.handlerName)}</Descriptions.Item>
+        <Descriptions.Item label="状态">{purchaseInboundStatusTag(detail.status)}</Descriptions.Item>
+        <Descriptions.Item label="创建人">{emptyText(detail.createdBy)}</Descriptions.Item>
+        <Descriptions.Item label="创建时间">{dateText(detail.createdAt)}</Descriptions.Item>
+        <Descriptions.Item label="备注" span={2}>{emptyText(detail.remark)}</Descriptions.Item>
+      </Descriptions>
+      <AdminTable pagination={false} rowKey="id" dataSource={items} locale={{ emptyText: "暂无商品明细" }} columns={[
+        { title: "商品名称", dataIndex: "productName" },
+        { title: "SKU编码", dataIndex: "skuCode" },
+        { title: "SKU规格", dataIndex: "skuName" },
+        { title: "单位", dataIndex: "unit" },
+        { title: "入库数量", dataIndex: "quantity", align: "right", render: numberText },
+        { title: "采购单价", dataIndex: "purchasePrice", align: "right", render: money },
+        { title: "入库金额", dataIndex: "lineAmount", align: "right", render: money },
+        { title: "审核前库存", dataIndex: "beforeStock", align: "right", render: numberText },
+        { title: "审核后库存", dataIndex: "afterStock", align: "right", render: numberText },
+        { title: "备注", dataIndex: "itemRemark", render: emptyText }
+      ]} />
+      <Descriptions bordered column={2} size="small" title="审核信息">
+        {detail.status === "PENDING_REVIEW" ? (
+          <Descriptions.Item span={2} label="审核结果">暂无审核信息</Descriptions.Item>
+        ) : (
+          <>
+            <Descriptions.Item label="审核结果">{purchaseInboundStatusTag(detail.status)}</Descriptions.Item>
+            <Descriptions.Item label="审核人">{emptyText(detail.reviewedBy)}</Descriptions.Item>
+            <Descriptions.Item label="审核时间">{dateText(detail.reviewedAt)}</Descriptions.Item>
+            <Descriptions.Item label="驳回原因">{emptyText(detail.rejectReason)}</Descriptions.Item>
+            <Descriptions.Item span={2} label="审核备注">{emptyText(detail.reviewRemark)}</Descriptions.Item>
+          </>
+        )}
+      </Descriptions>
+      <Card size="small" title="库存影响">
+        {detail.status === "IN_STOCK" ? (
+          <AdminTable pagination={false} rowKey={(row: AnyRecord) => `${row.productName}-${row.skuCode}`} dataSource={impacts} columns={[
+            { title: "入库商品规格", render: (_, row) => `${row.productName} / ${row.skuName}` },
+            { title: "入库数量", dataIndex: "quantity", align: "right", render: numberText },
+            { title: "库存变动前数量", dataIndex: "beforeStock", align: "right", render: numberText },
+            { title: "库存变动后数量", dataIndex: "afterStock", align: "right", render: numberText },
+            { title: "关联库存流水", dataIndex: "relatedFlow", render: emptyText }
+          ]} />
+        ) : "审核通过后将增加对应商品规格库存"}
+      </Card>
+      <AdminTable pagination={false} rowKey="id" dataSource={logs} locale={{ emptyText: "暂无操作日志" }} columns={[
+        { title: "时间", dataIndex: "createdAt", render: dateText },
+        { title: "操作人", dataIndex: "operatorName", render: emptyText },
+        { title: "操作类型", dataIndex: "actionType", render: emptyText },
+        { title: "操作内容", dataIndex: "actionContent", render: emptyText }
+      ]} />
+    </Space>
+  );
+}
+
+function openPurchaseInboundReview(ctx: Ctx, item: AnyRecord, onDone?: () => void) {
+  let action = "APPROVE";
+  let rejectReason = "";
+  let remark = "";
+  Modal.confirm({
+    title: "审核采购入库单",
+    width: 520,
+    content: (
+      <Space direction="vertical" style={{ width: "100%" }}>
+        <Radio.Group defaultValue="APPROVE" onChange={event => { action = event.target.value; }}>
+          <Radio value="APPROVE">通过</Radio>
+          <Radio value="REJECT">驳回</Radio>
+        </Radio.Group>
+        <Input.TextArea rows={3} placeholder="驳回时必填驳回原因" onChange={event => { rejectReason = event.target.value; }} />
+        <Input.TextArea rows={2} placeholder="审核备注" onChange={event => { remark = event.target.value; }} />
+      </Space>
+    ),
+    okText: "确认审核",
+    cancelText: "取消",
+    onOk: async () => {
+      if (action === "REJECT" && !rejectReason.trim()) {
+        ctx.message.error("请填写驳回原因");
+        return Promise.reject();
+      }
+      const operatorName = currentAdminOperatorName();
+      if (!operatorName) {
+        ctx.message.error("缺少当前后台账号，请重新登录");
+        return Promise.reject();
+      }
+      try {
+        await request(`/api/admin/purchase-inbounds/${item.id}/review`, {
+          method: "POST",
+          data: { action, rejectReason, remark, operatorName }
+        });
+        ctx.message.success(action === "APPROVE" ? "审核入库成功" : "审核驳回成功");
+        onDone?.();
+      } catch (error: any) {
+        ctx.message.error(error.message);
+        return Promise.reject();
+      }
+    }
   });
 }
 
@@ -4253,6 +4852,7 @@ const inventoryMovementTypeOptions = [
   { value: "ORDER_DEDUCT", label: "订单扣减" },
   { value: "MANUAL_ADJUST", label: "手工调整" },
   { value: "RETURN_INBOUND", label: "退货入库" },
+  { value: "PURCHASE_INBOUND", label: "采购入库" },
   { value: "PURCHASE_STOCK_IN", label: "采购入库" },
   { value: "ORDER_CANCEL_RELEASE", label: "订单取消释放" },
   { value: "RETURN_STOCK_IN", label: "退货回补" }
@@ -4283,7 +4883,7 @@ function inventoryStatusText(value: any) {
 }
 
 function inventoryProductStatusText(value: any) {
-  return ({ ON_SALE: "销售中", OFF_SALE: "仓库中", DISABLED: "违规下架", DRAFT: "草稿箱" } as AnyRecord)[value] || statusText(value);
+  return productBusinessStatusText(value);
 }
 
 function formatStockNumber(value: any) {
@@ -4319,6 +4919,9 @@ function InventoryPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
   const [adjustForm] = Form.useForm();
   const [warningForm] = Form.useForm();
   const [batchWarningForm] = Form.useForm();
+  const [categoryKeyword, setCategoryKeyword] = useState("");
+  const [expandedCategoryKeys, setExpandedCategoryKeys] = useState<React.Key[]>(["category:__all__"]);
+  const [selectedCategoryKey, setSelectedCategoryKey] = useState<React.Key>("category:__all__");
   const [stats, setStats] = useState<AnyRecord>({});
   const [rows, setRows] = useState<AnyRecord[]>([]);
   const [total, setTotal] = useState(0);
@@ -4342,6 +4945,12 @@ function InventoryPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
   const [warningSubmitting, setWarningSubmitting] = useState(false);
   const [batchWarningOpen, setBatchWarningOpen] = useState(false);
   const [batchWarningSubmitting, setBatchWarningSubmitting] = useState(false);
+  const categoryTreeData = useMemo(() => buildCategoryTreeData(ctx.data.categories || []), [ctx.data.categories]);
+  const filteredCategoryTreeData = useMemo(() => filterCategoryTreeData(categoryTreeData, categoryKeyword), [categoryKeyword, categoryTreeData]);
+  const visibleExpandedCategoryKeys = useMemo(
+    () => (categoryKeyword ? collectTreeKeys(filteredCategoryTreeData) : expandedCategoryKeys),
+    [categoryKeyword, expandedCategoryKeys, filteredCategoryTreeData]
+  );
 
   const fetchList = async (nextPage = page, nextPageSize = pageSize, extraFilters: AnyRecord = {}) => {
     setListLoading(true);
@@ -4381,6 +4990,9 @@ function InventoryPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
 
   const resetFilters = () => {
     form.resetFields();
+    setCategoryKeyword("");
+    setExpandedCategoryKeys(["category:__all__"]);
+    setSelectedCategoryKey("category:__all__");
     setPage(1);
     void fetchList(1, pageSize, {});
   };
@@ -4561,66 +5173,77 @@ function InventoryPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
       )
     }
   ];
+  const inventoryTableScrollX = columns.reduce((sum, column) => sum + Number(column.width || 120), 64);
 
   return (
-    <div className="inventory-overview-page">
-      <Card className="inventory-filter-card">
+    <div className="product-archive-page inventory-overview-page">
+      <aside className="product-archive-sidebar inventory-archive-sidebar">
+        <Input
+          className="product-archive-sidebar-search"
+          value={categoryKeyword}
+          placeholder="请输入分类名称"
+          allowClear
+          onChange={event => setCategoryKeyword(event.target.value)}
+        />
+        <div className="product-category-tree">
+          <Tree
+            blockNode
+            expandedKeys={visibleExpandedCategoryKeys}
+            selectedKeys={[selectedCategoryKey]}
+            switcherIcon={({ expanded }) => <DownOutlined rotate={expanded ? 0 : -90} />}
+            treeData={filteredCategoryTreeData}
+            onExpand={keys => setExpandedCategoryKeys(keys)}
+            onSelect={(keys, info) => {
+              const key = String(keys[0] || "category:__all__");
+              setSelectedCategoryKey(key);
+              form.setFieldValue("categoryId", key === "category:__all__" ? undefined : info.node.raw?.id);
+              setPage(1);
+              void fetchList(1, pageSize, { categoryId: key === "category:__all__" ? undefined : info.node.raw?.id });
+            }}
+          />
+        </div>
+      </aside>
+      <section className="product-archive-main inventory-archive-main">
         <Form form={form} layout="vertical" onValuesChange={() => setPage(1)}>
-          <div className="inventory-filter-grid">
-            <Form.Item name="keyword" label="关键词"><Input allowClear placeholder="商品名称 / 商品ID / SKU编码 / 拼音码" /></Form.Item>
-            <Form.Item name="categoryId" label="商品分类"><Select allowClear placeholder="全部" options={(ctx.data.categories || []).map((item: AnyRecord) => ({ value: item.id, label: item.categoryName }))} /></Form.Item>
+          <Form.Item name="categoryId" hidden><Input /></Form.Item>
+          <div className="product-archive-filters inventory-archive-filters">
+            <Form.Item name="keyword" label="关键词"><Input allowClear placeholder="商品名 / 商品ID / SKU编码" /></Form.Item>
             <Form.Item name="brandId" label="商品品牌"><Select allowClear placeholder="全部" options={(ctx.data.brands || []).map((item: AnyRecord) => ({ value: item.id, label: item.brandName }))} /></Form.Item>
-            <Form.Item name="productStatus" label="商品状态"><Select allowClear placeholder="全部" options={[{ value: "ON_SALE", label: "销售中" }, { value: "OFF_SALE", label: "仓库中" }, { value: "DISABLED", label: "违规下架" }, { value: "DRAFT", label: "草稿箱" }]} /></Form.Item>
+            <Form.Item name="productStatus" label="商品状态"><Select allowClear placeholder="全部" options={productBusinessStatusOptions} /></Form.Item>
             <Form.Item name="stockStatus" label="库存状态"><Select allowClear placeholder="全部" options={Object.entries(inventoryStatusMeta).map(([value, meta]: any) => ({ value, label: meta.text }))} /></Form.Item>
-            <Form.Item name="hasFrozenStock" label="是否有冻结库存"><Select allowClear placeholder="全部" options={[{ value: true, label: "是" }, { value: false, label: "否" }]} /></Form.Item>
-            <Form.Item name="belowWarning" label="是否低于预警值"><Select allowClear placeholder="全部" options={[{ value: true, label: "是" }, { value: false, label: "否" }]} /></Form.Item>
-            <Form.Item name="abnormalOnly" label="是否库存异常"><Select allowClear placeholder="全部" options={[{ value: true, label: "是" }, { value: false, label: "否" }]} /></Form.Item>
-            <Form.Item label="可售库存区间" className="inventory-range-item">
-              <Space.Compact block>
-                <Form.Item name="availableStockMin" noStyle><InputNumber placeholder="最小值" precision={0} style={{ width: "50%" }} /></Form.Item>
-                <Form.Item name="availableStockMax" noStyle><InputNumber placeholder="最大值" precision={0} style={{ width: "50%" }} /></Form.Item>
-              </Space.Compact>
-            </Form.Item>
-            <Form.Item label="实际库存区间" className="inventory-range-item">
-              <Space.Compact block>
-                <Form.Item name="actualStockMin" noStyle><InputNumber placeholder="最小值" precision={0} style={{ width: "50%" }} /></Form.Item>
-                <Form.Item name="actualStockMax" noStyle><InputNumber placeholder="最大值" precision={0} style={{ width: "50%" }} /></Form.Item>
-              </Space.Compact>
-            </Form.Item>
-            <div className="inventory-filter-actions">
+            <div className="product-archive-query-actions inventory-archive-query-actions">
               <Button type="primary" onClick={() => fetchList(1, pageSize)}>查询</Button>
               <Button onClick={resetFilters}>重置</Button>
             </div>
           </div>
         </Form>
-      </Card>
-
-      <Card className="inventory-table-card">
-        <div className="inventory-batch-bar">
-          <Space>
-            <Button onClick={() => selectedRowKeys.length ? setBatchWarningOpen(true) : ctx.message.warning("请先选择需要设置预警的SKU")}>批量设置预警</Button>
-          </Space>
+        <div className="product-archive-toolbar inventory-archive-toolbar">
+          <Button type="primary" onClick={() => selectedRowKeys.length ? setBatchWarningOpen(true) : ctx.message.warning("请先选择需要设置预警的SKU")}>批量设置预警</Button>
           <Typography.Text type="secondary">已选择 {selectedRowKeys.length} 个 SKU</Typography.Text>
         </div>
-        <AdminTable
-          loading={loading || listLoading}
-          rowKey={row => String(row.skuId)}
-          dataSource={rows}
-          columns={columns}
-          rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys }}
-          locale={{ emptyText: <Empty description="暂无库存数据" /> }}
-          pagination={{
-            className: "inventory-pagination",
-            current: page,
-            pageSize,
-            total,
-            showSizeChanger: true,
-            pageSizeOptions: [10, 20, 50],
-            showTotal: value => `共 ${value} 条`,
-            onChange: (nextPage, nextSize) => fetchList(nextPage, nextSize)
-          }}
-        />
-      </Card>
+        <div className="product-archive-table inventory-table-card anchored-pagination-table inventory-catalog-table">
+          <AdminTable
+            loading={loading || listLoading}
+            rowKey={row => String(row.skuId)}
+            dataSource={rows}
+            columns={columns}
+            rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys }}
+            locale={{ emptyText: <Empty description="暂无库存数据" /> }}
+            tableLayout="fixed"
+            scroll={{ x: Math.max(1760, inventoryTableScrollX), y: "100%" }}
+            pagination={{
+              className: "product-archive-pagination",
+              current: page,
+              pageSize,
+              total,
+              showSizeChanger: true,
+              pageSizeOptions: [10, 20, 50],
+              showTotal: value => `共 ${value} 条`,
+              onChange: (nextPage, nextSize) => fetchList(nextPage, nextSize)
+            }}
+          />
+        </div>
+      </section>
 
       <Modal title={`冻结库存明细 - ${activeRow?.productName || "-"} / ${activeRow?.skuCode || "-"}`} open={reservationOpen} onCancel={() => setReservationOpen(false)} footer={null} width={960}>
         <AdminTable
@@ -4773,20 +5396,6 @@ const orderStatusOptions = [
   { value: "CANCELLED", label: "已取消" }
 ];
 
-const paymentStatusOptions = [
-  { value: "UNPAID", label: "未支付" },
-  { value: "PAID", label: "已支付" },
-  { value: "REFUNDED", label: "已退款" },
-  { value: "PART_REFUNDED", label: "部分退款" }
-];
-
-const fulfillmentStatusOptions = [
-  { value: "UNSHIPPED", label: "未发货" },
-  { value: "PART_SHIPPED", label: "部分发货" },
-  { value: "SHIPPED", label: "已发货" },
-  { value: "NO_LOGISTICS", label: "无需物流" }
-];
-
 function OrderPage({ ctx }: { ctx: Ctx; loading: boolean }) {
   const [form] = Form.useForm();
   const [stats, setStats] = useState<AnyRecord>({});
@@ -4846,8 +5455,6 @@ function OrderPage({ ctx }: { ctx: Ctx; loading: boolean }) {
     setFilters({
       keyword: values.keyword,
       orderStatus: values.orderStatus,
-      paymentStatus: values.paymentStatus,
-      fulfillmentStatus: values.fulfillmentStatus,
       startDate: range[0]?.format?.("YYYY-MM-DD"),
       endDate: range[1]?.format?.("YYYY-MM-DD")
     });
@@ -4888,10 +5495,8 @@ function OrderPage({ ctx }: { ctx: Ctx; loading: boolean }) {
       render: (_, item) => <OrderProductSummary item={item} />
     },
     { title: "金额", dataIndex: "totalAmount", width: 120, align: "right", render: formatOrderMoney },
-    { title: "支付状态", dataIndex: "paymentStatus", width: 120, render: value => <OrderStatusTag type="payment" value={value} /> },
-    { title: "发货状态", dataIndex: "fulfillmentStatus", width: 130, render: value => <OrderStatusTag type="fulfillment" value={value} /> },
-    { title: "订单状态", width: 130, render: (_, item) => <OrderStatusTag type="order" value={resolveOrderWorkflowKey(item)} /> },
-    { title: "售后状态", dataIndex: "afterSaleStatus", width: 120, render: value => <OrderStatusTag type="afterSale" value={value || "NONE"} /> },
+    { title: "订单状态", width: 130, align: "center", render: (_, item) => <OrderStatusTag type="order" value={resolveOrderWorkflowKey(item)} /> },
+    { title: "售后状态", dataIndex: "afterSaleStatus", width: 120, align: "center", render: value => <OrderStatusTag type="afterSale" value={value || "NONE"} /> },
     {
       title: "操作",
       width: 150,
@@ -4950,23 +5555,11 @@ function OrderPage({ ctx }: { ctx: Ctx; loading: boolean }) {
                 <Input className="product-archive-keyword-search" allowClear placeholder="订单编号 / 买家名称 / 收货人 / 手机号" />
               </Form.Item>
             </label>
-            <label>
-              <span>发货状态</span>
-              <Form.Item name="fulfillmentStatus" noStyle>
-                <Select allowClear placeholder="全部" options={fulfillmentStatusOptions} />
-              </Form.Item>
-            </label>
           </div>
           <label>
             <span>订单状态</span>
             <Form.Item name="orderStatus" noStyle>
               <Select allowClear placeholder="全部" options={orderStatusOptions} />
-            </Form.Item>
-          </label>
-          <label>
-            <span>支付状态</span>
-            <Form.Item name="paymentStatus" noStyle>
-              <Select allowClear placeholder="全部" options={paymentStatusOptions} />
             </Form.Item>
           </label>
           <div className="product-archive-filter-actions-stack">
@@ -5186,22 +5779,21 @@ function AdminOrderDetail({ ctx, orderId, onRefresh, initialSummary }: { ctx: Ct
   const totalAmount = Number(detail.totalAmount || 0);
   const refundAmount = Number(detail.refundAmount || 0);
   const invoicedAmount = invoice?.status === "INVOICED" ? Number(invoice.amount || 0) : 0;
+  const trackingActions = (
+    <OrderDetailActions
+      ctx={ctx}
+      detail={detail}
+      onRefresh={refreshAll}
+      onShipSuccess={() => {
+        onRefresh?.();
+        openAdminOrderDetail(ctx, orderId, onRefresh);
+      }}
+    />
+  );
   return (
     <div className="admin-order-detail">
       {detailError ? <div className="admin-order-detail-warning">{detailError}</div> : null}
-      <div className="admin-order-detail-actions">
-        <OrderDetailActions
-          ctx={ctx}
-          detail={detail}
-          onRefresh={refreshAll}
-          onShipSuccess={() => {
-            onRefresh?.();
-            openAdminOrderDetail(ctx, orderId, onRefresh);
-          }}
-        />
-      </div>
-
-      <Card title="订单跟踪" className="admin-order-detail-card">
+      <Card title="订单跟踪" extra={trackingActions} className="admin-order-detail-card">
         <OrderProgress detail={detail} />
       </Card>
 
@@ -5270,8 +5862,6 @@ function AdminOrderDetail({ ctx, orderId, onRefresh, initialSummary }: { ctx: Ct
             <span>优惠金额<strong>{formatOrderMoney(0)}</strong></span>
             <span>退款金额<strong>{formatOrderMoney(refundAmount)}</strong></span>
             <span>订单实付<strong className="is-emphasis">{formatOrderMoney(totalAmount)}</strong></span>
-            <span>可开票金额<strong>{formatOrderMoney(Math.max(0, totalAmount - refundAmount))}</strong></span>
-            <span>已开票金额<strong>{formatOrderMoney(invoicedAmount)}</strong></span>
           </div>
         </Card>
 
@@ -5310,12 +5900,11 @@ function AdminOrderDetail({ ctx, orderId, onRefresh, initialSummary }: { ctx: Ct
         {invoice ? (
           <Descriptions column={1} size="small">
             <Descriptions.Item label="开票状态"><OrderStatusTag type="invoice" value={invoice.status} /></Descriptions.Item>
-            <Descriptions.Item label="发票类型">{emptyText(invoice.invoiceType)}</Descriptions.Item>
+            <Descriptions.Item label="发票类型">{invoiceTypeText(invoice.invoiceType)}</Descriptions.Item>
             <Descriptions.Item label="发票抬头">{emptyText(invoice.title)}</Descriptions.Item>
-            <Descriptions.Item label="税号">{emptyText(invoice.taxNo)}</Descriptions.Item>
+            <Descriptions.Item label="纳税人识别号">{emptyText(invoice.taxNo)}</Descriptions.Item>
             <Descriptions.Item label="可开票金额">{formatOrderMoney(Math.max(0, totalAmount - refundAmount))}</Descriptions.Item>
             <Descriptions.Item label="已开票金额">{formatOrderMoney(invoicedAmount)}</Descriptions.Item>
-            <Descriptions.Item label="开票超时日期">-</Descriptions.Item>
             <Descriptions.Item label="发票文件">{Array.isArray(invoice.files) && invoice.files.length ? `${invoice.files.length} 个文件` : "暂无"}</Descriptions.Item>
           </Descriptions>
         ) : <Empty description="未申请开票" />}
@@ -5348,15 +5937,9 @@ function OrderDetailActions({ ctx, detail, onRefresh, onShipSuccess }: { ctx: Ct
     return <Space><Button type="primary" onClick={() => shipOrder(ctx, detail, onShipSuccess || onRefresh)}>发货</Button>{canCancelOrder(detail) ? <Button danger onClick={() => cancelAdminOrder(ctx, detail, onRefresh)}>取消订单</Button> : null}</Space>;
   }
   if (workflow === "PART_SHIPPED") {
-    return <Space><Button type="primary" onClick={() => shipOrder(ctx, detail, onShipSuccess || onRefresh)}>继续发货</Button><Button onClick={() => openShipmentRecords(ctx, detail)}>查看发货记录</Button></Space>;
+    return <Space><Button type="primary" onClick={() => shipOrder(ctx, detail, onShipSuccess || onRefresh)}>继续发货</Button></Space>;
   }
-  if (workflow === "WAIT_RECEIVE") {
-    return <Space><Button onClick={() => openShipmentRecords(ctx, detail)}>查看发货记录</Button></Space>;
-  }
-  if (workflow === "COMPLETED") {
-    return <Space><Button onClick={() => viewRelatedAfterSale(ctx, detail)}>查看售后</Button><Button onClick={() => viewRelatedInvoice(ctx, detail)}>查看发票</Button></Space>;
-  }
-  return <Space />;
+  return null;
 }
 
 function OrderProgress({ detail }: { detail: AnyRecord }) {
@@ -5630,24 +6213,16 @@ function statusMeta(type: string, value: any) {
     },
     invoice: {
       NONE: ["未申请", "default"],
+      PENDING_INVOICE: ["待开票", "orange"],
       WAIT_INVOICE: ["待开票", "orange"],
       APPLIED: ["待开票", "orange"],
       INVOICED: ["已开票", "green"],
-      REJECTED: ["已驳回", "red"]
+      REJECTED: ["已驳回", "default"],
+      CANCELLED: ["已撤销", "default"]
     }
   };
   const matched = maps[type]?.[key];
   return matched ? { label: matched[0], color: matched[1] } : { label: value || "-", color: "default" };
-}
-
-function emptyText(value: any) {
-  const text = String(value ?? "").trim();
-  return text || "-";
-}
-
-function numberText(value: any) {
-  const num = Number(value || 0);
-  return Number.isFinite(num) ? num : 0;
 }
 
 function formatOrderMoney(value: any) {
@@ -5696,10 +6271,20 @@ function paymentMethodText(value: any) {
   const raw = String(value || "").trim();
   const upper = raw.toUpperCase();
   if (!raw) return "-";
+  if (upper === "WECHAT" || upper === "WECHAT_PAY" || upper === "WX" || upper === "WX_PAY") return "微信支付";
+  if (upper === "ALIPAY" || upper === "ALI_PAY") return "支付宝支付";
   if (upper === "OFFLINE" || upper === "OFFLINE_PAY") return "线下支付";
-  if (upper === "ONLINE_PAY") return "在线支付";
+  if (upper === "ONLINE_PAY" || upper === "ONLINE") return "微信支付";
   if (upper === "SHIP_AFTER_PAY") return "先货后款";
   return raw;
+}
+
+function invoiceTypeText(value: any) {
+  const key = String(value || "").trim().toUpperCase();
+  if (!key) return "-";
+  if (["E_NORMAL", "NORMAL", "ELECTRONIC_NORMAL"].includes(key)) return "电子普通发票";
+  if (["E_SPECIAL", "E_VAT_SPECIAL", "VAT_SPECIAL", "SPECIAL", "ELECTRONIC_SPECIAL", "ELECTRONIC_VAT_SPECIAL"].includes(key)) return "电子增值税专用发票";
+  return String(value || "-");
 }
 
 const afterSaleStatusOptions = [
@@ -5728,17 +6313,6 @@ const afterSaleTabOptions = [
   }))
 ];
 
-const afterSaleStatCards = [
-  { key: "ALL", title: "全部售后", stat: "total" },
-  { key: "PENDING_REVIEW", title: "待审核", stat: "pendingReview" },
-  { key: "WAIT_BUYER_RETURN", title: "待买家退货", stat: "waitBuyerReturn" },
-  { key: "WAIT_SELLER_RECEIVE", title: "待商家收货", stat: "waitSellerReceive" },
-  { key: "WAIT_REFUND", title: "待退款", stat: "waitRefund" },
-  { key: "COMPLETED", title: "已完成", stat: "completed" },
-  { key: "REJECTED", title: "已拒绝", stat: "rejected" },
-  { key: "TIMEOUT", title: "售后超时", stat: "timeout" }
-];
-
 const afterSaleTypeOptions = [
   { value: "REFUND_ONLY", label: "仅退款" },
   { value: "RETURN_REFUND", label: "退货退款" }
@@ -5762,7 +6336,6 @@ function AfterSalePage({ ctx }: { ctx: Ctx; loading: boolean }) {
   const [activeTab, setActiveTab] = useState("ALL");
   const [filters, setFilters] = useState<AnyRecord>({});
   const [listLoading, setListLoading] = useState(false);
-  const [statsLoading, setStatsLoading] = useState(false);
   const [refreshTick, setRefreshTick] = useState(0);
   const [operation, setOperation] = useState<{ type: "review" | "receive" | "refund" | "close"; item: AnyRecord } | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -5774,11 +6347,9 @@ function AfterSalePage({ ctx }: { ctx: Ctx; loading: boolean }) {
 
   useEffect(() => {
     let alive = true;
-    setStatsLoading(true);
     request("/api/admin/after-sales/stats")
       .then(result => alive && setStats(result || {}))
-      .catch((error: Error) => alive && ctx.message.error(error.message))
-      .finally(() => alive && setStatsLoading(false));
+      .catch((error: Error) => alive && ctx.message.error(error.message));
     return () => {
       alive = false;
     };
@@ -5976,23 +6547,6 @@ function AfterSalePage({ ctx }: { ctx: Ctx; loading: boolean }) {
 
   return (
     <div className="admin-order-workbench admin-after-sale-workbench">
-      <div className="admin-order-stats admin-after-sale-stats">
-        {afterSaleStatCards.map(card => (
-          <button
-            type="button"
-            key={card.key}
-            className={activeTab === card.key ? "is-active" : ""}
-            onClick={() => {
-              setActiveTab(card.key);
-              setPage(1);
-            }}
-          >
-            <span>{card.title}</span>
-            <strong>{statsLoading ? "-" : Number(stats[card.stat] || 0)}</strong>
-          </button>
-        ))}
-      </div>
-
       <Card className="admin-order-card admin-order-filter-card" bodyStyle={{ paddingBottom: 0 }}>
         <Tabs
           className="admin-order-status-tabs"
@@ -6022,48 +6576,51 @@ function AfterSalePage({ ctx }: { ctx: Ctx; loading: boolean }) {
               </Form.Item>
             </label>
           </div>
-          <label>
-            <span>售后类型</span>
-            <Form.Item name="afterSaleType" noStyle>
-              <Select allowClear placeholder="全部" options={afterSaleTypeOptions} />
-            </Form.Item>
-          </label>
-          <label>
-            <span>售后状态</span>
-            <Form.Item name="afterSaleStatus" noStyle>
-              <Select allowClear placeholder="全部" options={afterSaleStatusOptions} />
-            </Form.Item>
-          </label>
-          <label>
-            <span>退款状态</span>
-            <Form.Item name="refundStatus" noStyle>
-              <Select allowClear placeholder="全部" options={refundStatusOptions} />
-            </Form.Item>
-          </label>
-          <label>
-            <span>订单状态</span>
-            <Form.Item name="orderStatus" noStyle>
-              <Select allowClear placeholder="全部" options={orderStatusOptions} />
-            </Form.Item>
-          </label>
-          <label>
-            <span>是否超时</span>
-            <Form.Item name="timeoutOnly" noStyle>
-              <Select allowClear placeholder="全部" options={[{ value: "true", label: "是" }, { value: "false", label: "否" }]} />
-            </Form.Item>
-          </label>
-          <div className="product-archive-filter-actions-stack">
+          <div className="product-archive-filter-stack">
+            <label>
+              <span>售后类型</span>
+              <Form.Item name="afterSaleType" noStyle>
+                <Select allowClear placeholder="全部" options={afterSaleTypeOptions} />
+              </Form.Item>
+            </label>
+            <label>
+              <span>订单状态</span>
+              <Form.Item name="orderStatus" noStyle>
+                <Select allowClear placeholder="全部" options={orderStatusOptions} />
+              </Form.Item>
+            </label>
+          </div>
+          <div className="product-archive-filter-stack">
+            <label>
+              <span>售后状态</span>
+              <Form.Item name="afterSaleStatus" noStyle>
+                <Select allowClear placeholder="全部" options={afterSaleStatusOptions} />
+              </Form.Item>
+            </label>
+            <label>
+              <span>是否超时</span>
+              <Form.Item name="timeoutOnly" noStyle>
+                <Select allowClear placeholder="全部" options={[{ value: "true", label: "是" }, { value: "false", label: "否" }]} />
+              </Form.Item>
+            </label>
+          </div>
+          <div className="product-archive-filter-stack">
+            <label>
+              <span>退款状态</span>
+              <Form.Item name="refundStatus" noStyle>
+                <Select allowClear placeholder="全部" options={refundStatusOptions} />
+              </Form.Item>
+            </label>
             <label>
               <span>申请时间</span>
               <Form.Item name="applyDateRange" noStyle>
                 <RangePicker />
               </Form.Item>
             </label>
-            <div className="product-archive-query-actions admin-order-filter-actions">
-              <Button type="primary" htmlType="submit">查询</Button>
-              <Button onClick={resetFilters}>重置</Button>
-              <Button onClick={() => ctx.message.info("导出功能待接入")}>导出售后</Button>
-            </div>
+          </div>
+          <div className="product-archive-query-actions admin-order-filter-actions admin-after-sale-filter-actions">
+            <Button type="primary" htmlType="submit">查询</Button>
+            <Button onClick={resetFilters}>重置</Button>
           </div>
         </Form>
       </Card>
@@ -6235,14 +6792,10 @@ function AfterSaleDetailPanel({ ctx, id, onRefresh, onOperation }: { ctx: Ctx; i
   const inventoryImpact = detail.inventoryImpact || {};
   const logs = Array.isArray(detail.logs) ? detail.logs : [];
   const credentials = Array.isArray(application.credentials) ? application.credentials : [];
+  const progressActions = <AfterSaleDetailActions detail={detail} onOperation={type => onOperation(type, detail)} />;
   return (
     <div className="admin-order-detail admin-after-sale-detail">
-      <div className="admin-order-detail-actions">
-        <AfterSaleDetailActions detail={detail} onOperation={type => onOperation(type, detail)} />
-        <Button onClick={() => ctx.setDrawer(null)}>返回</Button>
-      </div>
-
-      <Card title="售后进度" className="admin-order-detail-card">
+      <Card title="售后进度" extra={progressActions} className="admin-order-detail-card">
         <div className="admin-order-progress admin-after-sale-progress">
           {progress.map((step: AnyRecord, index: number) => (
             <div key={`${step.key || step.title}-${index}`} className={`admin-order-progress-step ${step.nodeStatus === "DONE" ? "is-done" : ""} ${step.nodeStatus === "CURRENT" ? "is-current" : ""} ${step.nodeStatus === "ABNORMAL" ? "is-abnormal" : ""}`}>
@@ -6410,7 +6963,7 @@ function AfterSaleDetailActions({ detail, onOperation }: { detail: AnyRecord; on
   if (status === "WAIT_BUYER_RETURN") return <Space><Button danger onClick={() => onOperation("close")}>关闭售后</Button></Space>;
   if (status === "WAIT_SELLER_RECEIVE") return <Space><Button type="primary" onClick={() => onOperation("receive")}>确认收到退货</Button></Space>;
   if (status === "WAIT_REFUND") return <Space><Button type="primary" onClick={() => onOperation("refund")}>确认退款</Button></Space>;
-  return <Space />;
+  return null;
 }
 
 function normalizeAfterSaleStatusValue(value: any) {
@@ -6474,25 +7027,574 @@ function operationSuccessText(type: string) {
   return ({ review: "售后审核已处理", receive: "退货收货已确认", refund: "退款已确认", close: "售后已关闭" } as AnyRecord)[type] || "操作成功";
 }
 
+const invoiceStatusTabs = [
+  { key: "ALL", label: "全部" },
+  { key: "PENDING_INVOICE", label: "待开票" },
+  { key: "INVOICED", label: "已开票" },
+  { key: "REJECTED", label: "已驳回" },
+  { key: "CANCELLED", label: "已撤销" }
+];
+
+const invoiceTypeOptions = [
+  { value: "", label: "全部" },
+  { value: "ELECTRONIC_NORMAL", label: "电子普通发票" },
+  { value: "ELECTRONIC_VAT_SPECIAL", label: "电子增值税专用发票" }
+];
+
 function InvoicePage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
-  return <SimpleTablePage loading={loading} rows={ctx.data.invoices || []} columns={[
-    { title: "申请单号", dataIndex: "invoiceApplyNo" },
-    { title: "订单编号", dataIndex: "orderNo" },
-    { title: "买家", dataIndex: "buyerName" },
-    { title: "发票抬头", dataIndex: "title" },
-    { title: "金额", dataIndex: "amount", render: money },
-    { title: "状态", dataIndex: "status", render: tag },
-    { title: "操作", render: (_, item) => <Space><Button type="link" onClick={() => detailDrawer(ctx, "开票详情", item)}>详情</Button><Button type="link" onClick={() => invoiceFile(ctx, item)}>上传发票</Button><Button type="link" onClick={() => postAndReload(ctx, `/api/admin/invoices/${item.id}/confirm`, undefined, "开票已确认")}>确认开票</Button></Space> }
-  ]} />;
+  const [form] = Form.useForm();
+  const [rows, setRows] = useState<AnyRecord[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [activeTab, setActiveTab] = useState("ALL");
+  const [query, setQuery] = useState<AnyRecord>({});
+  const [listLoading, setListLoading] = useState(false);
+
+  const load = async (next: AnyRecord = {}) => {
+    const finalPage = next.page ?? page;
+    const finalPageSize = next.pageSize ?? pageSize;
+    const finalTab = next.tab ?? activeTab;
+    const finalQuery = next.query ?? query;
+    setListLoading(true);
+    try {
+      const params = normalizeInvoiceQueryParams({ ...finalQuery, page: finalPage, pageSize: finalPageSize, tab: finalTab });
+      const result = await request<AnyRecord>("/api/admin/invoices", { params });
+      setRows(Array.isArray(result?.list) ? result.list : []);
+      setTotal(Number(result?.total || 0));
+      setPage(Number(result?.page || finalPage));
+      setPageSize(Number(result?.pageSize || finalPageSize));
+      setActiveTab(finalTab);
+      setQuery(finalQuery);
+    } catch (error: any) {
+      ctx.message.error(error.message);
+      setRows([]);
+      setTotal(0);
+    } finally {
+      setListLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void load({ page: 1 });
+  }, []);
+
+  const onSearch = async () => {
+    const values = form.getFieldsValue();
+    await load({ page: 1, query: values });
+  };
+
+  const onReset = async () => {
+    form.resetFields();
+    await load({ page: 1, query: {} });
+  };
+
+  const columns: ColumnsType<AnyRecord> = [
+    { title: "申请单信息", width: 170, render: (_, item) => <div className="admin-order-primary"><strong>{emptyText(item.invoiceApplyNo)}</strong><span>{dateText(item.applyTime || item.createdAt)}</span></div> },
+    { title: "订单信息", width: 180, render: (_, item) => <InvoiceOrderStatusLine item={item} /> },
+    { title: "买家信息", width: 150, render: (_, item) => <div className="admin-order-buyer-cell"><strong>{emptyText(item.customerName || item.buyerName)}</strong><span>{emptyText(item.customerPhone || item.customerAccount)}</span></div> },
+    { title: "发票抬头", width: 210, render: (_, item) => <div className="admin-order-primary"><strong>{emptyText(item.invoiceTitle || item.title)}</strong><span>{emptyText(item.taxpayerNo || item.taxNo)}</span></div> },
+    { title: "发票类型", width: 150, dataIndex: "invoiceType", render: invoiceTypeText },
+    { title: "金额信息", width: 190, align: "right", render: (_, item) => <div className="admin-stack-cell admin-money-cell"><span>申请 {formatOrderMoney(item.applyAmount)}</span><span>可开 {formatOrderMoney(item.availableInvoiceAmount)}</span><span>已开 {formatOrderMoney(item.invoicedAmount)}</span></div> },
+    { title: "开票超时", width: 140, render: (_, item) => <div className="admin-stack-cell"><span>{dateText(item.invoiceTimeoutDate).slice(0, 10)}</span><InvoiceTimeoutTag value={item.timeoutText} invoiceStatus={item.invoiceStatus || item.status} /></div> },
+    { title: "售后状态", width: 110, dataIndex: "afterSaleStatus", render: value => <AfterSaleInvoiceTag value={value} /> },
+    { title: "开票状态", width: 110, dataIndex: "invoiceStatus", render: value => <InvoiceStatusTag value={value} /> },
+    { title: "发票文件", width: 90, align: "right", dataIndex: "uploadedFileCount", render: numberText },
+    {
+      title: "操作",
+      width: 260,
+      align: "center",
+      fixed: "right",
+      className: "admin-order-action-shadow",
+      onHeaderCell: () => ({ className: "admin-order-action-shadow", width: 260 }),
+      render: (_, item) => <InvoiceActionButtons ctx={ctx} item={item} onReload={() => load()} />
+    }
+  ];
+
+  return (
+    <div className="admin-order-workbench admin-invoice-workbench">
+      <Card className="admin-order-card admin-order-filter-card" bodyStyle={{ paddingBottom: 0 }}>
+        <Tabs
+          className="admin-order-status-tabs"
+          activeKey={activeTab}
+          items={invoiceStatusTabs}
+          onChange={key => void load({ page: 1, tab: key })}
+        />
+
+        <Form form={form} className="admin-order-filters product-archive-filters admin-invoice-filters" onFinish={onSearch}>
+          <div className="product-archive-filter-stack">
+            <label className="product-archive-filter-keyword">
+              <span>关键词</span>
+              <Form.Item name="keyword" noStyle>
+                <Input className="product-archive-keyword-search" allowClear placeholder="开票申请单号 / 订单编号 / 买家名称 / 发票抬头 / 税号" />
+              </Form.Item>
+            </label>
+            <label>
+              <span>申请时间</span>
+              <Form.Item name="applyRange" noStyle>
+                <RangePicker placeholder={["开始", "结束"]} />
+              </Form.Item>
+            </label>
+          </div>
+          <div className="product-archive-filter-stack">
+            <label>
+              <span>发票类型</span>
+              <Form.Item name="invoiceType" noStyle>
+                <Select options={invoiceTypeOptions} placeholder="全部" allowClear />
+              </Form.Item>
+            </label>
+            <label>
+              <span>订单状态</span>
+              <Form.Item name="orderStatus" noStyle>
+                <Select options={[{ value: "", label: "全部" }, { value: "COMPLETED", label: "已完成" }, { value: "REFUNDED", label: "已退款" }, { value: "PART_REFUNDED", label: "部分退款" }]} placeholder="全部" allowClear />
+              </Form.Item>
+            </label>
+          </div>
+          <div className="product-archive-filter-stack">
+            <label>
+              <span>开票状态</span>
+              <Form.Item name="invoiceStatus" noStyle>
+                <Select options={invoiceStatusTabs.map(x => ({ value: x.key === "ALL" ? "" : x.key, label: x.label }))} placeholder="全部" allowClear />
+              </Form.Item>
+            </label>
+            <label>
+              <span>售后状态</span>
+              <Form.Item name="afterSaleStatus" noStyle>
+                <Select options={[{ value: "", label: "全部" }, { value: "NONE", label: "无售后" }, { value: "PROCESSING", label: "售后中" }, { value: "COMPLETED", label: "售后完成" }]} placeholder="全部" allowClear />
+              </Form.Item>
+            </label>
+          </div>
+          <div className="product-archive-filter-stack">
+            <label>
+              <span>是否上传发票</span>
+              <Form.Item name="uploadedOnly" noStyle>
+                <Select options={[{ value: "", label: "全部" }, { value: true, label: "是" }, { value: false, label: "否" }]} placeholder="全部" allowClear />
+              </Form.Item>
+            </label>
+            <label>
+              <span>超时时间</span>
+              <Form.Item name="timeoutRange" noStyle>
+                <RangePicker placeholder={["开始", "结束"]} />
+              </Form.Item>
+            </label>
+          </div>
+          <div className="product-archive-query-actions admin-order-filter-actions admin-invoice-filter-actions">
+            <Button type="primary" htmlType="submit">查询</Button>
+            <Button onClick={onReset}>重置</Button>
+          </div>
+        </Form>
+      </Card>
+
+      <Card className="admin-order-card admin-order-table-card">
+        <div className="admin-order-list-table admin-invoice-list-table product-archive-table anchored-pagination-table">
+          <AdminTable
+            loading={loading || listLoading}
+            rowKey="id"
+            dataSource={rows}
+            columns={columns}
+            scroll={{ x: "max-content", y: "100%" }}
+            locale={{ emptyText: <Empty description="暂无数据" /> }}
+            pagination={{
+              className: "product-archive-pagination",
+              current: page,
+              pageSize,
+              total,
+              showSizeChanger: true,
+              pageSizeOptions: ["10", "20", "50"],
+              showTotal: (count: number) => `共 ${count} 条`,
+              onChange: (nextPage: number, nextSize: number) => void load({ page: nextPage, pageSize: nextSize })
+            }}
+          />
+        </div>
+      </Card>
+    </div>
+  );
 }
 
-function invoiceFile(ctx: Ctx, item: AnyRecord) {
-  genericForm(ctx, "上传发票", undefined, [
-    { name: "invoiceNo", label: "发票号码", required: true },
-    { name: "invoiceFileUrl", label: "发票文件地址", required: true }
-  ], `/api/admin/invoices/${item.id}/files`, "POST");
+function InvoiceOrderStatusLine({ item }: { item: AnyRecord }) {
+  const paymentStatus = invoicePaymentStatusValue(item);
+  return (
+    <div className="admin-order-primary">
+      <strong>{emptyText(item.orderNo)}</strong>
+      <span>
+        <OrderStatusTag type="order" value={resolveOrderWorkflowKey(item)} />
+        {paymentStatus ? <OrderStatusTag type="payment" value={paymentStatus} /> : null}
+      </span>
+    </div>
+  );
 }
 
+function invoicePaymentStatusValue(item: AnyRecord) {
+  const candidates = [
+    item.paymentStatus,
+    item.payStatus,
+    item.orderPaymentStatus,
+    item.refundStatus
+  ];
+  return candidates.find(value => ["UNPAID", "PAID", "REFUNDED", "PART_REFUNDED", "PARTIAL_REFUNDED", "NOT_REQUIRED_BEFORE_RECEIPT"].includes(String(value || "").toUpperCase()));
+}
+
+function normalizeInvoiceQueryParams(values: AnyRecord) {
+  const [applyStart, applyEnd] = values.applyRange || [];
+  const [timeoutStart, timeoutEnd] = values.timeoutRange || [];
+  const params: AnyRecord = {
+    page: values.page,
+    pageSize: values.pageSize,
+    tab: values.tab === "ALL" ? undefined : values.tab,
+    keyword: values.keyword,
+    invoiceType: values.invoiceType,
+    invoiceStatus: values.invoiceStatus,
+    orderStatus: values.orderStatus,
+    afterSaleStatus: values.afterSaleStatus,
+    uploadedOnly: values.uploadedOnly,
+    applyStartDate: applyStart?.format?.("YYYY-MM-DD"),
+    applyEndDate: applyEnd?.format?.("YYYY-MM-DD"),
+    timeoutStartDate: timeoutStart?.format?.("YYYY-MM-DD"),
+    timeoutEndDate: timeoutEnd?.format?.("YYYY-MM-DD")
+  };
+  Object.keys(params).forEach(key => (params[key] === "" || params[key] === undefined || params[key] === null) && delete params[key]);
+  return params;
+}
+
+function InvoiceActionButtons({ ctx, item, onReload }: { ctx: Ctx; item: AnyRecord; onReload: () => void }) {
+  const status = normalizeInvoiceStatusValue(item.invoiceStatus || item.status);
+  const hasFiles = Number(item.uploadedFileCount || 0) > 0;
+  const buttons = [<Button key="detail" type="link" onClick={() => openInvoiceDetail(ctx, item.id, onReload)}>详情</Button>];
+  if (status === "PENDING_INVOICE") {
+    buttons.push(<Button key="upload" type="link" onClick={() => invoiceUploadModal(ctx, item.id, onReload)}>{hasFiles ? "继续上传" : "上传发票"}</Button>);
+    buttons.push(<Button key="confirm" type="link" onClick={() => confirmInvoiceApply(ctx, item.id, onReload)}>确认开票</Button>);
+    buttons.push(<Button key="reject" type="link" danger onClick={() => rejectInvoiceModal(ctx, item.id, onReload)}>驳回</Button>);
+  }
+  if (status === "INVOICED") {
+    buttons.push(<Button key="preview" type="link" disabled={!hasFiles} onClick={() => openInvoiceDetail(ctx, item.id, onReload)}>预览</Button>);
+    buttons.push(<Button key="download" type="link" disabled={!hasFiles} onClick={() => openInvoiceDetail(ctx, item.id, onReload)}>下载</Button>);
+  }
+  return <Space className="admin-order-action-links admin-invoice-action-links" size={12}>{buttons}</Space>;
+}
+
+function openInvoiceDetail(ctx: Ctx, id: any, onReload: () => void) {
+  ctx.setDrawer({
+    title: "开票详情",
+    width: "min(1280px, 96vw)",
+    className: "admin-order-detail-drawer admin-invoice-detail-drawer",
+    body: <InvoiceDetailPanel ctx={ctx} id={id} onReload={onReload} />
+  });
+}
+
+function InvoiceDetailPanel({ ctx, id, onReload }: { ctx: Ctx; id: any; onReload: () => void }) {
+  const [detail, setDetail] = useState<AnyRecord | null>(null);
+  const [loading, setLoading] = useState(true);
+  const loadDetail = async () => {
+    setLoading(true);
+    try {
+      setDetail(await request(`/api/admin/invoices/${id}`));
+    } catch (error: any) {
+      ctx.message.error(error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { void loadDetail(); }, [id]);
+  if (loading && !detail) return <Card loading />;
+  if (!detail) return <Empty description="暂无开票详情" />;
+  const files = Array.isArray(detail.files) ? detail.files : [];
+  const logs = invoiceOperationLogs(Array.isArray(detail.logs) ? detail.logs : [], detail);
+  const progress = Array.isArray(detail.progress) ? detail.progress : [];
+  const status = normalizeInvoiceStatusValue(detail.invoiceStatus || detail.status);
+  const actions = <InvoiceDetailActions ctx={ctx} detail={detail} onChanged={async () => { await loadDetail(); onReload(); }} />;
+  return (
+    <div className="admin-order-detail admin-invoice-detail">
+      <Card title="开票进度" extra={actions} className="admin-order-detail-card">
+        <div className="admin-order-progress">
+          {progress.map((step: AnyRecord, index: number) => (
+            <div key={`${step.key || step.title}-${index}`} className={`admin-order-progress-step ${step.nodeStatus === "DONE" ? "is-done" : ""} ${step.nodeStatus === "CURRENT" ? "is-current" : ""} ${step.nodeStatus === "ABNORMAL" ? "is-abnormal" : ""}`}>
+              <span>{step.nodeStatus === "DONE" ? <CheckOutlined /> : index + 1}</span><strong>{emptyText(step.title)}</strong><small>{dateText(step.time)}</small>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      <div className="admin-order-detail-grid">
+        <Card title="开票申请信息" className="admin-order-detail-card"><Descriptions column={1} size="small">
+          <Descriptions.Item label="开票申请单号">{emptyText(detail.invoiceApplyNo)}</Descriptions.Item>
+          <Descriptions.Item label="开票状态"><InvoiceStatusTag value={detail.invoiceStatus} /></Descriptions.Item>
+          <Descriptions.Item label="申请时间">{dateText(detail.applyTime || detail.createdAt)}</Descriptions.Item>
+          <Descriptions.Item label="申请人">{emptyText(detail.applicantName || detail.customerName)}</Descriptions.Item>
+          <Descriptions.Item label="发票类型">{invoiceTypeText(detail.invoiceType)}</Descriptions.Item>
+          <Descriptions.Item label="发票类型来源">{invoiceTypeSourceText(detail.invoiceTypeSource)}</Descriptions.Item>
+          <Descriptions.Item label="开票申请金额">{formatOrderMoney(detail.applyAmount)}</Descriptions.Item>
+          <Descriptions.Item label="买家备注">{emptyText(detail.buyerRemark)}</Descriptions.Item>
+          <Descriptions.Item label="后台备注">{emptyText(detail.adminRemark)}</Descriptions.Item>
+        </Descriptions></Card>
+        <Card title="订单信息" className="admin-order-detail-card"><Descriptions column={1} size="small">
+          <Descriptions.Item label="订单编号">{emptyText(detail.orderNo)}</Descriptions.Item>
+          <Descriptions.Item label="订单状态"><OrderStatusTag type="order" value={resolveOrderWorkflowKey(detail)} /></Descriptions.Item>
+          <Descriptions.Item label="支付状态"><OrderStatusTag type="payment" value={detail.paymentStatus} /></Descriptions.Item>
+          <Descriptions.Item label="发货状态"><OrderStatusTag type="fulfillment" value={detail.fulfillmentStatus} /></Descriptions.Item>
+          <Descriptions.Item label="退款状态"><RefundStatusTag value={detail.refundStatus} /></Descriptions.Item>
+          <Descriptions.Item label="订单实付金额">{formatOrderMoney(Number(detail.applyAmount || 0) + Number(detail.availableInvoiceAmount || 0))}</Descriptions.Item>
+          <Descriptions.Item label="已退款金额">{formatOrderMoney(detail.refundedAmount)}</Descriptions.Item>
+          <Descriptions.Item label="已开票金额">{formatOrderMoney(detail.invoicedAmount)}</Descriptions.Item>
+          <Descriptions.Item label="可开票金额">{formatOrderMoney(detail.availableInvoiceAmount)}</Descriptions.Item>
+          <Descriptions.Item label="售后状态"><AfterSaleInvoiceTag value={detail.afterSaleStatus} /></Descriptions.Item>
+        </Descriptions></Card>
+      </div>
+
+      <div className="admin-order-detail-grid">
+        <Card title="买家信息" className="admin-order-detail-card"><Descriptions column={1} size="small">
+          <Descriptions.Item label="买家名称">{emptyText(detail.customerName)}</Descriptions.Item>
+          <Descriptions.Item label="买家账号">{emptyText(detail.customerAccount)}</Descriptions.Item>
+          <Descriptions.Item label="联系人">{emptyText(detail.contactName)}</Descriptions.Item>
+          <Descriptions.Item label="联系电话">{emptyText(detail.customerPhone)}</Descriptions.Item>
+        </Descriptions></Card>
+        <Card title="发票抬头信息" className="admin-order-detail-card"><Descriptions column={1} size="small">
+          <Descriptions.Item label={detail.titleType === "PERSONAL" ? "个人名称" : "企业名称"}>{emptyText(detail.invoiceTitle || detail.title)}</Descriptions.Item>
+          <Descriptions.Item label="纳税人识别号">{emptyText(detail.taxpayerNo)}</Descriptions.Item>
+          <Descriptions.Item label="发票类型">{invoiceTypeText(detail.invoiceType)}</Descriptions.Item>
+          <Descriptions.Item label="注册地址">-</Descriptions.Item>
+          <Descriptions.Item label="注册电话">-</Descriptions.Item>
+          <Descriptions.Item label="开户银行">-</Descriptions.Item>
+          <Descriptions.Item label="银行账号">-</Descriptions.Item>
+        </Descriptions></Card>
+      </div>
+
+      <div className="admin-order-detail-grid">
+        <Card title="开票金额信息" className="admin-order-detail-card"><Descriptions column={1} size="small">
+          <Descriptions.Item label="订单实付金额">{formatOrderMoney(Number(detail.applyAmount || 0) + Number(detail.availableInvoiceAmount || 0))}</Descriptions.Item>
+          <Descriptions.Item label="已退款金额">{formatOrderMoney(detail.refundedAmount)}</Descriptions.Item>
+          <Descriptions.Item label="已开票金额">{formatOrderMoney(detail.invoicedAmount)}</Descriptions.Item>
+          <Descriptions.Item label="本次申请开票金额">{formatOrderMoney(detail.applyAmount)}</Descriptions.Item>
+          <Descriptions.Item label="当前可开票金额">{formatOrderMoney(detail.availableInvoiceAmount)}</Descriptions.Item>
+          <Descriptions.Item label="已上传发票金额合计">{formatOrderMoney(detail.uploadedInvoiceAmount)}</Descriptions.Item>
+          <Descriptions.Item label="剩余待上传金额">{formatOrderMoney(Math.max(0, Number(detail.applyAmount || 0) - Number(detail.uploadedInvoiceAmount || 0)))}</Descriptions.Item>
+        </Descriptions></Card>
+        <Card title="售后影响" className="admin-order-detail-card"><Descriptions column={1} size="small">
+          <Descriptions.Item label="售后状态"><AfterSaleInvoiceTag value={detail.afterSaleStatus} /></Descriptions.Item>
+          <Descriptions.Item label="是否售后中">{detail.afterSaleStatus === "PROCESSING" ? "是" : "否"}</Descriptions.Item>
+          <Descriptions.Item label="已退款金额">{formatOrderMoney(detail.refundedAmount)}</Descriptions.Item>
+          <Descriptions.Item label="退款后可开票金额">{formatOrderMoney(detail.availableInvoiceAmount)}</Descriptions.Item>
+          <Descriptions.Item label="是否禁止开票">{detail.afterSaleStatus === "PROCESSING" || Number(detail.availableInvoiceAmount || 0) <= 0 ? "是" : "否"}</Descriptions.Item>
+          <Descriptions.Item label="提示">{invoiceAfterSaleTip(detail)}</Descriptions.Item>
+        </Descriptions></Card>
+      </div>
+
+      <Card title="发票文件信息" className="admin-order-detail-card">
+        <AdminTable rowKey="id" dataSource={files} pagination={false} locale={{ emptyText: <Empty description="暂无发票文件" /> }} columns={[
+          { title: "文件名", dataIndex: "fileName", render: emptyText },
+          { title: "发票号码", dataIndex: "invoiceNo", render: emptyText },
+          { title: "发票代码", dataIndex: "invoiceCode", render: emptyText },
+          { title: "开票日期", dataIndex: "invoiceDate", render: value => dateText(value).slice(0, 10) },
+          { title: "发票金额", dataIndex: "invoiceAmount", align: "right", render: formatOrderMoney },
+          { title: "上传人", dataIndex: "uploadedBy", render: emptyText },
+          { title: "上传时间", dataIndex: "createdAt", render: dateText },
+          { title: "操作", render: (_, file) => <Space><Button type="link" onClick={() => previewInvoiceFile(file)}>预览</Button><Button type="link" onClick={() => downloadInvoiceFile(file)}>下载</Button>{status === "PENDING_INVOICE" ? <Button type="link" danger onClick={() => deleteInvoiceFile(ctx, file, async () => { await loadDetail(); onReload(); })}>删除</Button> : null}</Space> }
+        ]} />
+      </Card>
+
+      <div className="admin-order-detail-grid">
+        <Card title="超时信息" className="admin-order-detail-card"><Descriptions column={1} size="small">
+          <Descriptions.Item label="申请时间">{dateText(detail.applyTime || detail.createdAt)}</Descriptions.Item>
+          <Descriptions.Item label="开票超时日期">{dateText(detail.invoiceTimeoutDate).slice(0, 10)}</Descriptions.Item>
+          <Descriptions.Item label="超时提示"><InvoiceTimeoutTag value={detail.timeoutText} invoiceStatus={detail.invoiceStatus || detail.status} /></Descriptions.Item>
+          <Descriptions.Item label="剩余天数">{invoiceRemainingDays(detail.invoiceTimeoutDate)}</Descriptions.Item>
+        </Descriptions></Card>
+        <Card title="撤销信息" className="admin-order-detail-card">
+          {status === "CANCELLED" ? <Descriptions column={1} size="small">
+            <Descriptions.Item label="撤销状态"><InvoiceStatusTag value="CANCELLED" /></Descriptions.Item>
+            <Descriptions.Item label="撤销时间">{dateText(detail.cancelledAt)}</Descriptions.Item>
+            <Descriptions.Item label="撤销人">{emptyText(detail.cancelledBy)}</Descriptions.Item>
+            <Descriptions.Item label="撤销原因 / 备注">{emptyText(detail.cancelledReason)}</Descriptions.Item>
+            <Descriptions.Item label="提示">该开票申请已由买家撤销，后台无需处理。</Descriptions.Item>
+          </Descriptions> : <Empty description="暂无撤销信息" />}
+        </Card>
+      </div>
+
+      <Card title="操作日志" className="admin-order-detail-card">
+        <AdminTable rowKey="id" dataSource={logs} pagination={false} locale={{ emptyText: <Empty description="暂无操作日志" /> }} columns={[
+          { title: "时间", dataIndex: "createdAt", render: dateText },
+          { title: "操作人", dataIndex: "operatorName", render: emptyText },
+          { title: "操作类型", dataIndex: "operationType", render: emptyText },
+          { title: "操作内容", dataIndex: "operationContent", render: compactText }
+        ]} />
+      </Card>
+    </div>
+  );
+}
+
+function invoiceOperationLogs(logs: AnyRecord[], detail: AnyRecord) {
+  const invoiceKeys = [
+    detail.id,
+    detail.invoiceId,
+    detail.invoiceApplyNo
+  ].map(value => String(value || "").trim()).filter(Boolean);
+  const invoiceWords = ["开票", "发票", "invoice"];
+  return logs.filter(log => {
+    const fields = [
+      log.operationType,
+      log.operationContent,
+      log.actionType,
+      log.actionContent,
+      log.bizType,
+      log.businessType,
+      log.module,
+      log.moduleName,
+      log.relationType,
+      log.relatedBizNo,
+      log.bizNo,
+      log.targetNo,
+      log.remark
+    ].map(value => String(value || ""));
+    const text = fields.join(" ").toLowerCase();
+    if (invoiceWords.some(word => text.includes(word.toLowerCase()))) return true;
+    return invoiceKeys.some(key => fields.some(value => value === key));
+  });
+}
+
+function InvoiceDetailActions({ ctx, detail, onChanged }: { ctx: Ctx; detail: AnyRecord; onChanged: () => void }) {
+  const status = normalizeInvoiceStatusValue(detail.invoiceStatus);
+  if (status === "PENDING_INVOICE") return <Space><Button onClick={() => invoiceUploadModal(ctx, detail.id, onChanged)}>{Number(detail.uploadedFileCount || 0) > 0 ? "继续上传" : "上传发票"}</Button><Button type="primary" onClick={() => confirmInvoiceApply(ctx, detail.id, onChanged)}>确认开票</Button><Button danger onClick={() => rejectInvoiceModal(ctx, detail.id, onChanged)}>驳回</Button></Space>;
+  if (status === "INVOICED") return <Space><Button onClick={() => detail.files?.[0] && previewInvoiceFile(detail.files[0])}>预览发票</Button><Button onClick={() => detail.files?.[0] && downloadInvoiceFile(detail.files[0])}>下载发票</Button></Space>;
+  return null;
+}
+
+function invoiceUploadModal(ctx: Ctx, id: any, onSuccess: () => void) {
+  let modal: any;
+  modal = Modal.confirm({ title: "上传发票", icon: null, width: 680, footer: null, content: <InvoiceUploadForm ctx={ctx} invoiceId={id} onSuccess={() => { modal.destroy(); onSuccess(); }} /> });
+}
+
+function InvoiceUploadForm({ ctx, invoiceId, onSuccess }: { ctx: Ctx; invoiceId: any; onSuccess: () => void }) {
+  const [form] = Form.useForm();
+  const [submitting, setSubmitting] = useState(false);
+  return <Form form={form} layout="vertical" onFinish={async values => {
+    const operatorName = currentAdminOperatorName();
+    if (!operatorName) return ctx.message.error("无法获取当前操作人，请重新登录");
+    const fileList = values.files?.fileList || [];
+    const pdfFiles = fileList.map((x: AnyRecord) => x.originFileObj).filter(Boolean);
+    if (!pdfFiles.length) return ctx.message.error("请选择 PDF 发票文件");
+    const formData = new FormData();
+    for (const file of pdfFiles) formData.append("files", file);
+    ["invoiceNo", "invoiceCode", "invoiceDate", "invoiceAmount", "remark"].forEach(key => {
+      const value = values[key];
+      if (value !== undefined && value !== null && value !== "") formData.append(key, key === "invoiceDate" ? value.format("YYYY-MM-DD") : String(value));
+    });
+    formData.append("operatorName", operatorName);
+    setSubmitting(true);
+    try {
+      await request(`/api/admin/invoices/${invoiceId}/files`, { method: "POST", data: formData });
+      ctx.message.success("发票已上传");
+      onSuccess();
+    } catch (error: any) {
+      ctx.message.error(error.message);
+    } finally {
+      setSubmitting(false);
+    }
+  }}>
+    <Form.Item name="files" label="发票文件" rules={[{ required: true, message: "请选择 PDF 发票文件" }]}><Upload.Dragger multiple accept="application/pdf,.pdf" beforeUpload={file => {
+      if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) { ctx.message.error("只能上传 PDF 发票文件"); return Upload.LIST_IGNORE; }
+      if (file.size > 10 * 1024 * 1024) { ctx.message.error("单个文件大小不能超过 10MB"); return Upload.LIST_IGNORE; }
+      return false;
+    }}><p className="ant-upload-drag-icon"><FileTextOutlined /></p></Upload.Dragger></Form.Item>
+    <Form.Item name="invoiceNo" label="发票号码"><Input allowClear /></Form.Item>
+    <Form.Item name="invoiceCode" label="发票代码"><Input allowClear /></Form.Item>
+    <Form.Item name="invoiceAmount" label="发票金额"><InputNumber min={0.01} precision={2} style={{ width: "100%" }} /></Form.Item>
+    <Form.Item name="invoiceDate" label="开票日期"><DatePicker style={{ width: "100%" }} /></Form.Item>
+    <Form.Item name="remark" label="备注"><Input.TextArea rows={3} /></Form.Item>
+    <Space><Button type="primary" htmlType="submit" loading={submitting}>上传</Button><Button onClick={() => Modal.destroyAll()}>取消</Button></Space>
+  </Form>;
+}
+
+function confirmInvoiceApply(ctx: Ctx, id: any, onSuccess: () => void) {
+  const operatorName = currentAdminOperatorName();
+  if (!operatorName) return ctx.message.error("无法获取当前操作人，请重新登录");
+  Modal.confirm({ title: "确认该申请已完成开票吗？确认后发票文件不可删除。", okText: "确认开票", cancelText: "取消", onOk: async () => {
+    try { await request(`/api/admin/invoices/${id}/confirm`, { method: "POST", data: { operatorName, remark: "发票已上传并确认" } }); ctx.message.success("开票已确认"); onSuccess(); }
+    catch (error: any) { ctx.message.error(error.message); return Promise.reject(error); }
+  }});
+}
+
+function rejectInvoiceModal(ctx: Ctx, id: any, onSuccess: () => void) {
+  let modal: any;
+  modal = Modal.confirm({ title: "驳回申请", icon: null, width: 560, footer: null, content: <InvoiceRejectForm ctx={ctx} invoiceId={id} onSuccess={() => { modal.destroy(); onSuccess(); }} /> });
+}
+
+function InvoiceRejectForm({ ctx, invoiceId, onSuccess }: { ctx: Ctx; invoiceId: any; onSuccess: () => void }) {
+  const [form] = Form.useForm();
+  const [submitting, setSubmitting] = useState(false);
+  return <Form form={form} layout="vertical" onFinish={async values => {
+    const operatorName = currentAdminOperatorName();
+    if (!operatorName) return ctx.message.error("无法获取当前操作人，请重新登录");
+    setSubmitting(true);
+    try { await request(`/api/admin/invoices/${invoiceId}/reject`, { method: "POST", data: { ...values, operatorName } }); ctx.message.success("开票申请已驳回"); onSuccess(); }
+    catch (error: any) { ctx.message.error(error.message); }
+    finally { setSubmitting(false); }
+  }}>
+    <Form.Item name="rejectReason" label="驳回原因" rules={[{ required: true }]}><Select options={["订单存在售后处理中", "订单已全额退款", "发票抬头信息不完整", "税号信息错误", "开票金额异常", "其它"].map(value => ({ value, label: value }))} /></Form.Item>
+    <Form.Item name="remark" label="备注"><Input.TextArea rows={3} /></Form.Item>
+    <Space><Button type="primary" danger htmlType="submit" loading={submitting}>驳回</Button><Button onClick={() => Modal.destroyAll()}>取消</Button></Space>
+  </Form>;
+}
+
+function deleteInvoiceFile(ctx: Ctx, file: AnyRecord, onSuccess: () => void) {
+  const operatorName = currentAdminOperatorName();
+  if (!operatorName) return ctx.message.error("无法获取当前操作人，请重新登录");
+  Modal.confirm({ title: "确认删除该发票文件吗？", okText: "删除", okButtonProps: { danger: true }, onOk: async () => {
+    try { await request(`/api/admin/invoices/files/${file.id}`, { method: "DELETE", data: { operatorName } }); ctx.message.success("发票文件已删除"); onSuccess(); }
+    catch (error: any) { ctx.message.error(error.message); return Promise.reject(error); }
+  }});
+}
+
+function previewInvoiceFile(file: AnyRecord) { window.open(`/api/admin/invoices/files/${file.id}/preview`, "_blank"); }
+function downloadInvoiceFile(file: AnyRecord) { window.open(`/api/admin/invoices/files/${file.id}/download`, "_blank"); }
+
+function normalizeInvoiceStatusValue(value: any) {
+  const key = String(value || "").toUpperCase();
+  if (key === "WAIT_INVOICE" || key === "APPLIED") return "PENDING_INVOICE";
+  if (key === "CANCELED") return "CANCELLED";
+  return key || "PENDING_INVOICE";
+}
+
+function InvoiceStatusTag({ value }: { value: any }) {
+  const map: AnyRecord = { PENDING_INVOICE: ["待开票", "orange"], INVOICED: ["已开票", "green"], REJECTED: ["已驳回", "default"], CANCELLED: ["已撤销", "default"] };
+  const matched = map[normalizeInvoiceStatusValue(value)];
+  return <Tag color={matched?.[1] || "default"}>{matched?.[0] || emptyText(value)}</Tag>;
+}
+
+function invoiceTypeSourceText(value: any) {
+  const key = String(value || "").toUpperCase();
+  if (key === "BUYER_DEFAULT") return "买家默认开票类型";
+  if (key === "BUYER_SELECTED") return "买家手动选择";
+  return "其它";
+}
+
+function InvoiceTimeoutTag({ value, invoiceStatus }: { value: any; invoiceStatus?: any }) {
+  if (normalizeInvoiceStatusValue(invoiceStatus) === "INVOICED") return null;
+  const map: AnyRecord = { NORMAL: ["正常", "green"], NEARLY_TIMEOUT: ["明日超时", "orange"], OVERDUE: ["逾期未处理", "red"] };
+  const key = String(value || "NORMAL").toUpperCase();
+  return <Tag color={map[key]?.[1] || "default"}>{map[key]?.[0] || "正常"}</Tag>;
+}
+
+function AfterSaleInvoiceTag({ value }: { value: any }) {
+  const key = String(value || "NONE").toUpperCase();
+  const map: AnyRecord = { NONE: ["无售后", "default"], PROCESSING: ["售后中", "orange"], COMPLETED: ["售后完成", "green"], REFUNDED: ["已退款", "default"] };
+  return <Tag color={map[key]?.[1] || "default"}>{map[key]?.[0] || emptyText(value)}</Tag>;
+}
+
+function invoiceAfterSaleTip(detail: AnyRecord) {
+  if (detail.afterSaleStatus === "PROCESSING") return "该订单存在售后处理中，暂不允许开票。";
+  if (detail.afterSaleStatus === "REFUNDED") return "该订单已全额退款，不支持开票。";
+  if (Number(detail.refundedAmount || 0) > 0 && normalizeInvoiceStatusValue(detail.invoiceStatus) === "INVOICED") return "已开票订单发生退款，后续需处理红冲。";
+  if (Number(detail.refundedAmount || 0) > 0) return `该订单已退款 ${formatOrderMoney(detail.refundedAmount)}，当前可开票金额为 ${formatOrderMoney(detail.availableInvoiceAmount)}。`;
+  return "-";
+}
+
+function invoiceRemainingDays(value: any) {
+  if (!value) return "-";
+  const timeout = new Date(String(value).slice(0, 10));
+  const today = new Date();
+  timeout.setHours(0, 0, 0, 0);
+  today.setHours(0, 0, 0, 0);
+  return Math.max(0, Math.ceil((timeout.getTime() - today.getTime()) / 86400000));
+}
 async function postAndReload(ctx: Ctx, url: string, data: any, success: string) {
   try {
     await request(url, { method: "POST", data });
@@ -6680,11 +7782,10 @@ function detailDrawer(ctx: Ctx, title: string, item: AnyRecord) {
 }
 
 const purchaseInboundColumns = (): ColumnsType<AnyRecord> => [
-  { title: "入库单号", dataIndex: "stockInNo" },
-  { title: "采购单号", dataIndex: "purchaseOrderNo" },
+  { title: "入库单号", dataIndex: "inboundNo" },
   { title: "供应商", dataIndex: "supplierName" },
   { title: "状态", dataIndex: "status", render: tag },
-  { title: "入库时间", dataIndex: "createdAt", render: dateText }
+  { title: "入库日期", dataIndex: "inboundDate", render: dateText }
 ];
 
 const stockFlowColumns = (): ColumnsType<AnyRecord> => [
@@ -6702,37 +7803,441 @@ function customerStatus(item: AnyRecord) {
 }
 
 function BuyerPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
-  return <SimpleTablePage loading={loading} rows={ctx.data.buyers || []} columns={buyerColumns(ctx)} />;
+  const [form] = Form.useForm();
+  const [rows, setRows] = useState<AnyRecord[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [tab, setTab] = useState("ALL");
+  const [filters, setFilters] = useState<AnyRecord>({});
+  const [tableLoading, setTableLoading] = useState(false);
+
+  const loadBuyers = async () => {
+    setTableLoading(true);
+    try {
+      const params = new URLSearchParams();
+      params.set("page", String(page));
+      params.set("pageSize", String(pageSize));
+      if (tab !== "ALL") params.set("tab", tab);
+      Object.entries(filters).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && String(value).trim() && value !== "ALL") {
+          params.set(key, String(value).trim());
+        }
+      });
+      const result = await request<AnyRecord>(`/api/customers?${params.toString()}`);
+      const list = Array.isArray(result) ? result : result.list || [];
+      setRows(list);
+      setTotal(Number(Array.isArray(result) ? list.length : result.total || 0));
+    } catch (error: any) {
+      ctx.message.error(error.message);
+      setRows([]);
+      setTotal(0);
+    } finally {
+      setTableLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadBuyers();
+  }, [page, pageSize, tab, filters]);
+
+  const submitFilters = (values: AnyRecord) => {
+    const range = values.registerRange || [];
+    setFilters({
+      keyword: values.keyword,
+      status: values.status,
+      salesmanName: values.salesmanName,
+      hasOrder: values.hasOrder,
+      startDate: range[0]?.format?.("YYYY-MM-DD"),
+      endDate: range[1]?.format?.("YYYY-MM-DD")
+    });
+    setPage(1);
+  };
+
+  const resetFilters = () => {
+    form.resetFields();
+    setFilters({});
+    setTab("ALL");
+    setPage(1);
+  };
+
+  const refresh = () => void loadBuyers();
+
+  return (
+    <Space direction="vertical" size={16} style={{ width: "100%" }}>
+      <Tabs
+        activeKey={tab}
+        onChange={key => {
+          setTab(key);
+          setPage(1);
+        }}
+        items={[
+          { key: "ALL", label: "全部" },
+          { key: "ENABLED", label: "启用" },
+          { key: "DISABLED", label: "停用" }
+        ]}
+      />
+      <Card>
+        <Form form={form} layout="inline" onFinish={submitFilters} className="admin-filter-form">
+          <Form.Item name="keyword"><Input allowClear style={{ width: 280 }} placeholder="买家名称 / 买家编码 / 联系人 / 手机号" /></Form.Item>
+          <Form.Item name="status"><Select allowClear style={{ width: 120 }} placeholder="买家状态" options={[{ value: "ALL", label: "全部" }, { value: "ENABLED", label: "启用" }, { value: "DISABLED", label: "停用" }]} /></Form.Item>
+          <Form.Item name="salesmanName"><Input allowClear style={{ width: 160 }} placeholder="业务员" /></Form.Item>
+          <Form.Item name="registerRange"><RangePicker /></Form.Item>
+          <Form.Item name="hasOrder"><Select allowClear style={{ width: 120 }} placeholder="是否有订单" options={[{ value: "ALL", label: "全部" }, { value: "YES", label: "是" }, { value: "NO", label: "否" }]} /></Form.Item>
+          <Form.Item>
+            <Space>
+              <Button type="primary" htmlType="submit">查询</Button>
+              <Button onClick={resetFilters}>重置</Button>
+              <Button onClick={() => ctx.message.info("导出功能待接入")}>导出买家</Button>
+            </Space>
+          </Form.Item>
+        </Form>
+      </Card>
+      <Card
+        title="买家列表"
+        extra={<Space><Button type="primary" icon={<PlusOutlined />} onClick={() => openBuyerForm(ctx, undefined, refresh)}>新增买家</Button><Button onClick={() => ctx.message.info("导出功能待接入")}>导出买家</Button></Space>}
+      >
+        <AdminTable
+          loading={loading || tableLoading}
+          rowKey="id"
+          columns={buyerColumns(ctx, refresh)}
+          dataSource={rows}
+          pagination={{
+            current: page,
+            pageSize,
+            total,
+            showSizeChanger: true,
+            pageSizeOptions: [10, 20, 50],
+            showTotal: value => `共 ${value} 条`,
+            onChange: (nextPage: number, nextSize: number) => {
+              setPage(nextPage);
+              setPageSize(nextSize);
+            }
+          }}
+          locale={{ emptyText: <Empty description="暂无数据" /> }}
+        />
+      </Card>
+    </Space>
+  );
 }
 
-const buyerColumns = (ctx: Ctx): ColumnsType<AnyRecord> => [
-  { title: "客户名称", render: (_, item) => item.companyName || item.customerName || item.buyerName || "-" },
-  { title: "联系人", dataIndex: "contactName" },
-  { title: "电话", dataIndex: "contactPhone" },
-  { title: "地址", dataIndex: "address", render: compactText },
-  { title: "状态", render: (_, item) => tag(customerStatus(item)) },
+const buyerColumns = (ctx: Ctx, refresh: () => void): ColumnsType<AnyRecord> => [
+  { title: "买家编码", dataIndex: "customerCode", width: 140, render: emptyText },
+  { title: "买家名称", dataIndex: "companyName", width: 180, render: emptyText },
+  { title: "联系人", dataIndex: "contactName", width: 120, render: emptyText },
+  { title: "手机号", width: 140, render: (_, item) => emptyText(item.contactPhone || item.loginPhone) },
+  { title: "业务员", dataIndex: "salesmanName", width: 120, render: emptyText },
+  { title: "状态", width: 90, render: (_, item) => buyerStatusTag(item) },
+  { title: "累计订单数", dataIndex: "orderCount", width: 110, align: "right", render: countText },
+  { title: "累计成交金额", dataIndex: "totalPaidAmount", width: 130, align: "right", render: yuan },
+  { title: "累计退款金额", dataIndex: "totalRefundAmount", width: 130, align: "right", render: yuan },
+  { title: "最近下单时间", dataIndex: "lastOrderTime", width: 150, render: dateText },
+  { title: "最近登录时间", dataIndex: "lastLoginAt", width: 150, render: dateText },
+  { title: "注册时间", dataIndex: "createdAt", width: 150, render: dateText },
   {
     title: "操作",
+    width: 260,
     render: (_, item) => {
       const status = customerStatus(item);
       return (
-        <CrudActions
-          onEdit={() => buyerForm(ctx, item)}
-          onStatus={() => updateStatus(ctx, `/api/customers/${item.id}/status`, status)}
-          statusLabel={status === "ENABLED" ? "停用" : "启用"}
-        />
+        <Space>
+          <Button type="link" onClick={() => openBuyerDetail(ctx, item.id, refresh)}>详情</Button>
+          <Button type="link" onClick={() => openBuyerForm(ctx, item, refresh)}>编辑</Button>
+          <Button type="link" danger={status === "ENABLED"} onClick={() => openBuyerStatusForm(ctx, item, refresh)}>{status === "ENABLED" ? "停用" : "启用"}</Button>
+          <Button type="link" onClick={() => openBuyerPasswordReset(ctx, item, refresh)}>重置密码</Button>
+        </Space>
       );
     }
   }
 ];
 
-function buyerForm(ctx: Ctx, item: AnyRecord) {
-  genericForm(ctx, "编辑买家", item, [
-    { name: "companyName", label: "客户名称", required: true },
-    { name: "contactName", label: "联系人", required: true },
-    { name: "contactPhone", label: "电话", required: true },
-    { name: "address", label: "地址", type: "textarea" }
-  ], `/api/customers/${item.id}`, "PUT");
+function buyerStatusTag(item: AnyRecord) {
+  const status = typeof item === "string" ? item : customerStatus(item);
+  if (status === "DISABLED") return <Tag color="red">停用</Tag>;
+  if (status === "ENABLED") return <Tag color="green">启用</Tag>;
+  return <Tag>{emptyText(status)}</Tag>;
+}
+
+function countText(value: any) {
+  return Number(value || 0);
+}
+
+function yuan(value: any) {
+  return `¥${Number(value || 0).toFixed(2)}`;
+}
+
+function requireOperator(ctx: Ctx) {
+  const operatorName = adminOperatorName();
+  if (!operatorName) {
+    ctx.message.error("无法获取当前操作人，请重新登录");
+    return "";
+  }
+  return operatorName;
+}
+
+function openBuyerForm(ctx: Ctx, item: AnyRecord | undefined, onDone: () => void) {
+  const isEdit = Boolean(item?.id);
+  ctx.setDrawer({
+    title: isEdit ? "编辑买家" : "新增买家",
+    width: 620,
+    body: (
+      <BuyerEditForm
+        item={item}
+        isEdit={isEdit}
+        onCancel={() => ctx.setDrawer(null)}
+        onSubmit={async values => {
+          const operatorName = requireOperator(ctx);
+          if (!operatorName) return;
+          try {
+            await request(isEdit ? `/api/customers/${item.id}` : "/api/customers", {
+              method: isEdit ? "PUT" : "POST",
+              data: { ...values, operatorName, contactPhone: values.loginPhone || values.contactPhone }
+            });
+            ctx.message.success("保存成功");
+            ctx.setDrawer(null);
+            onDone();
+          } catch (error: any) {
+            ctx.message.error(error.message);
+          }
+        }}
+      />
+    )
+  });
+}
+
+function BuyerEditForm({ item, isEdit, onSubmit, onCancel }: { item?: AnyRecord; isEdit: boolean; onSubmit: (values: AnyRecord) => Promise<void>; onCancel: () => void }) {
+  const [submitting, setSubmitting] = useState(false);
+  return (
+    <Form
+      layout="vertical"
+      initialValues={{ ...item, loginPhone: item?.loginPhone || item?.contactPhone }}
+      onFinish={async values => {
+        setSubmitting(true);
+        try {
+          await onSubmit(values);
+        } finally {
+          setSubmitting(false);
+        }
+      }}
+    >
+      <Form.Item name="companyName" label="买家名称" rules={[{ required: true, message: "请输入买家名称" }]}><Input maxLength={120} /></Form.Item>
+      <Form.Item name="contactName" label="联系人" rules={[{ required: true, message: "请输入联系人" }]}><Input maxLength={60} /></Form.Item>
+      <Form.Item name="loginPhone" label="登录手机号" rules={phoneRules("登录手机号")}><Input maxLength={11} /></Form.Item>
+      {!isEdit ? <Form.Item name="password" label="初始密码" rules={passwordRules("初始密码")}><Input.Password maxLength={20} /></Form.Item> : null}
+      <Form.Item name="address" label="地址"><Input.TextArea rows={3} maxLength={255} /></Form.Item>
+      <Form.Item name="salesmanName" label="业务员"><Input maxLength={60} /></Form.Item>
+      <Form.Item name="remark" label="备注"><Input.TextArea rows={3} maxLength={500} /></Form.Item>
+      <Space><Button onClick={onCancel}>取消</Button><Button type="primary" htmlType="submit" loading={submitting}>保存</Button></Space>
+    </Form>
+  );
+}
+
+function openBuyerStatusForm(ctx: Ctx, item: AnyRecord, onDone: () => void) {
+  const currentStatus = customerStatus(item);
+  const nextStatus = currentStatus === "ENABLED" ? "DISABLED" : "ENABLED";
+  ctx.setDrawer({
+    title: nextStatus === "DISABLED" ? "停用买家" : "启用买家",
+    width: 520,
+    body: (
+      <BuyerStatusForm
+        status={nextStatus}
+        onCancel={() => ctx.setDrawer(null)}
+        onSubmit={async values => {
+          const operatorName = requireOperator(ctx);
+          if (!operatorName) return;
+          try {
+            await request(`/api/customers/${item.id}/status`, { method: "PUT", data: { ...values, status: nextStatus, operatorName } });
+            ctx.message.success("状态已更新");
+            ctx.setDrawer(null);
+            onDone();
+          } catch (error: any) {
+            ctx.message.error(error.message);
+          }
+        }}
+      />
+    )
+  });
+}
+
+function BuyerStatusForm({ status, onSubmit, onCancel }: { status: string; onSubmit: (values: AnyRecord) => Promise<void>; onCancel: () => void }) {
+  const [submitting, setSubmitting] = useState(false);
+  return (
+    <Form layout="vertical" onFinish={async values => { setSubmitting(true); try { await onSubmit(values); } finally { setSubmitting(false); } }}>
+      {status === "DISABLED" ? (
+        <Form.Item name="reason" label="停用原因" rules={[{ required: true, message: "请选择停用原因" }]}>
+          <Select options={["买家主动停用", "账号异常", "长期未合作", "信息错误", "其它"].map(value => ({ value, label: value }))} />
+        </Form.Item>
+      ) : null}
+      <Form.Item name="remark" label={status === "DISABLED" ? "备注" : "启用备注"}><Input.TextArea rows={3} maxLength={500} /></Form.Item>
+      <Space><Button onClick={onCancel}>取消</Button><Button type="primary" htmlType="submit" loading={submitting}>{status === "DISABLED" ? "停用" : "启用"}</Button></Space>
+    </Form>
+  );
+}
+
+function openBuyerPasswordReset(ctx: Ctx, item: AnyRecord, onDone: () => void) {
+  ctx.setDrawer({
+    title: "重置买家密码",
+    width: 520,
+    body: (
+      <BuyerPasswordForm
+        onCancel={() => ctx.setDrawer(null)}
+        onSubmit={async values => {
+          if (values.newPassword !== values.confirmPassword) {
+            ctx.message.error("新密码和确认密码不一致");
+            return;
+          }
+          const operatorName = requireOperator(ctx);
+          if (!operatorName) return;
+          try {
+            await request(`/api/customers/${item.id}/password/reset`, { method: "POST", data: { newPassword: values.newPassword, remark: values.remark, operatorName } });
+            ctx.message.success("密码已重置");
+            ctx.setDrawer(null);
+            onDone();
+          } catch (error: any) {
+            ctx.message.error(error.message);
+          }
+        }}
+      />
+    )
+  });
+}
+
+function BuyerPasswordForm({ onSubmit, onCancel }: { onSubmit: (values: AnyRecord) => Promise<void>; onCancel: () => void }) {
+  const [submitting, setSubmitting] = useState(false);
+  return (
+    <Form layout="vertical" onFinish={async values => { setSubmitting(true); try { await onSubmit(values); } finally { setSubmitting(false); } }}>
+      <Form.Item name="newPassword" label="新密码" rules={passwordRules("新密码")}><Input.Password maxLength={20} /></Form.Item>
+      <Form.Item name="confirmPassword" label="确认密码" rules={passwordRules("确认密码")}><Input.Password maxLength={20} /></Form.Item>
+      <Form.Item name="remark" label="备注"><Input.TextArea rows={3} maxLength={500} /></Form.Item>
+      <Space><Button onClick={onCancel}>取消</Button><Button type="primary" htmlType="submit" loading={submitting}>确认重置</Button></Space>
+    </Form>
+  );
+}
+
+function openBuyerDetail(ctx: Ctx, customerId: any, onChanged: () => void) {
+  ctx.setDrawer({
+    title: "买家详情",
+    width: "92vw",
+    className: "buyer-detail-drawer",
+    body: <BuyerDetail customerId={customerId} ctx={ctx} onChanged={onChanged} />
+  });
+}
+
+function BuyerDetail({ customerId, ctx, onChanged }: { customerId: any; ctx: Ctx; onChanged: () => void }) {
+  const [detail, setDetail] = useState<AnyRecord | null>(null);
+  const [loading, setLoading] = useState(false);
+  const load = async () => {
+    setLoading(true);
+    try {
+      setDetail(await request<AnyRecord>(`/api/customers/${customerId}`));
+    } catch (error: any) {
+      ctx.message.error(error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { void load(); }, [customerId]);
+  const basic = detail?.basicInfo || {};
+  const account = detail?.accountInfo || {};
+  const status = customerStatus(basic);
+  return (
+    <Space direction="vertical" size={16} style={{ width: "100%" }}>
+      <Space>
+        <Button onClick={() => openBuyerForm(ctx, basic, () => { onChanged(); void load(); })}>编辑</Button>
+        <Button danger={status === "ENABLED"} onClick={() => openBuyerStatusForm(ctx, basic, () => { onChanged(); void load(); })}>{status === "ENABLED" ? "停用" : "启用"}</Button>
+        <Button onClick={() => openBuyerPasswordReset(ctx, basic, () => { onChanged(); void load(); })}>重置密码</Button>
+        <Button onClick={() => ctx.setDrawer(null)}>返回</Button>
+      </Space>
+      <Card loading={loading} title="买家基础信息">
+        <Descriptions bordered column={3} size="small">
+          <Descriptions.Item label="买家编码">{emptyText(basic.customerCode)}</Descriptions.Item>
+          <Descriptions.Item label="买家名称">{emptyText(basic.companyName)}</Descriptions.Item>
+          <Descriptions.Item label="联系人">{emptyText(basic.contactName)}</Descriptions.Item>
+          <Descriptions.Item label="联系电话">{emptyText(basic.contactPhone)}</Descriptions.Item>
+          <Descriptions.Item label="业务员">{emptyText(basic.salesmanName)}</Descriptions.Item>
+          <Descriptions.Item label="状态">{buyerStatusTag(basic)}</Descriptions.Item>
+          <Descriptions.Item label="地址" span={2}>{emptyText(basic.address)}</Descriptions.Item>
+          <Descriptions.Item label="注册时间">{dateText(basic.createdAt)}</Descriptions.Item>
+          <Descriptions.Item label="更新时间">{dateText(basic.updatedAt)}</Descriptions.Item>
+          <Descriptions.Item label="备注" span={3}>{emptyText(basic.remark)}</Descriptions.Item>
+        </Descriptions>
+      </Card>
+      <Card loading={loading} title="账号信息">
+        <Descriptions bordered column={3} size="small">
+          <Descriptions.Item label="登录手机号">{emptyText(account.loginPhone)}</Descriptions.Item>
+          <Descriptions.Item label="账号状态">{buyerStatusTag(account)}</Descriptions.Item>
+          <Descriptions.Item label="最近登录时间">{dateText(account.lastLoginAt)}</Descriptions.Item>
+          <Descriptions.Item label="密码更新时间">{dateText(account.passwordUpdatedAt)}</Descriptions.Item>
+          <Descriptions.Item label="注册来源">{emptyText(account.registerSource)}</Descriptions.Item>
+          <Descriptions.Item label="停用原因">{emptyText(account.disabledReason)}</Descriptions.Item>
+          <Descriptions.Item label="停用时间">{dateText(account.disabledAt)}</Descriptions.Item>
+          <Descriptions.Item label="停用操作人">{emptyText(account.disabledBy)}</Descriptions.Item>
+        </Descriptions>
+      </Card>
+      <BuyerRelatedTable title="收货地址" empty="暂无收货地址" rows={detail?.addresses || []} columns={[
+        { title: "收货人", dataIndex: "receiverName" },
+        { title: "手机号", dataIndex: "receiverPhone" },
+        { title: "地区", dataIndex: "region", render: emptyText },
+        { title: "详细地址", dataIndex: "detailAddress", render: emptyText },
+        { title: "是否默认", dataIndex: "isDefault", render: value => value ? <Tag color="blue">默认</Tag> : "-" },
+        { title: "创建时间", dataIndex: "createdAt", render: dateText }
+      ]} />
+      <BuyerRelatedTable title="发票抬头" empty="暂无发票抬头" rows={detail?.invoiceTitles || []} columns={[
+        { title: "抬头类型", dataIndex: "titleType", render: value => value === "PERSONAL" ? "个人" : "企业" },
+        { title: "发票抬头", dataIndex: "invoiceTitle", render: emptyText },
+        { title: "纳税人识别号", dataIndex: "taxNo", render: emptyText },
+        { title: "支持发票类型", dataIndex: "supportedInvoiceTypes", render: emptyText },
+        { title: "默认开票类型", dataIndex: "defaultInvoiceType", render: emptyText },
+        { title: "邮箱", dataIndex: "email", render: emptyText },
+        { title: "是否默认", dataIndex: "isDefault", render: value => value ? <Tag color="blue">默认</Tag> : "-" },
+        { title: "创建时间", dataIndex: "createdAt", render: dateText }
+      ]} />
+      <BuyerRelatedTable title="订单记录" empty="暂无订单记录" rows={detail?.orders || []} columns={[
+        { title: "订单编号", dataIndex: "orderNo" },
+        { title: "订单状态", dataIndex: "orderStatus", render: tag },
+        { title: "支付状态", dataIndex: "paymentStatus", render: tag },
+        { title: "发货状态", dataIndex: "fulfillmentStatus", render: tag },
+        { title: "订单金额", dataIndex: "totalAmount", align: "right", render: yuan },
+        { title: "实付金额", dataIndex: "paidAmount", align: "right", render: yuan },
+        { title: "下单时间", dataIndex: "createdAt", render: dateText },
+        { title: "操作", render: () => <Button type="link" onClick={() => ctx.message.info("订单详情跳转待接入")}>查看订单</Button> }
+      ]} />
+      <BuyerRelatedTable title="售后记录" empty="暂无售后记录" rows={detail?.afterSales || []} columns={[
+        { title: "售后单号", dataIndex: "afterSaleNo" },
+        { title: "订单编号", dataIndex: "orderNo" },
+        { title: "售后类型", dataIndex: "afterSaleType", render: emptyText },
+        { title: "售后状态", dataIndex: "afterSaleStatus", render: tag },
+        { title: "申请金额", dataIndex: "refundAmount", align: "right", render: yuan },
+        { title: "退款状态", dataIndex: "refundStatus", render: tag },
+        { title: "申请时间", dataIndex: "createdAt", render: dateText },
+        { title: "操作", render: () => <Button type="link" onClick={() => ctx.message.info("售后详情跳转待接入")}>查看售后</Button> }
+      ]} />
+      <BuyerRelatedTable title="开票记录" empty="暂无开票记录" rows={detail?.invoices || []} columns={[
+        { title: "开票申请单号", dataIndex: "invoiceApplyNo" },
+        { title: "订单编号", dataIndex: "orderNo" },
+        { title: "发票类型", dataIndex: "invoiceType", render: emptyText },
+        { title: "发票抬头", dataIndex: "invoiceTitle", render: emptyText },
+        { title: "开票金额", dataIndex: "applyAmount", align: "right", render: yuan },
+        { title: "开票状态", dataIndex: "invoiceStatus", render: tag },
+        { title: "申请时间", dataIndex: "createdAt", render: dateText },
+        { title: "操作", render: () => <Button type="link" onClick={() => ctx.message.info("开票详情跳转待接入")}>查看开票</Button> }
+      ]} />
+      <BuyerRelatedTable title="操作日志" empty="暂无操作日志" rows={detail?.logs || []} columns={[
+        { title: "时间", dataIndex: "createdAt", render: dateText },
+        { title: "操作人", dataIndex: "operatorName", render: emptyText },
+        { title: "操作类型", dataIndex: "actionType", render: emptyText },
+        { title: "操作内容", dataIndex: "actionContent", render: emptyText }
+      ]} />
+    </Space>
+  );
+}
+
+function BuyerRelatedTable({ title, empty, rows, columns }: { title: string; empty: string; rows: AnyRecord[]; columns: ColumnsType<AnyRecord> }) {
+  return (
+    <Card title={title}>
+      <AdminTable rowKey={row => String(row.id ?? row.orderNo ?? row.afterSaleNo ?? row.invoiceApplyNo ?? Math.random())} dataSource={rows} columns={columns} pagination={false} locale={{ emptyText: <Empty description={empty} /> }} />
+    </Card>
+  );
 }
 
 const paymentColumns = (): ColumnsType<AnyRecord> => [

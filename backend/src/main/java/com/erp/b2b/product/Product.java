@@ -29,6 +29,7 @@ public record Product(
     Integer minOrderQuantity,
     String skuListJson,
     String tierPricesJson,
+    String productStatus,
     String saleStatus,
     LocalDateTime createdAt,
     LocalDateTime updatedAt

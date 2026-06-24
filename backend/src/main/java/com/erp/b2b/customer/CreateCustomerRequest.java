@@ -6,7 +6,11 @@ public record CreateCustomerRequest(
     @NotBlank String companyName,
     @NotBlank String contactName,
     @NotBlank String contactPhone,
+    String loginPhone,
+    String password,
     String address,
-    String salesmanName
+    String salesmanName,
+    String remark,
+    String operatorName
 ) {
 }
