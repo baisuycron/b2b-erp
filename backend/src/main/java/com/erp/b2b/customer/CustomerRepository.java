@@ -8,8 +8,6 @@ import java.security.NoSuchAlgorithmException;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
-import java.time.LocalDate;
-import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -20,6 +18,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 @Repository
 public class CustomerRepository {
@@ -33,9 +32,16 @@ public class CustomerRepository {
         return jdbcClient.sql("""
             SELECT id, customer_code, company_name, contact_name, contact_phone, address, audit_status,
                    CASE WHEN audit_status = 'DISABLED' THEN 'DISABLED' ELSE 'ENABLED' END AS status,
+                   group_id, group_code, group_name, group_status,
                    salesman_name, created_at, updated_at
-            FROM customers
-            ORDER BY id DESC
+            FROM (
+              SELECT c.id, c.customer_code, c.company_name, c.contact_name, c.contact_phone, c.address, c.audit_status,
+                     c.group_id, bg.group_code, bg.group_name, bg.status AS group_status,
+                     c.salesman_name, c.created_at, c.updated_at
+              FROM customers c
+              LEFT JOIN buyer_groups bg ON bg.id = c.group_id
+            ) c
+            ORDER BY c.id DESC
             """)
             .query(this::mapCustomer)
             .list();
@@ -43,11 +49,13 @@ public class CustomerRepository {
 
     public Optional<Customer> findById(Long id) {
         return jdbcClient.sql("""
-            SELECT id, customer_code, company_name, contact_name, contact_phone, address, audit_status,
+            SELECT c.id, c.customer_code, c.company_name, c.contact_name, c.contact_phone, c.address, c.audit_status,
                    CASE WHEN audit_status = 'DISABLED' THEN 'DISABLED' ELSE 'ENABLED' END AS status,
-                   salesman_name, created_at, updated_at
-            FROM customers
-            WHERE id = :id
+                   c.group_id, bg.group_code, bg.group_name, bg.status AS group_status,
+                   c.salesman_name, c.created_at, c.updated_at
+            FROM customers c
+            LEFT JOIN buyer_groups bg ON bg.id = c.group_id
+            WHERE c.id = :id
             """)
             .param("id", id)
             .query(this::mapCustomer)
@@ -88,7 +96,7 @@ public class CustomerRepository {
         int offset = (page - 1) * pageSize;
         Map<String, Object> params = new LinkedHashMap<>();
         String where = customerWhere(request, params);
-        Long total = jdbcClient.sql("SELECT COUNT(*) FROM customers c " + where)
+        Long total = jdbcClient.sql("SELECT COUNT(*) FROM customers c LEFT JOIN buyer_groups bg ON bg.id = c.group_id " + where)
             .params(params)
             .query(Long.class)
             .single();
@@ -100,12 +108,14 @@ public class CustomerRepository {
                    CASE WHEN c.audit_status = 'DISABLED' THEN 'DISABLED' ELSE 'ENABLED' END AS status,
                    c.salesman_name, c.remark, c.last_login_at, c.password_updated_at,
                    c.register_source, c.disabled_reason, c.disabled_remark, c.disabled_by, c.disabled_at,
+                   c.group_id, bg.group_code, bg.group_name, bg.status AS group_status,
                    c.created_at, c.updated_at,
                    COALESCE(o.order_count, 0) AS order_count,
                    COALESCE(o.total_paid_amount, 0) AS total_paid_amount,
                    COALESCE(a.total_refund_amount, 0) AS total_refund_amount,
                    o.last_order_time
             FROM customers c
+            LEFT JOIN buyer_groups bg ON bg.id = c.group_id
             LEFT JOIN (
               SELECT customer_id, COUNT(*) AS order_count,
                      COALESCE(SUM(CASE WHEN payment_status <> 'UNPAID' THEN total_amount ELSE 0 END), 0) AS total_paid_amount,
@@ -139,9 +149,16 @@ public class CustomerRepository {
         Map<String, Object> basicInfo = one("""
             SELECT id, customer_code, company_name, contact_name, contact_phone, login_phone, address,
                    audit_status, CASE WHEN audit_status = 'DISABLED' THEN 'DISABLED' ELSE 'ENABLED' END AS status,
+                   group_id, group_code, group_name, group_status,
                    salesman_name, remark, created_at, updated_at
-            FROM customers
-            WHERE id = :id
+            FROM (
+              SELECT c.id, c.customer_code, c.company_name, c.contact_name, c.contact_phone, c.login_phone, c.address,
+                     c.audit_status, c.group_id, bg.group_code, bg.group_name, bg.status AS group_status,
+                     c.salesman_name, c.remark, c.created_at, c.updated_at
+              FROM customers c
+              LEFT JOIN buyer_groups bg ON bg.id = c.group_id
+              WHERE c.id = :id
+            ) c
             """, "id", customerId);
         Map<String, Object> accountInfo = one("""
             SELECT id, login_phone, CASE WHEN audit_status = 'DISABLED' THEN 'DISABLED' ELSE 'ENABLED' END AS status,
@@ -203,20 +220,24 @@ public class CustomerRepository {
         );
     }
 
-    public Customer create(CreateCustomerRequest request, String customerCode) {
+    @Transactional
+    public Customer create(CreateCustomerRequest request) {
         KeyHolder keyHolder = new GeneratedKeyHolder();
         String phone = normalizedText(firstPresent(request.loginPhone(), request.contactPhone()));
+        Long groupId = assignableGroupId(request.groupId());
+        String customerCode = nextCustomerCode();
         jdbcClient.sql("""
             INSERT INTO customers (
-              customer_code, company_name, contact_name, contact_phone, login_phone, password_hash,
+              customer_code, group_id, company_name, contact_name, contact_phone, login_phone, password_hash,
               password_updated_at, address, audit_status, salesman_name, register_source, remark
             )
             VALUES (
-              :customerCode, :companyName, :contactName, :contactPhone, :loginPhone, :passwordHash,
+              :customerCode, :groupId, :companyName, :contactName, :contactPhone, :loginPhone, :passwordHash,
               NOW(), :address, 'APPROVED', :salesmanName, 'ADMIN', :remark
             )
             """)
             .param("customerCode", customerCode)
+            .param("groupId", groupId)
             .param("companyName", request.companyName().trim())
             .param("contactName", request.contactName().trim())
             .param("contactPhone", normalizedText(request.contactPhone()))
@@ -233,9 +254,11 @@ public class CustomerRepository {
 
     public Customer update(Long id, CreateCustomerRequest request) {
         ensureExists(id);
+        Long groupId = assignableGroupId(request.groupId());
         jdbcClient.sql("""
             UPDATE customers
             SET company_name = :companyName,
+                group_id = :groupId,
                 contact_name = :contactName,
                 contact_phone = :contactPhone,
                 login_phone = :loginPhone,
@@ -245,6 +268,7 @@ public class CustomerRepository {
             WHERE id = :id
             """)
             .param("companyName", request.companyName().trim())
+            .param("groupId", groupId)
             .param("contactName", request.contactName().trim())
             .param("contactPhone", normalizedText(request.contactPhone()))
             .param("loginPhone", normalizedText(firstPresent(request.loginPhone(), request.contactPhone())))
@@ -334,8 +358,49 @@ public class CustomerRepository {
         }
     }
 
-    public static String nextCustomerCode() {
-        return "CUST-" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + System.currentTimeMillis() % 100000;
+    private String nextCustomerCode() {
+        Integer nextValue = jdbcClient.sql("""
+            SELECT next_value
+            FROM customer_code_sequence
+            WHERE id = 1
+            FOR UPDATE
+            """)
+            .query(Integer.class)
+            .optional()
+            .orElse(null);
+        if (nextValue == null) {
+            nextValue = initializeCustomerCodeSequence();
+        }
+        if (nextValue > 999999) {
+            throw new ApiException(HttpStatus.CONFLICT, "买家编码已达到 6 位上限");
+        }
+        jdbcClient.sql("""
+            UPDATE customer_code_sequence
+            SET next_value = :nextValue
+            WHERE id = 1
+            """)
+            .param("nextValue", nextValue + 1)
+            .update();
+        return String.format("%06d", nextValue);
+    }
+
+    private int initializeCustomerCodeSequence() {
+        Integer nextValue = jdbcClient.sql("""
+            SELECT COALESCE(MAX(CAST(customer_code AS UNSIGNED)), 0) + 1
+            FROM customers
+            WHERE customer_code REGEXP '^[0-9]{1,6}$'
+            """)
+            .query(Integer.class)
+            .single();
+        int value = nextValue == null ? 1 : nextValue;
+        jdbcClient.sql("""
+            INSERT INTO customer_code_sequence (id, next_value)
+            VALUES (1, :nextValue)
+            ON DUPLICATE KEY UPDATE next_value = VALUES(next_value)
+            """)
+            .param("nextValue", value)
+            .update();
+        return value;
     }
 
     private String customerWhere(Map<String, String> request, Map<String, Object> params) {
@@ -381,6 +446,33 @@ public class CustomerRepository {
         } else if ("NO".equals(hasOrder) || "FALSE".equals(hasOrder)) {
             where.append(" AND NOT EXISTS (SELECT 1 FROM sales_orders so WHERE so.customer_id = c.id) ");
         }
+        String groupId = normalizedText(request.get("groupId"));
+        if ("UNASSIGNED".equalsIgnoreCase(groupId)) {
+            where.append(" AND c.group_id IS NULL ");
+        } else if (!groupId.isBlank()) {
+            try {
+                params.put("groupId", Long.parseLong(groupId));
+                where.append(" AND c.group_id = :groupId ");
+            } catch (NumberFormatException ignored) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, "买家分组参数不正确");
+            }
+        }
+        String groupScope = normalizedText(request.get("groupScope")).toUpperCase();
+        if ("UNASSIGNED".equals(groupScope)) {
+            where.append(" AND c.group_id IS NULL ");
+        } else if ("OTHER".equals(groupScope)) {
+            String currentGroupId = normalizedText(request.get("currentGroupId"));
+            if (!currentGroupId.isBlank()) {
+                try {
+                    params.put("currentGroupId", Long.parseLong(currentGroupId));
+                    where.append(" AND c.group_id IS NOT NULL AND c.group_id <> :currentGroupId ");
+                } catch (NumberFormatException ignored) {
+                    throw new ApiException(HttpStatus.BAD_REQUEST, "买家分组参数不正确");
+                }
+            } else {
+                where.append(" AND c.group_id IS NOT NULL ");
+            }
+        }
         return where.toString();
     }
 
@@ -394,6 +486,10 @@ public class CustomerRepository {
             rs.getString("address"),
             rs.getString("audit_status"),
             rs.getString("status"),
+            rs.getObject("group_id") == null ? null : rs.getLong("group_id"),
+            rs.getString("group_code"),
+            rs.getString("group_name"),
+            rs.getString("group_status"),
             rs.getString("salesman_name"),
             rs.getTimestamp("created_at").toLocalDateTime(),
             rs.getTimestamp("updated_at").toLocalDateTime()
@@ -445,6 +541,32 @@ public class CustomerRepository {
         if (count == null || count == 0) {
             throw new ApiException(HttpStatus.NOT_FOUND, "买家不存在");
         }
+    }
+
+    private Long assignableGroupId(Long groupId) {
+        if (groupId == null) return defaultGroupId();
+        String status = jdbcClient.sql("SELECT status FROM buyer_groups WHERE id = :id")
+            .param("id", groupId)
+            .query(String.class)
+            .optional()
+            .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "买家分组不存在"));
+        if (!"ENABLED".equals(status)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "只能选择启用状态的买家分组");
+        }
+        return groupId;
+    }
+
+    private Long defaultGroupId() {
+        return jdbcClient.sql("""
+            SELECT id
+            FROM buyer_groups
+            WHERE is_default = true
+            ORDER BY id ASC
+            LIMIT 1
+            """)
+            .query(Long.class)
+            .optional()
+            .orElseThrow(() -> new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "默认分组不存在"));
     }
 
     private int intParam(String value, int fallback) {

@@ -8,6 +8,7 @@ public record CreateCustomerRequest(
     @NotBlank String contactPhone,
     String loginPhone,
     String password,
+    Long groupId,
     String address,
     String salesmanName,
     String remark,

@@ -45,7 +45,7 @@ public class CustomerController {
         if (customerRepository.existsByPhone(phoneOf(request))) {
             throw new ApiException(HttpStatus.CONFLICT, "该手机号已注册，请直接登录。");
         }
-        return customerRepository.create(request, CustomerRepository.nextCustomerCode());
+        return customerRepository.create(request);
     }
 
     @PutMapping("/{customerId}")

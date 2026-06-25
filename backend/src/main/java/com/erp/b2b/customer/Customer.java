@@ -11,6 +11,10 @@ public record Customer(
     String address,
     String auditStatus,
     String status,
+    Long groupId,
+    String groupCode,
+    String groupName,
+    String groupStatus,
     String salesmanName,
     LocalDateTime createdAt,
     LocalDateTime updatedAt

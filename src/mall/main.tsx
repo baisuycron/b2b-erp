@@ -3098,7 +3098,6 @@ function ConfirmPage({ ctx }: any) {
     const order = await request("/api/orders", {
       method: "POST",
       data: {
-        customerId: 1,
         paymentMethod: "ONLINE_PAY",
         receiverName: address.name,
         receiverPhone: address.phone,
@@ -3923,6 +3922,9 @@ function MallAiAssistant({ ctx }: any) {
   ]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [quickBuyOpen, setQuickBuyOpen] = useState(false);
+  const [quickBuyLoading, setQuickBuyLoading] = useState(false);
+  const [quickBuyProduct, setQuickBuyProduct] = useState<AnyRecord | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -3993,12 +3995,20 @@ function MallAiAssistant({ ctx }: any) {
       ctx.requireLogin(window.location.pathname + window.location.search);
       return;
     }
+    setQuickBuyProduct(null);
+    setQuickBuyOpen(true);
+    setQuickBuyLoading(true);
     await ctx.apiGuard(async () => {
-      const product = productFromApi(await request<AnyRecord>(`/api/mall/products/${id}`));
-      const quantity = Math.max(1, Number(product.specs?.[0]?.min || product.raw?.minOrderQuantity || 1));
-      await request("/api/mall/cart/items", { method: "POST", data: { productId: Number(id), quantity, specIndex: 0 } });
-      await ctx.hydrateCart();
-      ctx.message.success("已加入购物车");
+      try {
+        const listProduct = ctx.products.find((row: AnyRecord) => String(row.id) === String(id));
+        const product = listProduct ? await ctx.loadProductDetail(listProduct) : productFromApi(await request<AnyRecord>(`/api/mall/products/${id}`));
+        setQuickBuyProduct(product);
+      } catch (error: any) {
+        setQuickBuyOpen(false);
+        ctx.message.error(error?.message || "商品详情加载失败，请稍后重试");
+      } finally {
+        setQuickBuyLoading(false);
+      }
     });
   };
 
@@ -4074,6 +4084,13 @@ function MallAiAssistant({ ctx }: any) {
           <Button type="primary" loading={loading} onClick={() => sendQuestion()}>发送</Button>
         </div>
       </div>
+      <QuickBuyModal
+        ctx={ctx}
+        open={quickBuyOpen}
+        loading={quickBuyLoading}
+        product={quickBuyProduct}
+        onClose={() => setQuickBuyOpen(false)}
+      />
     </div>
   );
 }

@@ -122,6 +122,7 @@ body,
   max-width: var(--admin-order-action-width) !important;
   z-index: 4;
   background: #f8fafc;
+  text-align: center;
 }
 
 .admin-order-list-table .ant-table-tbody > tr > td.admin-order-action-shadow {
@@ -130,6 +131,7 @@ body,
   max-width: var(--admin-order-action-width) !important;
   z-index: 3;
   background: #fff;
+  text-align: center;
 }
 
 .admin-order-status-tabs .ant-tabs-nav {
@@ -192,13 +194,16 @@ body,
 }
 
 .admin-invoice-list-table {
-  --admin-order-action-width: 260px;
+  --admin-order-action-width: 220px;
 }
 
 .admin-invoice-action-links.ant-space {
-  width: 100%;
-  justify-content: space-evenly;
-  gap: 12px !important;
+  width: auto;
+  max-width: 100%;
+  justify-content: center;
+  gap: 10px !important;
+  flex-wrap: nowrap;
+  white-space: nowrap;
 }
 
 .admin-invoice-action-links .ant-space-item {
@@ -1266,6 +1271,99 @@ body,
   justify-content: flex-end;
 }
 
+.buyer-info-page.product-archive-page {
+  --product-archive-filter-column-min: 190px;
+  grid-template-columns: 220px minmax(0, 1fr);
+}
+
+.buyer-info-main.product-archive-main {
+  min-height: 0;
+  height: 100%;
+}
+
+.buyer-info-sidebar.product-archive-sidebar {
+  min-height: 0;
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+}
+
+.buyer-group-tree.product-category-tree {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.buyer-info-filters.product-archive-filters {
+  grid-template-columns:
+    minmax(300px, 1.1fr)
+    minmax(250px, 0.95fr)
+    minmax(330px, 1.1fr)
+    minmax(180px, 0.7fr);
+}
+
+.buyer-info-filters.product-archive-filters label {
+  grid-template-columns: 72px minmax(0, 1fr);
+}
+
+.buyer-info-filters.product-archive-filters .ant-picker {
+  width: 100%;
+  height: var(--product-archive-filter-height);
+  border-radius: var(--product-archive-control-radius);
+}
+
+.buyer-info-query-actions.product-archive-query-actions {
+  justify-content: flex-end;
+  padding-top: calc(var(--product-archive-filter-height) + 10px);
+}
+
+.buyer-info-toolbar.product-archive-toolbar {
+  justify-content: flex-start;
+}
+
+.buyer-info-table.product-archive-table {
+  --buyer-action-width: 220px;
+  --fixed-action-width: 220px;
+}
+
+.buyer-info-table .buyer-action-header,
+.buyer-info-table .buyer-action-column {
+  width: var(--buyer-action-width) !important;
+  min-width: var(--buyer-action-width) !important;
+  max-width: var(--buyer-action-width) !important;
+}
+
+.buyer-info-table .buyer-action-header {
+  text-align: center;
+}
+
+.buyer-info-table .buyer-action-header::before,
+.buyer-info-table .buyer-action-column::before {
+  display: none;
+}
+
+.buyer-info-table.fixed-action-shadow-table .ant-table-container::after {
+  display: none;
+}
+
+.buyer-info-table .buyer-action-links.ant-space {
+  width: auto;
+  justify-content: center;
+  gap: 10px !important;
+  flex-wrap: wrap;
+  row-gap: 4px !important;
+  white-space: normal;
+}
+
+.buyer-info-table .buyer-name-cell {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .product-archive-toolbar {
   display: flex;
   align-items: center;
@@ -1378,6 +1476,67 @@ body,
 
 .product-catalog-table {
   --product-action-width: 150px;
+}
+
+.fixed-action-shadow-table {
+  --fixed-action-width: 180px;
+}
+
+.fixed-action-shadow-table .ant-table-container {
+  position: relative;
+}
+
+.fixed-action-shadow-table .ant-table-container::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: var(--fixed-action-width);
+  bottom: 0;
+  z-index: 5;
+  width: 24px;
+  pointer-events: none;
+  background: linear-gradient(90deg, rgba(15, 23, 42, 0), rgba(15, 23, 42, 0.07));
+}
+
+.fixed-action-shadow-table .fixed-action-shadow-column,
+.fixed-action-shadow-table .ant-table-thead > tr > th.fixed-action-shadow-column,
+.fixed-action-shadow-table .ant-table-tbody > tr > td.fixed-action-shadow-column {
+  width: var(--fixed-action-width) !important;
+  min-width: var(--fixed-action-width) !important;
+  max-width: var(--fixed-action-width) !important;
+  box-shadow: none !important;
+  overflow: hidden !important;
+}
+
+.fixed-action-shadow-table .ant-table-thead > tr > th.fixed-action-shadow-column {
+  z-index: 4;
+  background: #f8fafc !important;
+  text-align: center;
+  padding-inline: 12px !important;
+}
+
+.fixed-action-shadow-table .ant-table-tbody > tr > td.fixed-action-shadow-column {
+  z-index: 3;
+  background: #fff !important;
+  text-align: center;
+  overflow: visible !important;
+  white-space: normal !important;
+}
+
+.fixed-action-links.ant-space {
+  width: auto;
+  max-width: 100%;
+  justify-content: center;
+  column-gap: 10px !important;
+  row-gap: 4px !important;
+  flex-wrap: wrap;
+  white-space: normal;
+}
+
+.fixed-action-links .ant-btn-link {
+  padding-inline: 2px;
+  height: 22px;
+  line-height: 22px;
 }
 
 .product-archive-table .ant-table-container table {
@@ -1950,17 +2109,32 @@ body,
 
 .category-list-panel .management-board-header,
 .brand-list-panel .management-board-header,
-.attribute-template-list-panel .management-board-header {
+.attribute-template-list-panel .management-board-header,
+.buyer-group-list-panel .management-board-header {
   flex-shrink: 0;
 }
 
 .category-list-table,
 .brand-list-table,
-.attribute-template-list-table {
+.attribute-template-list-table,
+.buyer-group-list-table {
   --management-tree-list-row-height: 60px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.attribute-template-list-table,
+.supplier-list-table {
+  --fixed-action-width: 180px;
+}
+
+.attribute-template-list-table {
+  --fixed-action-width: 160px;
+}
+
+.buyer-group-list-table {
+  --fixed-action-width: 260px;
 }
 
 .category-list-table .ant-table-wrapper,
@@ -1980,22 +2154,31 @@ body,
 .attribute-template-list-table .ant-spin-container,
 .attribute-template-list-table .ant-table,
 .attribute-template-list-table .ant-table-container,
-.attribute-template-list-table .ant-table-content {
+.attribute-template-list-table .ant-table-content,
+.buyer-group-list-table .ant-table-wrapper,
+.buyer-group-list-table .ant-spin-nested-loading,
+.buyer-group-list-table .ant-spin-container,
+.buyer-group-list-table .ant-table,
+.buyer-group-list-table .ant-table-container,
+.buyer-group-list-table .ant-table-content {
   flex: 1 1 auto;
   min-height: 0;
 }
 
 .category-list-table .ant-table-tbody > tr > td,
 .brand-list-table .ant-table-tbody > tr > td,
-.attribute-template-list-table .ant-table-tbody > tr > td {
+.attribute-template-list-table .ant-table-tbody > tr > td,
+.buyer-group-list-table .ant-table-tbody > tr > td {
   height: var(--management-tree-list-row-height);
 }
 
 .category-list-table .ant-table-thead > tr > th.ant-table-cell-fix-right,
 .brand-list-table .ant-table-thead > tr > th.ant-table-cell-fix-right,
 .attribute-template-list-table .ant-table-thead > tr > th.ant-table-cell-fix-right,
+.buyer-group-list-table .ant-table-thead > tr > th.ant-table-cell-fix-right,
 .supplier-list-table .ant-table-thead > tr > th.ant-table-cell-fix-right {
-  padding-left: 52px;
+  padding-inline: 12px !important;
+  text-align: center !important;
 }
 
 .management-board-table.is-compact-list {
@@ -6337,15 +6520,26 @@ body,
 .inventory-action-links {
   width: 100%;
   justify-content: center;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
+  row-gap: 4px;
 }
 
 .inventory-action-links .ant-btn-link {
   padding-inline: 2px;
 }
 
+.inventory-warning-column {
+  text-align: center !important;
+}
+
+.inventory-warning-link {
+  min-width: 56px;
+  justify-content: center;
+}
+
 .inventory-catalog-table {
-  --inventory-action-width: 260px;
+  --inventory-action-width: 220px;
+  --fixed-action-width: 220px;
 }
 
 .inventory-catalog-table .ant-table-body {
@@ -6377,14 +6571,7 @@ body,
 
 .inventory-catalog-table .ant-table-cell-fix-right-first::before,
 .inventory-catalog-table .ant-table-cell-fix-right-last::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: -24px;
-  bottom: 0;
-  width: 24px;
-  pointer-events: none;
-  background: linear-gradient(90deg, rgba(15, 23, 42, 0), rgba(15, 23, 42, 0.07));
+  display: none;
 }
 
 .inventory-danger-number {
@@ -9298,6 +9485,19 @@ body,
 .admin-stack-cell span {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.buyer-assign-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr);
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  .buyer-assign-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .admin-stack-cell span {

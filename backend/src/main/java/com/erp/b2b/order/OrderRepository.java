@@ -96,6 +96,22 @@ public class OrderRepository {
             .toList();
     }
 
+    public List<SalesOrder> findByCustomerId(Long customerId) {
+        return jdbcClient.sql("""
+            SELECT id, order_no, customer_id, customer_name, order_status, payment_status, fulfillment_status,
+                   payment_method, total_amount, receiver_name, receiver_phone, receiver_address, remark, created_at, updated_at
+            FROM sales_orders
+            WHERE customer_id = :customerId
+            ORDER BY id DESC
+            """)
+            .param("customerId", customerId)
+            .query(this::mapOrderWithoutItems)
+            .list()
+            .stream()
+            .map(order -> orderWithItems(order, findItems(order.id())))
+            .toList();
+    }
+
     public Optional<SalesOrder> findById(Long id) {
         return jdbcClient.sql("""
             SELECT id, order_no, customer_id, customer_name, order_status, payment_status, fulfillment_status,
@@ -104,6 +120,20 @@ public class OrderRepository {
             WHERE id = :id
             """)
             .param("id", id)
+            .query(this::mapOrderWithoutItems)
+            .optional()
+            .map(order -> orderWithItems(order, findItems(order.id())));
+    }
+
+    public Optional<SalesOrder> findByIdAndCustomerId(Long id, Long customerId) {
+        return jdbcClient.sql("""
+            SELECT id, order_no, customer_id, customer_name, order_status, payment_status, fulfillment_status,
+                   payment_method, total_amount, receiver_name, receiver_phone, receiver_address, remark, created_at, updated_at
+            FROM sales_orders
+            WHERE id = :id AND customer_id = :customerId
+            """)
+            .param("id", id)
+            .param("customerId", customerId)
             .query(this::mapOrderWithoutItems)
             .optional()
             .map(order -> orderWithItems(order, findItems(order.id())));

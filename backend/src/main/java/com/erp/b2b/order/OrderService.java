@@ -36,10 +36,23 @@ public class OrderService {
     }
 
     @Transactional
+    public List<SalesOrder> listOrdersForCustomer(Long customerId) {
+        cancelExpiredUnpaidOrders();
+        return orderRepository.findByCustomerId(customerId);
+    }
+
+    @Transactional
     public SalesOrder getOrder(Long id) {
         cancelExpiredUnpaidOrders();
         return orderRepository.findById(id)
             .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Order not found"));
+    }
+
+    @Transactional
+    public SalesOrder getOrderForCustomer(Long id, Long customerId) {
+        cancelExpiredUnpaidOrders();
+        return orderRepository.findByIdAndCustomerId(id, customerId)
+            .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "\u8ba2\u5355\u4e0d\u5b58\u5728\u6216\u65e0\u6743\u8bbf\u95ee"));
     }
 
     @Transactional

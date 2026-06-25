@@ -505,7 +505,6 @@
       const order = await api("/api/orders", {
         method: "POST",
         body: JSON.stringify({
-          customerId: 1,
           paymentMethod: "ONLINE_PAY",
           receiverName: address.receiverName,
           receiverPhone: address.receiverPhone,

@@ -134,7 +134,8 @@ type PageKey =
   | "order"
   | "aftersale"
   | "invoice"
-  | "buyer"
+  | "buyer-groups"
+  | "buyer-info"
   | "finance-payment"
   | "finance-refund"
   | "system-user"
@@ -149,9 +150,56 @@ const dashboardPermissionKey = "dashboard";
 
 function normalizePageKey(page?: PageKey | null): PageKey {
   if (!page) return "dashboard";
+  if ((page as string) === "buyer") return "buyer-info";
   if (page === "stock-adjust") return "stock-overview";
   if (page === "purchase-inbound") return "purchase-order";
   return page;
+}
+
+function pageFromRoute(): PageKey | null {
+  const route = `${window.location.pathname}${window.location.hash}`.toLowerCase();
+  if (route.includes("/admin/buyer-groups") || route.includes("/admin/buyers/groups")) return "buyer-groups";
+  if (route.includes("/admin/buyer-info") || route.includes("/admin/buyers/info") || route.includes("/admin/buyers")) return "buyer-info";
+  return null;
+}
+
+const pageRoutes: Partial<Record<PageKey, string>> = {
+  "buyer-groups": "/admin/buyer-groups",
+  "buyer-info": "/admin/buyer-info"
+};
+
+const pageMenuParentMap: Partial<Record<PageKey, string>> = {
+  "product-list": "product",
+  "product-category": "product",
+  "product-brand": "product",
+  "product-attribute-template": "product",
+  supplier: "purchase",
+  "purchase-order": "purchase",
+  "purchase-inbound": "purchase",
+  "stock-overview": "stock",
+  "stock-flow": "stock",
+  "stock-adjust": "stock",
+  "buyer-groups": "buyer",
+  "buyer-info": "buyer",
+  "finance-payment": "finance",
+  "finance-refund": "finance",
+  "system-user": "system",
+  "system-role": "system",
+  "system-log": "system",
+  "system-config": "system"
+};
+
+function pageMenuParents(page: PageKey) {
+  return pageMenuParentMap[page] ? [pageMenuParentMap[page]!] : [];
+}
+
+function syncPageRoute(page: PageKey) {
+  const route = pageRoutes[page];
+  if (!route) return;
+  const nextHash = `#${route}`;
+  if (window.location.hash !== nextHash) {
+    window.history.replaceState(null, "", nextHash);
+  }
 }
 
 const pageTitles: Record<PageKey, [string, string]> = {
@@ -169,7 +217,8 @@ const pageTitles: Record<PageKey, [string, string]> = {
   order: ["订单管理", "查看订单、详情和发货履约。"],
   aftersale: ["售后管理", "处理售后审核、退货收货和退款。"],
   invoice: ["开票管理", "处理开票申请、上传发票和驳回。"],
-  buyer: ["买家管理", "查看买家客户资料。"],
+  "buyer-groups": ["买家分组", "维护买家分组、成员分配和分组状态。"],
+  "buyer-info": ["买家信息", "查看和维护买家客户资料。"],
   "finance-payment": ["支付记录", "查看商城支付流水。"],
   "finance-refund": ["退款记录", "查看售后退款流水。"],
   "system-user": ["后台账号", "新增、编辑、启停用和重置后台账号。"],
@@ -199,7 +248,9 @@ const endpoints: Record<string, string> = {
   permissionTree: "/api/admin/permissions/tree",
   logs: "/api/admin/operation-logs",
   parameters: "/api/system/parameters",
-  buyers: "/api/customers"
+  buyers: "/api/customers",
+  buyerGroups: "/api/admin/buyer-groups",
+  buyerGroupOptions: "/api/admin/buyer-groups/options"
 };
 
 const pageLoads: Record<PageKey, string[]> = {
@@ -217,7 +268,8 @@ const pageLoads: Record<PageKey, string[]> = {
   order: ["orders"],
   aftersale: ["afterSales"],
   invoice: ["invoices"],
-  buyer: ["buyers"],
+  "buyer-groups": ["buyerGroups"],
+  "buyer-info": ["buyers", "buyerGroupOptions"],
   "finance-payment": ["payments"],
   "finance-refund": ["refunds"],
   "system-user": ["accounts", "roles"],
@@ -248,7 +300,8 @@ const pagePermissionKeys: Record<PageKey, string[]> = {
   order: ["order"],
   aftersale: ["aftersale"],
   invoice: ["invoice"],
-  buyer: ["buyer"],
+  "buyer-groups": ["buyer:group", "buyer:group:view"],
+  "buyer-info": ["buyer:info", "buyer:info:view", "buyer"],
   "finance-payment": ["finance:finance-payment"],
   "finance-refund": ["finance:finance-refund"],
   "system-user": ["system:system-user"],
@@ -376,6 +429,23 @@ function tableProps(columns: ColumnsType<AnyRecord>, scroll?: any) {
   };
 }
 
+function readAdminPermissionKeys() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(adminPermissionKey) || "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function canUsePermission(...keys: string[]) {
+  const storedPermissionKeys = readAdminPermissionKeys();
+  if (localStorage.getItem(adminSuperRoleKey) === "1" || !storedPermissionKeys.length) return true;
+  const permissionSet = new Set(storedPermissionKeys);
+  if (permissionSet.has("buyer") && keys.some(key => key.startsWith("buyer:info"))) return true;
+  return keys.some(key => permissionSet.has(key));
+}
+
 function AdminTable({ columns = [], pagination, scroll, ...props }: any) {
   const finalPagination = pagination === false ? false : { ...tablePagination(), ...(pagination || {}) };
   return (
@@ -403,26 +473,33 @@ function normalizePermissionTree(rows: AnyRecord[] = []) {
       return {
         ...child,
         key: child.key || child.permissionKey || child.actionKey || child.label,
-        title: child.title || child.label || child.actionName || child.permissionName
+        title: child.title || child.label || child.actionName || child.permissionName,
+        children: normalizePermissionTree(child.children || child.actions || [])
       };
     })
   }));
 }
 
 function collectPermissionKeys(rows: AnyRecord[] = []) {
-  return normalizePermissionTree(rows)
-    .flatMap(item => [item.key, ...(item.children || []).map((child: AnyRecord) => child.key)])
-    .filter(Boolean);
+  const keys: string[] = [];
+  const walk = (items: AnyRecord[]) => {
+    normalizePermissionTree(items).forEach(item => {
+      if (item.key) keys.push(item.key);
+      if (item.children?.length) walk(item.children);
+    });
+  };
+  walk(rows);
+  return keys.filter(Boolean);
 }
 
 function parseRolePermissionKeys(item?: AnyRecord, permissionTree: AnyRecord[] = []) {
   const direct = item?.permissionKeys || item?.permissions;
-  if (Array.isArray(direct)) return direct;
+  if (Array.isArray(direct)) return expandLegacyBuyerPermissions(direct);
   const raw = item?.permissionJson;
   if (typeof raw === "string" && raw.trim()) {
     try {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) return parsed;
+      if (Array.isArray(parsed)) return expandLegacyBuyerPermissions(parsed);
     } catch {
       return [];
     }
@@ -430,17 +507,26 @@ function parseRolePermissionKeys(item?: AnyRecord, permissionTree: AnyRecord[] =
   return item ? [] : collectPermissionKeys(permissionTree);
 }
 
+function expandLegacyBuyerPermissions(keys: any[]) {
+  const result = new Set(keys.map(key => String(key || "")).filter(Boolean));
+  if (result.has("buyer")) {
+    ["buyer:info", "buyer:info:view", "buyer:info:create", "buyer:info:update", "buyer:info:disable", "buyer:info:reset-password", "buyer:info:export"].forEach(key => result.add(key));
+  }
+  return Array.from(result);
+}
+
 function AdminRoot() {
   const { message } = AntApp.useApp();
+  const initialPage: PageKey = "dashboard";
   const [loggedIn, setLoggedIn] = useState(Boolean(localStorage.getItem(adminTokenKey)));
   const [collapsed, setCollapsed] = useState(false);
-  const [page, setPage] = useState<PageKey>(normalizePageKey(localStorage.getItem(pageStorageKey) as PageKey));
+  const [page, setPage] = useState<PageKey>(initialPage);
   const [openPages, setOpenPages] = useState<PageKey[]>(() => {
-    const savedPage = normalizePageKey(localStorage.getItem(pageStorageKey) as PageKey);
-    return ["dashboard", savedPage]
+    return ["dashboard", initialPage]
       .filter(key => key !== "stock-adjust")
       .filter((key, index, arr) => arr.indexOf(key) === index);
   });
+  const [openMenuKeys, setOpenMenuKeys] = useState<string[]>(() => pageMenuParents(initialPage));
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<Record<string, any>>({});
   const dataRef = useRef<Record<string, any>>({});
@@ -501,7 +587,7 @@ function AdminRoot() {
   const reload = () => fetchDataKeys(pageLoads[page], { force: true, showLoading: true });
 
   useEffect(() => {
-    if (loggedIn) void fetchDataKeys(pageLoads[page]);
+    if (loggedIn && canOpenPage(page)) void fetchDataKeys(pageLoads[page]);
   }, [page, loggedIn]);
 
   useEffect(() => {
@@ -519,8 +605,17 @@ function AdminRoot() {
     }
     const nextKey = normalizePageKey(key);
     setPage(nextKey);
+    setOpenMenuKeys(prev => Array.from(new Set([...prev, ...pageMenuParents(nextKey)])));
     setOpenPages(prev => prev.includes(nextKey) ? prev : [...prev, nextKey]);
     localStorage.setItem(pageStorageKey, nextKey);
+    syncPageRoute(nextKey);
+  };
+
+  const resetToDashboard = () => {
+    setPage("dashboard");
+    setOpenPages(["dashboard"]);
+    setOpenMenuKeys([]);
+    localStorage.setItem(pageStorageKey, "dashboard");
   };
 
   const closePage = (targetKey: PageKey) => {
@@ -536,7 +631,10 @@ function AdminRoot() {
     });
   };
 
-  if (!loggedIn) return <Login onSuccess={() => setLoggedIn(true)} />;
+  if (!loggedIn) return <Login onSuccess={() => {
+    resetToDashboard();
+    setLoggedIn(true);
+  }} />;
 
   const menuItems = [
     { key: "dashboard", icon: <DashboardOutlined />, label: "首页工作台" },
@@ -572,7 +670,15 @@ function AdminRoot() {
     { key: "order", icon: <FileTextOutlined />, label: "订单管理" },
     { key: "aftersale", icon: <AuditOutlined />, label: "售后管理" },
     { key: "invoice", icon: <BankOutlined />, label: "开票管理" },
-    { key: "buyer", icon: <TeamOutlined />, label: "买家管理" },
+    {
+      key: "buyer",
+      icon: <TeamOutlined />,
+      label: "买家管理",
+      children: [
+        { key: "buyer-groups", label: "买家分组" },
+        { key: "buyer-info", label: "买家信息" }
+      ]
+    },
     {
       key: "finance",
       icon: <BankOutlined />,
@@ -594,14 +700,7 @@ function AdminRoot() {
       ]
     }
   ];
-  const storedPermissionKeys = (() => {
-    try {
-      const parsed = JSON.parse(localStorage.getItem(adminPermissionKey) || "[]");
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
-    }
-  })();
+  const storedPermissionKeys = readAdminPermissionKeys();
   const permissionSet = new Set(storedPermissionKeys);
   const isSuperAdmin = localStorage.getItem(adminSuperRoleKey) === "1";
   const canOpenPage = (key: PageKey) => {
@@ -634,7 +733,16 @@ function AdminRoot() {
           <div className="admin-logo" style={{ width: 38, height: 38, fontSize: 18 }}>B</div>
           {!collapsed && <b style={{ whiteSpace: "nowrap" }}>夏至 · 商城管理系统</b>}
         </div>
-        <Menu className="admin-menu" theme="dark" mode="inline" selectedKeys={[page]} items={visibleMenuItems} onClick={({ key }) => go(key as PageKey)} />
+        <Menu
+          className="admin-menu"
+          theme="dark"
+          mode="inline"
+          selectedKeys={[page]}
+          openKeys={openMenuKeys}
+          onOpenChange={keys => setOpenMenuKeys(keys)}
+          items={visibleMenuItems}
+          onClick={({ key }) => go(key as PageKey)}
+        />
       </Sider>
       <Layout className="admin-main-layout">
         <Header className="admin-header">
@@ -661,6 +769,7 @@ function AdminRoot() {
                 localStorage.removeItem(adminAccountKey);
                 localStorage.removeItem(adminPermissionKey);
                 localStorage.removeItem(adminSuperRoleKey);
+                localStorage.removeItem(pageStorageKey);
                 dataRef.current = {};
                 loadedAtRef.current.clear();
                 inflightRequestsRef.current.clear();
@@ -674,9 +783,9 @@ function AdminRoot() {
         </Header>
         <Content className="admin-content">
           <div
-            className={`page-wrap ${page === "product-list" || page === "stock-overview" || page === "supplier" ? "page-wrap-product-list" : ""} ${page === "order" || page === "aftersale" || page === "purchase-order" || page === "purchase-inbound" ? "page-wrap-order" : ""} ${page === "product-category" || page === "product-brand" || page === "product-attribute-template" ? "page-wrap-management-board" : ""}`}
+            className={`page-wrap ${page === "product-list" || page === "stock-overview" || page === "supplier" || page === "buyer-info" ? "page-wrap-product-list" : ""} ${page === "order" || page === "aftersale" || page === "purchase-order" || page === "purchase-inbound" ? "page-wrap-order" : ""} ${page === "product-category" || page === "product-brand" || page === "product-attribute-template" || page === "buyer-groups" ? "page-wrap-management-board" : ""}`}
           >
-            <PageRenderer page={page} ctx={ctx} loading={false} />
+            {canOpenPage(page) ? <PageRenderer page={page} ctx={ctx} loading={false} /> : <NoPermissionPage />}
           </div>
         </Content>
       </Layout>
@@ -834,7 +943,8 @@ function PageRenderer({ page, ctx, loading }: { page: PageKey; ctx: Ctx; loading
   if (page === "order") return <OrderPage ctx={ctx} loading={loading} />;
   if (page === "aftersale") return <AfterSalePage ctx={ctx} loading={loading} />;
   if (page === "invoice") return <InvoicePage ctx={ctx} loading={loading} />;
-  if (page === "buyer") return <BuyerPage ctx={ctx} loading={loading} />;
+  if (page === "buyer-groups") return <BuyerGroupPage ctx={ctx} loading={loading} />;
+  if (page === "buyer-info") return <BuyerPage ctx={ctx} loading={loading} />;
   if (page === "finance-payment") return <SimpleTablePage loading={loading} rows={ctx.data.payments || []} columns={paymentColumns()} />;
   if (page === "finance-refund") return <SimpleTablePage loading={loading} rows={ctx.data.refunds || []} columns={refundColumns()} />;
   if (page === "system-user") return <AccountPage ctx={ctx} loading={loading} />;
@@ -916,7 +1026,7 @@ function Dashboard({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
         <MetricCard title="今日订单数" value={orderCount} onClick={() => ctx.go?.("order")} />
         <MetricCard title="今日支付金额" value={paymentAmount} prefix="¥" precision={2} onClick={() => ctx.go?.("finance-payment")} />
         <MetricCard title="今日退款金额" value={refundAmount} prefix="¥" precision={2} onClick={() => ctx.go?.("finance-refund")} />
-        <MetricCard title="今日新增买家数" value={newBuyerCount} onClick={() => ctx.go?.("buyer")} />
+        <MetricCard title="今日新增买家数" value={newBuyerCount} onClick={() => ctx.go?.("buyer-info")} />
       </div>
       {stockWarning > 0 ? (
         <Card styles={{ body: { padding: 14 } }}>
@@ -992,7 +1102,7 @@ function dashboardShortcutOptions() {
     { key: "order", label: "订单管理", icon: <FileTextOutlined /> },
     { key: "aftersale", label: "售后管理", icon: <AuditOutlined /> },
     { key: "invoice", label: "开票管理", icon: <BankOutlined /> },
-    { key: "buyer", label: "买家管理", icon: <TeamOutlined /> },
+    { key: "buyer-info", label: "买家信息", icon: <TeamOutlined /> },
     { key: "finance-payment", label: "支付记录", icon: <BankOutlined /> },
     { key: "system-user", label: "后台账号", icon: <UserOutlined /> },
     { key: "system-role", label: "角色权限", icon: <SafetyOutlined /> }
@@ -3987,16 +4097,20 @@ function AttributeTemplatePage({ ctx, loading }: { ctx: Ctx; loading: boolean })
           <div className="management-board-title">属性模板列表</div>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => openForm()}>新增模板</Button>
         </div>
-        <div className="management-board-table product-archive-table anchored-pagination-table attribute-template-list-table">
+        <div className="management-board-table product-archive-table anchored-pagination-table fixed-action-shadow-table attribute-template-list-table">
           <AdminTable loading={loading} rowKey="id" dataSource={filteredRows} pagination={{ className: "product-archive-pagination" }} scroll={{ x: "max-content", y: "100%" }} columns={[
             { title: "模板名称", dataIndex: "templateName", width: 220 },
             { title: "关联商品数", dataIndex: "productCount", width: 160, render: value => Number(value || 0) },
             { title: "属性", dataIndex: "fields", render: fields => (fields || []).length ? <Space size={[6, 6]} wrap>{fields.map((field: AnyRecord) => <Tag key={field.id}>{field.name}</Tag>)}</Space> : "-" },
             {
               title: "操作",
-              width: 180,
+              width: 160,
+              align: "center",
+              className: "fixed-action-shadow-column",
+              onHeaderCell: () => ({ className: "fixed-action-shadow-column", width: 160 }),
+              onCell: () => ({ className: "fixed-action-shadow-column" }),
               render: (_, item) => (
-                <Space>
+                <Space className="fixed-action-links">
                   <Button type="link" icon={<EditOutlined />} onClick={() => openForm(item)}>编辑</Button>
                   <Popconfirm title="确认删除该属性模板？" description={Number(item.productCount || 0) ? "已关联商品的模板不能删除" : undefined} onConfirm={() => deleteRow(ctx, `/api/admin/product-attribute-templates/${item.id}`)}>
                     <Button type="link" danger icon={<DeleteOutlined />}>删除</Button>
@@ -4096,7 +4210,7 @@ function SupplierPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
         <div className="product-archive-toolbar supplier-management-toolbar">
           <Button type="primary" icon={<PlusOutlined />} onClick={() => supplierForm(ctx)}>新增供应商</Button>
         </div>
-        <div className="management-board-table product-archive-table anchored-pagination-table supplier-list-table">
+        <div className="management-board-table product-archive-table anchored-pagination-table fixed-action-shadow-table supplier-list-table">
           <AdminTable
             loading={loading}
             rowKey="id"
@@ -4113,8 +4227,13 @@ function SupplierPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
               {
                 title: "操作",
                 width: 180,
+                align: "center",
+                className: "fixed-action-shadow-column",
+                onHeaderCell: () => ({ className: "fixed-action-shadow-column", width: 180 }),
+                onCell: () => ({ className: "fixed-action-shadow-column" }),
                 render: (_, item) => (
                   <CrudActions
+                    className="fixed-action-links"
                     onEdit={() => supplierForm(ctx, item)}
                     onStatus={() => updateStatus(ctx, `/api/admin/suppliers/${item.id}/status`, item.status)}
                     statusLabel={item.status === "ENABLED" ? "停用" : "启用"}
@@ -4147,18 +4266,20 @@ function supplierForm(ctx: Ctx, item?: AnyRecord) {
 }
 
 function CrudActions({
+  className,
   onEdit,
   onStatus,
   statusLabel,
   onDelete
 }: {
+  className?: string;
   onEdit: () => void;
   onStatus?: () => void;
   statusLabel?: string;
   onDelete?: () => void;
 }) {
   return (
-    <Space>
+    <Space className={className}>
       <Button type="link" icon={<EditOutlined />} onClick={onEdit}>编辑</Button>
       {onStatus ? <Button type="link" onClick={onStatus}>{statusLabel || "启停用"}</Button> : null}
       {onDelete ? <Popconfirm title="确认删除？" onConfirm={onDelete}><Button type="link" danger icon={<DeleteOutlined />}>删除</Button></Popconfirm> : null}
@@ -5127,10 +5248,16 @@ function InventoryPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
           <div className="inventory-product-main">
             <Typography.Text strong ellipsis>{item.productName || "-"}</Typography.Text>
             <span>商品ID：{item.productId || "-"}</span>
-            <Tag>{inventoryProductStatusText(item.productStatus)}</Tag>
           </div>
         </div>
       )
+    },
+    {
+      title: "商品状态",
+      dataIndex: "productStatus",
+      width: 100,
+      align: "center",
+      render: value => <Tag>{inventoryProductStatusText(value)}</Tag>
     },
     {
       title: "SKU信息",
@@ -5139,11 +5266,12 @@ function InventoryPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
         <div className="inventory-lines">
           <Typography.Text code>{item.skuCode || "-"}</Typography.Text>
           <span>{item.skuName || "默认规格"}</span>
-          <span>{item.unit || "-"}</span>
         </div>
       )
     },
-    { title: "分类品牌", width: 160, render: (_, item) => <div className="inventory-lines"><span>{item.categoryName || "-"}</span><span>{item.brandName || "-"}</span></div> },
+    { title: "单位", dataIndex: "unit", width: 90, align: "center", render: value => value || "-" },
+    { title: "商品分类", dataIndex: "categoryName", width: 120, render: value => value || "-" },
+    { title: "商品品牌", dataIndex: "brandName", width: 120, render: value => value || "-" },
     { title: "实际库存", dataIndex: "actualStock", width: 110, align: "right", render: formatStockNumber },
     {
       title: "冻结库存",
@@ -5153,7 +5281,7 @@ function InventoryPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
       render: (value, item) => Number(value || 0) > 0 ? <Button type="link" onClick={() => openReservations(item)}>{formatStockNumber(value)}</Button> : formatStockNumber(value)
     },
     { title: "可售库存", dataIndex: "availableStock", width: 110, align: "right", render: value => <span className={Number(value || 0) < 0 ? "inventory-danger-number" : ""}>{formatStockNumber(value)}</span> },
-    { title: "预警值", dataIndex: "warningStock", width: 120, align: "right", render: (value, item) => <Button type="link" onClick={() => openWarning(item)}>{value === null || value === undefined ? "未设置" : formatStockNumber(value)}</Button> },
+    { title: "预警值", dataIndex: "warningStock", width: 120, align: "center", className: "inventory-warning-column", render: (value, item) => <Button className="inventory-warning-link" type="link" onClick={() => openWarning(item)}>{value === null || value === undefined ? "未设置" : formatStockNumber(value)}</Button> },
     { title: "库存状态", dataIndex: "stockStatus", width: 120, render: (_, item) => inventoryStatusTag(item) },
     { title: "近7天销量", dataIndex: "sales7d", width: 110, align: "right", render: value => formatStockNumber(value ?? 0) },
     { title: "近30天销量", dataIndex: "sales30d", width: 120, align: "right", render: value => formatStockNumber(value ?? 0) },
@@ -5162,10 +5290,14 @@ function InventoryPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
     { title: "最近出库时间", dataIndex: "lastOutboundTime", width: 170, render: dateText },
     {
       title: "操作",
-      width: 260,
+      width: 220,
       fixed: "right",
+      align: "center",
+      className: "fixed-action-shadow-column",
+      onHeaderCell: () => ({ className: "fixed-action-shadow-column", width: 220 }),
+      onCell: () => ({ className: "fixed-action-shadow-column" }),
       render: (_, item) => (
-        <Space className="inventory-action-links" size={4}>
+        <Space className="inventory-action-links fixed-action-links" size={4}>
           <Button type="link" onClick={() => openLogs(item)}>查看流水</Button>
           <Button type="link" onClick={() => openAdjust(item)}>库存调整</Button>
           <Button type="link" onClick={() => openWarning(item)}>设置预警</Button>
@@ -5221,7 +5353,7 @@ function InventoryPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
           <Button type="primary" onClick={() => selectedRowKeys.length ? setBatchWarningOpen(true) : ctx.message.warning("请先选择需要设置预警的SKU")}>批量设置预警</Button>
           <Typography.Text type="secondary">已选择 {selectedRowKeys.length} 个 SKU</Typography.Text>
         </div>
-        <div className="product-archive-table inventory-table-card anchored-pagination-table inventory-catalog-table">
+        <div className="product-archive-table inventory-table-card anchored-pagination-table fixed-action-shadow-table inventory-catalog-table">
           <AdminTable
             loading={loading || listLoading}
             rowKey={row => String(row.skuId)}
@@ -5942,6 +6074,10 @@ function OrderDetailActions({ ctx, detail, onRefresh, onShipSuccess }: { ctx: Ct
   return null;
 }
 
+function NoPermissionPage() {
+  return <Card><Empty description="无权限访问" /></Card>;
+}
+
 function OrderProgress({ detail }: { detail: AnyRecord }) {
   const workflow = resolveOrderWorkflowKey(detail);
   if (workflow === "CANCELLED") {
@@ -5964,7 +6100,7 @@ function OrderProgress({ detail }: { detail: AnyRecord }) {
           const current = !completed && index === currentIndex;
           return (
             <div key={step.title} className={`admin-order-progress-step ${done ? "is-done" : ""} ${current ? "is-current" : ""}`}>
-              <span>{done ? <CheckOutlined /> : index + 1}</span>
+              <span>{index + 1}</span>
               <strong>{step.title}</strong>
               <small>{dateText(step.time)}</small>
             </div>
@@ -6537,10 +6673,10 @@ function AfterSalePage({ ctx }: { ctx: Ctx; loading: boolean }) {
     { title: "是否超时", dataIndex: "timeout", width: 100, render: value => value ? <Tag color="red">是</Tag> : <Tag>否</Tag> },
     {
       title: "操作",
-      width: 170,
+      width: 150,
       align: "center",
       className: "admin-order-action-shadow",
-      onHeaderCell: () => ({ className: "admin-order-action-shadow", width: 170 }),
+      onHeaderCell: () => ({ className: "admin-order-action-shadow", width: 150 }),
       render: (_, item) => <AfterSaleActionButtons item={item} onDetail={() => openAfterSaleDetail(ctx, item.id, refresh, openOperation)} onOperation={openOperation} />
     }
   ];
@@ -6799,7 +6935,7 @@ function AfterSaleDetailPanel({ ctx, id, onRefresh, onOperation }: { ctx: Ctx; i
         <div className="admin-order-progress admin-after-sale-progress">
           {progress.map((step: AnyRecord, index: number) => (
             <div key={`${step.key || step.title}-${index}`} className={`admin-order-progress-step ${step.nodeStatus === "DONE" ? "is-done" : ""} ${step.nodeStatus === "CURRENT" ? "is-current" : ""} ${step.nodeStatus === "ABNORMAL" ? "is-abnormal" : ""}`}>
-              <span>{step.nodeStatus === "DONE" ? <CheckOutlined /> : index + 1}</span>
+              <span>{index + 1}</span>
               <strong>{emptyText(step.title)}</strong>
               <small>{dateText(step.time)}</small>
             </div>
@@ -7102,11 +7238,11 @@ function InvoicePage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
     { title: "发票文件", width: 90, align: "right", dataIndex: "uploadedFileCount", render: numberText },
     {
       title: "操作",
-      width: 260,
+      width: 220,
       align: "center",
       fixed: "right",
       className: "admin-order-action-shadow",
-      onHeaderCell: () => ({ className: "admin-order-action-shadow", width: 260 }),
+      onHeaderCell: () => ({ className: "admin-order-action-shadow", width: 220 }),
       render: (_, item) => <InvoiceActionButtons ctx={ctx} item={item} onReload={() => load()} />
     }
   ];
@@ -7308,7 +7444,7 @@ function InvoiceDetailPanel({ ctx, id, onReload }: { ctx: Ctx; id: any; onReload
         <div className="admin-order-progress">
           {progress.map((step: AnyRecord, index: number) => (
             <div key={`${step.key || step.title}-${index}`} className={`admin-order-progress-step ${step.nodeStatus === "DONE" ? "is-done" : ""} ${step.nodeStatus === "CURRENT" ? "is-current" : ""} ${step.nodeStatus === "ABNORMAL" ? "is-abnormal" : ""}`}>
-              <span>{step.nodeStatus === "DONE" ? <CheckOutlined /> : index + 1}</span><strong>{emptyText(step.title)}</strong><small>{dateText(step.time)}</small>
+              <span>{index + 1}</span><strong>{emptyText(step.title)}</strong><small>{dateText(step.time)}</small>
             </div>
           ))}
         </div>
@@ -7802,15 +7938,487 @@ function customerStatus(item: AnyRecord) {
   return raw === "DISABLED" ? "DISABLED" : "ENABLED";
 }
 
+function BuyerBreadcrumb({ current }: { current: string }) {
+  return (
+    <div className="page-toolbar buyer-page-toolbar">
+      <div>
+        <div className="page-desc">买家管理 / {current}</div>
+        <h1 className="page-title">{current}</h1>
+      </div>
+    </div>
+  );
+}
+
+function BuyerGroupPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
+  const [rows, setRows] = useState<AnyRecord[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [keyword, setKeyword] = useState("");
+  const [selectedGroupKey, setSelectedGroupKey] = useState<React.Key>("buyer-group:__all__");
+  const [tableLoading, setTableLoading] = useState(false);
+
+  const loadGroups = async () => {
+    setTableLoading(true);
+    try {
+      const params = new URLSearchParams();
+      params.set("page", String(page));
+      params.set("pageSize", String(pageSize));
+      if (keyword.trim()) params.set("keyword", keyword.trim());
+      const result = await request<AnyRecord>(`/api/admin/buyer-groups?${params.toString()}`);
+      setRows(result.list || []);
+      setTotal(Number(result.total || 0));
+    } catch (error: any) {
+      ctx.message.error(error.message);
+      setRows([]);
+      setTotal(0);
+    } finally {
+      setTableLoading(false);
+    }
+  };
+
+  useEffect(() => { void loadGroups(); }, [page, pageSize, keyword]);
+
+  const refresh = () => {
+    void loadGroups();
+    void ctx.loadKeys(["buyerGroupOptions"]);
+  };
+  const groupTreeData = useMemo(() => [{
+    key: "buyer-group:__all__",
+    title: "全部分组",
+    children: rows.map((item: AnyRecord) => ({
+      key: `buyer-group:${item.id}`,
+      title: item.groupName || item.groupCode || "未命名分组"
+    }))
+  }], [rows]);
+  const tableRows = useMemo(() => {
+    if (selectedGroupKey === "buyer-group:__all__") return rows;
+    const selectedId = String(selectedGroupKey).replace(/^buyer-group:/, "");
+    return rows.filter((item: AnyRecord) => String(item.id) === selectedId);
+  }, [rows, selectedGroupKey]);
+  const paginationTotal = selectedGroupKey === "buyer-group:__all__" ? total : tableRows.length;
+
+  return (
+    <div className="product-archive-page management-board-page management-tree-page buyer-group-management-page">
+      <aside className="product-archive-sidebar management-board-sidebar">
+        <Input
+          className="product-archive-sidebar-search"
+          value={keyword}
+          allowClear
+          placeholder="请输入分组名称"
+          onChange={event => {
+            setKeyword(event.target.value);
+            setSelectedGroupKey("buyer-group:__all__");
+            setPage(1);
+          }}
+        />
+        <div className="product-category-tree">
+          <Tree
+            blockNode
+            defaultExpandedKeys={["buyer-group:__all__"]}
+            selectedKeys={[selectedGroupKey]}
+            switcherIcon={({ expanded }) => <DownOutlined rotate={expanded ? 0 : -90} />}
+            treeData={groupTreeData}
+            onSelect={keys => setSelectedGroupKey(keys[0] || "buyer-group:__all__")}
+          />
+        </div>
+      </aside>
+      <section className="product-archive-main management-board-main buyer-group-list-panel">
+        <div className="management-board-header">
+          <div className="management-board-title">买家分组列表</div>
+          {canUsePermission("buyer:group:create") ? <Button type="primary" icon={<PlusOutlined />} onClick={() => openBuyerGroupForm(ctx, undefined, refresh)}>新增分组</Button> : null}
+        </div>
+        <div className="management-board-table product-archive-table anchored-pagination-table fixed-action-shadow-table buyer-group-list-table">
+        <AdminTable
+          loading={loading || tableLoading}
+          rowKey="id"
+          columns={buyerGroupColumns(ctx, refresh)}
+          dataSource={tableRows}
+          scroll={{ x: "max-content", y: "100%" }}
+          pagination={{
+            current: page,
+            pageSize,
+            total: paginationTotal,
+            className: "product-archive-pagination",
+            showSizeChanger: true,
+            pageSizeOptions: [10, 20, 50],
+            showTotal: value => `共 ${value} 条`,
+            onChange: (nextPage: number, nextSize: number) => {
+              setPage(nextPage);
+              setPageSize(nextSize);
+            }
+          }}
+          locale={{ emptyText: <Empty description="暂无买家分组" /> }}
+        />
+        </div>
+      </section>
+    </div>
+  );
+}
+
+const buyerGroupColumns = (ctx: Ctx, refresh: () => void): ColumnsType<AnyRecord> => [
+  { title: "分组编码", dataIndex: "groupCode", width: 150, render: emptyText },
+  {
+    title: "分组名称",
+    dataIndex: "groupName",
+    width: 180,
+    render: (value, item) => (
+      <Space size={6}>
+        <span>{emptyText(value)}</span>
+        {isDefaultBuyerGroup(item) ? <Tag color="blue">默认</Tag> : null}
+      </Space>
+    )
+  },
+  { title: "买家数量", dataIndex: "buyerCount", width: 100, align: "right", render: countText },
+  { title: "状态", dataIndex: "status", width: 90, render: buyerGroupStatusTag },
+  { title: "排序", dataIndex: "sortOrder", width: 90, align: "right", render: countText },
+  { title: "备注", dataIndex: "remark", width: 200, render: emptyText },
+  { title: "创建时间", dataIndex: "createdAt", width: 160, render: dateText },
+  { title: "更新时间", dataIndex: "updatedAt", width: 160, render: dateText },
+  {
+    title: "操作",
+    width: 260,
+    align: "center",
+    className: "fixed-action-shadow-column",
+    onHeaderCell: () => ({ className: "fixed-action-shadow-column", width: 260 }),
+    onCell: () => ({ className: "fixed-action-shadow-column" }),
+    render: (_, item) => {
+      const enabled = String(item.status || "").toUpperCase() === "ENABLED";
+      const isDefault = isDefaultBuyerGroup(item);
+      return (
+        <Space className="fixed-action-links">
+          <Button type="link" onClick={() => openBuyerGroupMembers(ctx, item, refresh)}>查看买家</Button>
+          {enabled && canUsePermission("buyer:group:assign") ? <Button type="link" onClick={() => openAssignBuyers(ctx, item, refresh)}>分配买家</Button> : null}
+          {canUsePermission("buyer:group:update") ? <Button type="link" onClick={() => openBuyerGroupForm(ctx, item, refresh)}>编辑</Button> : null}
+          {!isDefault && canUsePermission("buyer:group:disable") ? <Button type="link" danger={enabled} onClick={() => updateBuyerGroupStatus(ctx, item, refresh)}>{enabled ? "停用" : "启用"}</Button> : null}
+          {!isDefault && canUsePermission("buyer:group:delete") ? (
+            <Popconfirm
+              title={Number(item.buyerCount || 0) > 0 ? "当前分组下已有买家，不允许删除，请先移除买家后再删除。" : "确认删除该买家分组？"}
+              disabled={Number(item.buyerCount || 0) > 0}
+              onConfirm={() => deleteBuyerGroup(ctx, item, refresh)}
+            >
+              <Button type="link" danger disabled={Number(item.buyerCount || 0) > 0}>删除</Button>
+            </Popconfirm>
+          ) : null}
+        </Space>
+      );
+    }
+  }
+];
+
+function isDefaultBuyerGroup(item: AnyRecord) {
+  return item.isDefault === true || item.isDefault === 1 || String(item.isDefault || "").toLowerCase() === "true";
+}
+
+function buyerGroupStatusTag(value: any) {
+  const status = String(value || "").toUpperCase();
+  if (status === "DISABLED") return <Tag color="red">停用</Tag>;
+  if (status === "ENABLED") return <Tag color="green">启用</Tag>;
+  return <Tag>{emptyText(status)}</Tag>;
+}
+
+function openBuyerGroupForm(ctx: Ctx, item: AnyRecord | undefined, onDone: () => void) {
+  const isEdit = Boolean(item?.id);
+  ctx.setDrawer({
+    title: isEdit ? "编辑分组" : "新增分组",
+    width: 560,
+    body: <BuyerGroupForm item={item} onCancel={() => ctx.setDrawer(null)} onSubmit={async values => {
+      const operatorName = requireOperator(ctx);
+      if (!operatorName) return;
+      try {
+        await request(isEdit ? `/api/admin/buyer-groups/${item.id}` : "/api/admin/buyer-groups", {
+          method: isEdit ? "PUT" : "POST",
+          data: { ...values, operatorName }
+        });
+        ctx.message.success("保存成功");
+        ctx.setDrawer(null);
+        onDone();
+      } catch (error: any) {
+        ctx.message.error(error.message);
+      }
+    }} />
+  });
+}
+
+function BuyerGroupForm({ item, onSubmit, onCancel }: { item?: AnyRecord; onSubmit: (values: AnyRecord) => Promise<void>; onCancel: () => void }) {
+  const [submitting, setSubmitting] = useState(false);
+  return (
+    <Form
+      layout="vertical"
+      initialValues={{ status: "ENABLED", sortOrder: 0, ...item }}
+      onFinish={async values => { setSubmitting(true); try { await onSubmit(values); } finally { setSubmitting(false); } }}
+    >
+      <Form.Item name="groupName" label="分组名称" rules={[{ required: true, message: "请输入分组名称" }]}><Input maxLength={120} /></Form.Item>
+      <Form.Item name="sortOrder" label="排序" rules={[{ required: true, message: "请输入排序" }]}><InputNumber min={0} precision={0} style={{ width: "100%" }} /></Form.Item>
+      <Form.Item name="status" label="状态"><Select options={[{ value: "ENABLED", label: "启用" }, { value: "DISABLED", label: "停用" }]} /></Form.Item>
+      <Form.Item name="remark" label="备注"><Input.TextArea rows={3} maxLength={500} /></Form.Item>
+      <Space><Button onClick={onCancel}>取消</Button><Button type="primary" htmlType="submit" loading={submitting}>保存</Button></Space>
+    </Form>
+  );
+}
+
+async function updateBuyerGroupStatus(ctx: Ctx, item: AnyRecord, onDone: () => void) {
+  const operatorName = requireOperator(ctx);
+  if (!operatorName) return;
+  const nextStatus = String(item.status || "").toUpperCase() === "ENABLED" ? "DISABLED" : "ENABLED";
+  try {
+    await request(`/api/admin/buyer-groups/${item.id}/status`, { method: "PUT", data: { status: nextStatus, operatorName } });
+    ctx.message.success("状态已更新");
+    onDone();
+  } catch (error: any) {
+    ctx.message.error(error.message);
+  }
+}
+
+async function deleteBuyerGroup(ctx: Ctx, item: AnyRecord, onDone: () => void) {
+  try {
+    await request(`/api/admin/buyer-groups/${item.id}`, { method: "DELETE" });
+    ctx.message.success("删除成功");
+    onDone();
+  } catch (error: any) {
+    ctx.message.error(error.message);
+  }
+}
+
+function openAssignBuyers(ctx: Ctx, group: AnyRecord, onDone: () => void) {
+  ctx.setDrawer({
+    title: `分配买家 - ${group.groupName}`,
+    width: "86vw",
+    body: <AssignBuyersPanel ctx={ctx} group={group} onDone={onDone} onCancel={() => ctx.setDrawer(null)} />
+  });
+}
+
+function AssignBuyersPanel({ ctx, group, onDone, onCancel }: { ctx: Ctx; group: AnyRecord; onDone: () => void; onCancel: () => void }) {
+  const [form] = Form.useForm();
+  const [rows, setRows] = useState<AnyRecord[]>([]);
+  const [selectedRows, setSelectedRows] = useState<AnyRecord[]>([]);
+  const [filters, setFilters] = useState<AnyRecord>({});
+  const [loading, setLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  const loadBuyers = async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams();
+      params.set("page", "1");
+      params.set("pageSize", "50");
+      params.set("currentGroupId", String(group.id));
+      Object.entries(filters).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && String(value).trim() && value !== "ALL") params.set(key, String(value).trim());
+      });
+      const result = await request<AnyRecord>(`/api/customers?${params.toString()}`);
+      setRows(result.list || []);
+    } catch (error: any) {
+      ctx.message.error(error.message);
+      setRows([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { void loadBuyers(); }, [filters]);
+
+  const confirmAssign = async () => {
+    const buyerIds = selectedRows.map(row => row.id);
+    if (!buyerIds.length) {
+      ctx.message.error("请选择需要分配的买家");
+      return;
+    }
+    const operatorName = requireOperator(ctx);
+    if (!operatorName) return;
+    setSubmitting(true);
+    try {
+      await request(`/api/admin/buyer-groups/${group.id}/buyers`, { method: "POST", data: { buyerIds, operatorName } });
+      ctx.message.success("分配成功");
+      onCancel();
+      onDone();
+    } catch (error: any) {
+      ctx.message.error(error.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const submitAssign = () => {
+    const hasOtherGroup = selectedRows.some(row => row.groupId && String(row.groupId) !== String(group.id));
+    if (hasOtherGroup) {
+      Modal.confirm({
+        title: "确认移动买家？",
+        content: "所选买家中存在已归属其它分组的买家，确认后将移动到当前分组。",
+        onOk: confirmAssign
+      });
+      return;
+    }
+    void confirmAssign();
+  };
+
+  const selectedKeys = selectedRows.map(row => row.id);
+  return (
+    <Space direction="vertical" size={16} style={{ width: "100%" }}>
+      <Form form={form} layout="inline" className="admin-filter-form" onFinish={setFilters}>
+        <Form.Item name="keyword"><Input allowClear style={{ width: 260 }} placeholder="买家名称 / 买家编码 / 手机号" /></Form.Item>
+        <Form.Item name="status"><Select allowClear style={{ width: 120 }} placeholder="买家状态" options={[{ value: "ALL", label: "全部" }, { value: "ENABLED", label: "启用" }, { value: "DISABLED", label: "停用" }]} /></Form.Item>
+        <Form.Item name="groupScope"><Select allowClear style={{ width: 150 }} placeholder="当前分组" options={[{ value: "ALL", label: "全部" }, { value: "UNASSIGNED", label: "未分组" }, { value: "OTHER", label: "已在其它分组" }]} /></Form.Item>
+        <Form.Item><Space><Button type="primary" htmlType="submit">查询</Button><Button onClick={() => { form.resetFields(); setFilters({}); }}>重置</Button></Space></Form.Item>
+      </Form>
+      <div className="buyer-assign-grid">
+        <Card title="可选买家">
+          <AdminTable
+            loading={loading}
+            rowKey="id"
+            dataSource={rows}
+            pagination={false}
+            rowSelection={{
+              selectedRowKeys: selectedKeys,
+              onChange: (_keys: React.Key[], nextRows: AnyRecord[]) => setSelectedRows(nextRows)
+            }}
+            columns={[
+              { title: "买家编码", dataIndex: "customerCode", render: emptyText },
+              { title: "买家名称", dataIndex: "companyName", render: emptyText },
+              { title: "手机号", render: (_, item) => emptyText(item.contactPhone || item.loginPhone) },
+              { title: "当前分组", render: (_, item) => buyerGroupText(item) }
+            ]}
+            locale={{ emptyText: <Empty description="暂无买家" /> }}
+          />
+        </Card>
+        <Card title="已选买家">
+          <AdminTable
+            rowKey="id"
+            dataSource={selectedRows}
+            pagination={false}
+            columns={[
+              { title: "买家名称", dataIndex: "companyName", render: emptyText },
+              { title: "当前分组", render: (_, item) => buyerGroupText(item) },
+              { title: "操作", render: (_, item) => <Button type="link" onClick={() => setSelectedRows(prev => prev.filter(row => row.id !== item.id))}>移除</Button> }
+            ]}
+            locale={{ emptyText: <Empty description="暂无买家" /> }}
+          />
+        </Card>
+      </div>
+      <Space><Button onClick={onCancel}>取消</Button><Button type="primary" loading={submitting} onClick={submitAssign}>确认分配</Button></Space>
+    </Space>
+  );
+}
+
+function openBuyerGroupMembers(ctx: Ctx, group: AnyRecord, onDone: () => void) {
+  ctx.setDrawer({
+    title: `查看买家 - ${group.groupName}`,
+    width: "86vw",
+    body: <BuyerGroupMembersPanel ctx={ctx} group={group} onDone={onDone} />
+  });
+}
+
+function BuyerGroupMembersPanel({ ctx, group, onDone }: { ctx: Ctx; group: AnyRecord; onDone: () => void }) {
+  const [keyword, setKeyword] = useState("");
+  const [rows, setRows] = useState<AnyRecord[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [loading, setLoading] = useState(false);
+
+  const loadMembers = async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+      if (keyword.trim()) params.set("keyword", keyword.trim());
+      const result = await request<AnyRecord>(`/api/admin/buyer-groups/${group.id}/buyers?${params.toString()}`);
+      setRows(result.list || []);
+      setTotal(Number(result.total || 0));
+    } catch (error: any) {
+      ctx.message.error(error.message);
+      setRows([]);
+      setTotal(0);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { void loadMembers(); }, [page, pageSize, keyword]);
+
+  const removeBuyer = async (buyer: AnyRecord) => {
+    const operatorName = requireOperator(ctx);
+    if (!operatorName) return;
+    try {
+      await request(`/api/admin/buyer-groups/${group.id}/buyers/${buyer.id}?operatorName=${encodeURIComponent(operatorName)}`, { method: "DELETE" });
+      ctx.message.success("已移除买家");
+      void loadMembers();
+      onDone();
+    } catch (error: any) {
+      ctx.message.error(error.message);
+    }
+  };
+
+  return (
+    <Space direction="vertical" size={16} style={{ width: "100%" }}>
+      <Space>
+        <Input.Search allowClear placeholder="买家名称 / 买家编码 / 手机号" style={{ width: 280 }} onSearch={value => { setKeyword(value); setPage(1); }} />
+        {String(group.status || "").toUpperCase() === "ENABLED" && canUsePermission("buyer:group:assign") ? <Button type="primary" onClick={() => openAssignBuyers(ctx, group, onDone)}>添加买家</Button> : null}
+      </Space>
+      <AdminTable
+        loading={loading}
+        rowKey="id"
+        dataSource={rows}
+        columns={[
+          { title: "买家编码", dataIndex: "customerCode", render: emptyText },
+          { title: "买家名称", dataIndex: "companyName", render: emptyText },
+          { title: "联系人", dataIndex: "contactName", render: emptyText },
+          { title: "手机号", render: (_, item) => emptyText(item.contactPhone || item.loginPhone) },
+          { title: "状态", render: (_, item) => buyerStatusTag(item) },
+          { title: "最近下单时间", dataIndex: "lastOrderTime", render: dateText },
+          { title: "累计成交金额", dataIndex: "totalPaidAmount", align: "right", render: yuan },
+          {
+            title: "操作",
+            render: (_, item) => (
+              <Space>
+                <Button type="link" onClick={() => openBuyerDetail(ctx, item.id, () => { void loadMembers(); onDone(); })}>查看买家详情</Button>
+                {canUsePermission("buyer:group:assign") ? (
+                  <Popconfirm title="确认将该买家从当前分组移除吗？" onConfirm={() => removeBuyer(item)}>
+                    <Button type="link" danger>移除</Button>
+                  </Popconfirm>
+                ) : null}
+              </Space>
+            )
+          }
+        ]}
+        pagination={{
+          current: page,
+          pageSize,
+          total,
+          showSizeChanger: true,
+          pageSizeOptions: [10, 20, 50],
+          showTotal: value => `共 ${value} 条`,
+          onChange: (nextPage: number, nextSize: number) => {
+            setPage(nextPage);
+            setPageSize(nextSize);
+          }
+        }}
+        locale={{ emptyText: <Empty description="暂无买家" /> }}
+      />
+    </Space>
+  );
+}
+
 function BuyerPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
   const [form] = Form.useForm();
   const [rows, setRows] = useState<AnyRecord[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
-  const [tab, setTab] = useState("ALL");
+  const [groupKeyword, setGroupKeyword] = useState("");
+  const [selectedGroupKey, setSelectedGroupKey] = useState("ALL");
   const [filters, setFilters] = useState<AnyRecord>({});
   const [tableLoading, setTableLoading] = useState(false);
+  const searchGroupKeyword = groupKeyword.trim().toLowerCase();
+  const buyerGroupTreeData = [{
+    key: "ALL",
+    title: "全部",
+    children: (ctx.data.buyerGroupOptions || [])
+      .map((item: AnyRecord) => ({
+        key: String(item.id),
+        title: item.groupName || "-"
+      }))
+      .filter((option: AnyRecord) => !searchGroupKeyword || String(option.title || "").trim().toLowerCase().includes(searchGroupKeyword))
+  }];
 
   const loadBuyers = async () => {
     setTableLoading(true);
@@ -7818,7 +8426,6 @@ function BuyerPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
       const params = new URLSearchParams();
       params.set("page", String(page));
       params.set("pageSize", String(pageSize));
-      if (tab !== "ALL") params.set("tab", tab);
       Object.entries(filters).forEach(([key, value]) => {
         if (value !== undefined && value !== null && String(value).trim() && value !== "ALL") {
           params.set(key, String(value).trim());
@@ -7839,13 +8446,14 @@ function BuyerPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
 
   useEffect(() => {
     void loadBuyers();
-  }, [page, pageSize, tab, filters]);
+  }, [page, pageSize, filters]);
 
   const submitFilters = (values: AnyRecord) => {
     const range = values.registerRange || [];
     setFilters({
       keyword: values.keyword,
       status: values.status,
+      groupId: selectedGroupKey,
       salesmanName: values.salesmanName,
       hasOrder: values.hasOrder,
       startDate: range[0]?.format?.("YYYY-MM-DD"),
@@ -7857,75 +8465,133 @@ function BuyerPage({ ctx, loading }: { ctx: Ctx; loading: boolean }) {
   const resetFilters = () => {
     form.resetFields();
     setFilters({});
-    setTab("ALL");
+    setSelectedGroupKey("ALL");
+    setPage(1);
+  };
+  const selectGroup = (key: string) => {
+    setSelectedGroupKey(key);
+    setFilters(prev => ({ ...prev, groupId: key }));
     setPage(1);
   };
 
   const refresh = () => void loadBuyers();
+  const columns = buyerColumns(ctx, refresh);
+  const buyerTableScrollX = Math.max(1320, columns.reduce((sum, column) => sum + Number(column.width || 120), 48));
+  const isInitialBuyerLoading = (loading || tableLoading) && rows.length === 0;
 
   return (
-    <Space direction="vertical" size={16} style={{ width: "100%" }}>
-      <Tabs
-        activeKey={tab}
-        onChange={key => {
-          setTab(key);
-          setPage(1);
-        }}
-        items={[
-          { key: "ALL", label: "全部" },
-          { key: "ENABLED", label: "启用" },
-          { key: "DISABLED", label: "停用" }
-        ]}
-      />
-      <Card>
-        <Form form={form} layout="inline" onFinish={submitFilters} className="admin-filter-form">
-          <Form.Item name="keyword"><Input allowClear style={{ width: 280 }} placeholder="买家名称 / 买家编码 / 联系人 / 手机号" /></Form.Item>
-          <Form.Item name="status"><Select allowClear style={{ width: 120 }} placeholder="买家状态" options={[{ value: "ALL", label: "全部" }, { value: "ENABLED", label: "启用" }, { value: "DISABLED", label: "停用" }]} /></Form.Item>
-          <Form.Item name="salesmanName"><Input allowClear style={{ width: 160 }} placeholder="业务员" /></Form.Item>
-          <Form.Item name="registerRange"><RangePicker /></Form.Item>
-          <Form.Item name="hasOrder"><Select allowClear style={{ width: 120 }} placeholder="是否有订单" options={[{ value: "ALL", label: "全部" }, { value: "YES", label: "是" }, { value: "NO", label: "否" }]} /></Form.Item>
-          <Form.Item>
-            <Space>
+    <div className="product-archive-page buyer-info-page">
+      <aside className="product-archive-sidebar buyer-info-sidebar">
+        <Input
+          className="product-archive-sidebar-search"
+          value={groupKeyword}
+          placeholder="请输入分组名称"
+          allowClear
+          onChange={event => setGroupKeyword(event.target.value)}
+        />
+        <div className="product-category-tree buyer-group-tree">
+          <Tree
+            blockNode
+            defaultExpandedKeys={["ALL"]}
+            selectedKeys={[selectedGroupKey]}
+            switcherIcon={({ expanded }) => <DownOutlined rotate={expanded ? 0 : -90} />}
+            treeData={buyerGroupTreeData}
+            onSelect={keys => selectGroup(String(keys[0] || "ALL"))}
+          />
+        </div>
+      </aside>
+      <section className="product-archive-main buyer-info-main">
+        <Form form={form} onFinish={submitFilters} className="product-archive-filters buyer-info-filters">
+          <div className="product-archive-filter-stack">
+            <label className="product-archive-filter-keyword">
+              <span>关键字</span>
+              <Form.Item name="keyword" noStyle>
+                <Input className="product-archive-keyword-search" allowClear placeholder="买家名称 / 买家编码 / 联系人 / 手机号" />
+              </Form.Item>
+            </label>
+            <label>
+              <span>业务员</span>
+              <Form.Item name="salesmanName" noStyle>
+                <Input allowClear placeholder="请输入业务员" />
+              </Form.Item>
+            </label>
+          </div>
+          <div className="product-archive-filter-actions-stack">
+            <label>
+              <span>买家状态</span>
+              <Form.Item name="status" noStyle>
+                <Select allowClear placeholder="请选择买家状态" options={[{ value: "ALL", label: "全部" }, { value: "ENABLED", label: "启用" }, { value: "DISABLED", label: "停用" }]} />
+              </Form.Item>
+            </label>
+            <label>
+              <span>订单状态</span>
+              <Form.Item name="hasOrder" noStyle>
+                <Select allowClear placeholder="请选择" options={[{ value: "ALL", label: "全部" }, { value: "YES", label: "是" }, { value: "NO", label: "否" }]} />
+              </Form.Item>
+            </label>
+          </div>
+          <label>
+            <span>注册日期</span>
+            <Form.Item name="registerRange" noStyle>
+              <RangePicker placeholder={["开始日期", "结束日期"]} />
+            </Form.Item>
+          </label>
+          <div className="product-archive-filter-actions-stack">
+            <div className="product-archive-query-actions buyer-info-query-actions">
               <Button type="primary" htmlType="submit">查询</Button>
               <Button onClick={resetFilters}>重置</Button>
-              <Button onClick={() => ctx.message.info("导出功能待接入")}>导出买家</Button>
-            </Space>
-          </Form.Item>
+            </div>
+          </div>
         </Form>
-      </Card>
-      <Card
-        title="买家列表"
-        extra={<Space><Button type="primary" icon={<PlusOutlined />} onClick={() => openBuyerForm(ctx, undefined, refresh)}>新增买家</Button><Button onClick={() => ctx.message.info("导出功能待接入")}>导出买家</Button></Space>}
-      >
-        <AdminTable
-          loading={loading || tableLoading}
-          rowKey="id"
-          columns={buyerColumns(ctx, refresh)}
-          dataSource={rows}
-          pagination={{
-            current: page,
-            pageSize,
-            total,
-            showSizeChanger: true,
-            pageSizeOptions: [10, 20, 50],
-            showTotal: value => `共 ${value} 条`,
-            onChange: (nextPage: number, nextSize: number) => {
-              setPage(nextPage);
-              setPageSize(nextSize);
-            }
-          }}
-          locale={{ emptyText: <Empty description="暂无数据" /> }}
-        />
-      </Card>
-    </Space>
+        <div className="product-archive-toolbar buyer-info-toolbar">
+          {canUsePermission("buyer:info:create") ? <Button type="primary" icon={<PlusOutlined />} onClick={() => openBuyerForm(ctx, undefined, refresh)}>新增买家</Button> : null}
+        </div>
+        <div className={`product-archive-table buyer-info-table anchored-pagination-table fixed-action-shadow-table ${isInitialBuyerLoading ? "is-initial-loading" : ""}`}>
+          <AdminTable
+            loading={loading || tableLoading}
+            rowKey="id"
+            columns={columns}
+            dataSource={rows}
+            tableLayout="fixed"
+            scroll={{ x: buyerTableScrollX, y: "100%" }}
+            pagination={{
+              current: page,
+              pageSize,
+              total,
+              className: "product-archive-pagination",
+              showSizeChanger: true,
+              pageSizeOptions: [10, 20, 50],
+              showTotal: value => `共 ${value} 条`,
+              onChange: (nextPage: number, nextSize: number) => {
+                setPage(nextPage);
+                setPageSize(nextSize);
+              }
+            }}
+            locale={{ emptyText: <Empty description="暂无数据" /> }}
+          />
+        </div>
+      </section>
+    </div>
   );
 }
 
 const buyerColumns = (ctx: Ctx, refresh: () => void): ColumnsType<AnyRecord> => [
-  { title: "买家编码", dataIndex: "customerCode", width: 140, render: emptyText },
-  { title: "买家名称", dataIndex: "companyName", width: 180, render: emptyText },
+  {
+    title: "买家编码",
+    dataIndex: "customerCode",
+    width: 150,
+    className: "product-code-column",
+    render: (value, item) => <Button className="product-code-link" type="link" onClick={() => openBuyerDetail(ctx, item.id, refresh)}>{value || "-"}</Button>
+  },
+  {
+    title: "买家名称",
+    dataIndex: "companyName",
+    width: 200,
+    render: value => <span className="buyer-name-cell">{emptyText(value)}</span>
+  },
   { title: "联系人", dataIndex: "contactName", width: 120, render: emptyText },
   { title: "手机号", width: 140, render: (_, item) => emptyText(item.contactPhone || item.loginPhone) },
+  { title: "买家分组", width: 140, render: (_, item) => buyerGroupText(item) },
   { title: "业务员", dataIndex: "salesmanName", width: 120, render: emptyText },
   { title: "状态", width: 90, render: (_, item) => buyerStatusTag(item) },
   { title: "累计订单数", dataIndex: "orderCount", width: 110, align: "right", render: countText },
@@ -7936,20 +8602,33 @@ const buyerColumns = (ctx: Ctx, refresh: () => void): ColumnsType<AnyRecord> => 
   { title: "注册时间", dataIndex: "createdAt", width: 150, render: dateText },
   {
     title: "操作",
-    width: 260,
+    width: 220,
+    align: "center",
+    className: "fixed-action-shadow-column buyer-action-column",
+    onHeaderCell: () => ({ className: "fixed-action-shadow-column buyer-action-header", width: 220 }),
+    onCell: () => ({ className: "fixed-action-shadow-column buyer-action-column" }),
     render: (_, item) => {
       const status = customerStatus(item);
       return (
-        <Space>
+        <Space size={8} className="product-action-links fixed-action-links buyer-action-links">
           <Button type="link" onClick={() => openBuyerDetail(ctx, item.id, refresh)}>详情</Button>
-          <Button type="link" onClick={() => openBuyerForm(ctx, item, refresh)}>编辑</Button>
-          <Button type="link" danger={status === "ENABLED"} onClick={() => openBuyerStatusForm(ctx, item, refresh)}>{status === "ENABLED" ? "停用" : "启用"}</Button>
-          <Button type="link" onClick={() => openBuyerPasswordReset(ctx, item, refresh)}>重置密码</Button>
+          {canUsePermission("buyer:info:update") ? <Button type="link" onClick={() => openBuyerForm(ctx, item, refresh)}>编辑</Button> : null}
+          {canUsePermission("buyer:info:disable") ? <Button type="link" danger={status === "ENABLED"} onClick={() => openBuyerStatusForm(ctx, item, refresh)}>{status === "ENABLED" ? "停用" : "启用"}</Button> : null}
+          {canUsePermission("buyer:info:reset-password") ? <Button type="link" onClick={() => openBuyerPasswordReset(ctx, item, refresh)}>重置密码</Button> : null}
         </Space>
       );
     }
   }
 ];
+
+function buyerGroupText(item: AnyRecord) {
+  const name = item.groupName || "";
+  if (!name) return "未分组";
+  if (String(item.groupStatus || "").toUpperCase() === "DISABLED") {
+    return <Space size={4}><span>{name}</span><Tag color="red">已停用</Tag></Space>;
+  }
+  return name;
+}
 
 function buyerStatusTag(item: AnyRecord) {
   const status = typeof item === "string" ? item : customerStatus(item);
@@ -7984,6 +8663,7 @@ function openBuyerForm(ctx: Ctx, item: AnyRecord | undefined, onDone: () => void
       <BuyerEditForm
         item={item}
         isEdit={isEdit}
+        groupOptions={ctx.data.buyerGroupOptions || []}
         onCancel={() => ctx.setDrawer(null)}
         onSubmit={async values => {
           const operatorName = requireOperator(ctx);
@@ -8005,8 +8685,14 @@ function openBuyerForm(ctx: Ctx, item: AnyRecord | undefined, onDone: () => void
   });
 }
 
-function BuyerEditForm({ item, isEdit, onSubmit, onCancel }: { item?: AnyRecord; isEdit: boolean; onSubmit: (values: AnyRecord) => Promise<void>; onCancel: () => void }) {
+function BuyerEditForm({ item, isEdit, groupOptions, onSubmit, onCancel }: { item?: AnyRecord; isEdit: boolean; groupOptions: AnyRecord[]; onSubmit: (values: AnyRecord) => Promise<void>; onCancel: () => void }) {
   const [submitting, setSubmitting] = useState(false);
+  const selectableGroupOptions = [
+    ...groupOptions.map(group => ({ value: group.id, label: group.groupName })),
+    ...(item?.groupId && !groupOptions.some(group => String(group.id) === String(item.groupId))
+      ? [{ value: item.groupId, label: `${item.groupName || "当前分组"}（已停用）`, disabled: true }]
+      : [])
+  ];
   return (
     <Form
       layout="vertical"
@@ -8024,6 +8710,7 @@ function BuyerEditForm({ item, isEdit, onSubmit, onCancel }: { item?: AnyRecord;
       <Form.Item name="contactName" label="联系人" rules={[{ required: true, message: "请输入联系人" }]}><Input maxLength={60} /></Form.Item>
       <Form.Item name="loginPhone" label="登录手机号" rules={phoneRules("登录手机号")}><Input maxLength={11} /></Form.Item>
       {!isEdit ? <Form.Item name="password" label="初始密码" rules={passwordRules("初始密码")}><Input.Password maxLength={20} /></Form.Item> : null}
+      <Form.Item name="groupId" label="买家分组"><Select allowClear showSearch placeholder="默认分组" options={selectableGroupOptions} /></Form.Item>
       <Form.Item name="address" label="地址"><Input.TextArea rows={3} maxLength={255} /></Form.Item>
       <Form.Item name="salesmanName" label="业务员"><Input maxLength={60} /></Form.Item>
       <Form.Item name="remark" label="备注"><Input.TextArea rows={3} maxLength={500} /></Form.Item>
@@ -8143,9 +8830,9 @@ function BuyerDetail({ customerId, ctx, onChanged }: { customerId: any; ctx: Ctx
   return (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
       <Space>
-        <Button onClick={() => openBuyerForm(ctx, basic, () => { onChanged(); void load(); })}>编辑</Button>
-        <Button danger={status === "ENABLED"} onClick={() => openBuyerStatusForm(ctx, basic, () => { onChanged(); void load(); })}>{status === "ENABLED" ? "停用" : "启用"}</Button>
-        <Button onClick={() => openBuyerPasswordReset(ctx, basic, () => { onChanged(); void load(); })}>重置密码</Button>
+        {canUsePermission("buyer:info:update") ? <Button onClick={() => openBuyerForm(ctx, basic, () => { onChanged(); void load(); })}>编辑</Button> : null}
+        {canUsePermission("buyer:info:disable") ? <Button danger={status === "ENABLED"} onClick={() => openBuyerStatusForm(ctx, basic, () => { onChanged(); void load(); })}>{status === "ENABLED" ? "停用" : "启用"}</Button> : null}
+        {canUsePermission("buyer:info:reset-password") ? <Button onClick={() => openBuyerPasswordReset(ctx, basic, () => { onChanged(); void load(); })}>重置密码</Button> : null}
         <Button onClick={() => ctx.setDrawer(null)}>返回</Button>
       </Space>
       <Card loading={loading} title="买家基础信息">
@@ -8154,6 +8841,7 @@ function BuyerDetail({ customerId, ctx, onChanged }: { customerId: any; ctx: Ctx
           <Descriptions.Item label="买家名称">{emptyText(basic.companyName)}</Descriptions.Item>
           <Descriptions.Item label="联系人">{emptyText(basic.contactName)}</Descriptions.Item>
           <Descriptions.Item label="联系电话">{emptyText(basic.contactPhone)}</Descriptions.Item>
+          <Descriptions.Item label="所属买家分组">{buyerGroupText(basic)}</Descriptions.Item>
           <Descriptions.Item label="业务员">{emptyText(basic.salesmanName)}</Descriptions.Item>
           <Descriptions.Item label="状态">{buyerStatusTag(basic)}</Descriptions.Item>
           <Descriptions.Item label="地址" span={2}>{emptyText(basic.address)}</Descriptions.Item>
